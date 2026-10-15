@@ -27,4 +27,11 @@ async function bootstrap() {
   await app.listen(port);
 }
 
-await bootstrap();
+// Deliberately not a top-level `await`: Vercel imports this file and hooks
+// app.listen(); awaiting here keeps the import pending until listen resolves,
+// which under Vercel's hook can hang until the function times out. This is the
+// entrypoint shape Vercel's NestJS docs use. A failed startup still exits non-zero.
+bootstrap().catch((error: unknown) => {
+  console.error('Failed to start the API:', error);
+  process.exit(1);
+});
