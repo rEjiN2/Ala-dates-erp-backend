@@ -1,0 +1,117 @@
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { HydratedDocument, Types } from 'mongoose';
+
+export enum LedgerAccountType {
+  CASH = 'cash',
+  BANK = 'bank',
+  WALLET = 'wallet',
+  PARTY = 'party',
+  SUPPLIER = 'supplier',
+  INCOME = 'income',
+  EXPENSE = 'expense',
+  OTHER = 'other',
+}
+
+export enum LedgerAccountStatus {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+}
+
+/**
+ * Party and supplier accounts are created, changed and removed only by the
+ * Parties module; the Accounts API lists them but never writes them.
+ */
+export const SYSTEM_MANAGED_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
+  LedgerAccountType.PARTY,
+  LedgerAccountType.SUPPLIER,
+];
+
+export type LedgerAccountDocument = HydratedDocument<LedgerAccount>;
+
+/** Only ever present on bank accounts. */
+@Schema({ _id: false })
+export class BankDetails {
+  @Prop({ trim: true })
+  bankName?: string;
+
+  @Prop({ trim: true })
+  accountNumber?: string;
+
+  @Prop({ trim: true, uppercase: true })
+  iban?: string;
+
+  @Prop({ trim: true, uppercase: true })
+  swiftCode?: string;
+
+  @Prop({ trim: true })
+  branchCode?: string;
+
+  /** Expense account that bank charges are posted to. */
+  @Prop({ type: Types.ObjectId, ref: 'LedgerAccount', default: null })
+  bankChargeAccountId?: Types.ObjectId | null;
+
+  @Prop({ min: 0, max: 100 })
+  commissionPercent?: number;
+
+  @Prop({ default: false })
+  isMerchantAccount?: boolean;
+}
+
+export const BankDetailsSchema = SchemaFactory.createForClass(BankDetails);
+
+@Schema({
+  timestamps: true,
+  collection: 'ledger_accounts',
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
+})
+export class LedgerAccount {
+  // Generated per type on create and never changed afterwards. Party/supplier
+  // codes come from the Parties module.
+  @Prop({ required: true, unique: true, trim: true, uppercase: true, immutable: true })
+  code: string;
+
+  /** The hand-entered code an account had before codes were generated, kept for lookup. */
+  @Prop({ trim: true })
+  legacyCode?: string;
+
+  @Prop({ required: true, trim: true })
+  name: string;
+
+  @Prop({ type: String, required: true, enum: LedgerAccountType, index: true, immutable: true })
+  type: LedgerAccountType;
+
+  /** Running balance. Only ever moved by posting a transaction, never set directly. */
+  @Prop({ required: true, default: 0 })
+  balance: number;
+
+  @Prop({
+    type: String,
+    required: true,
+    enum: LedgerAccountStatus,
+    default: LedgerAccountStatus.ACTIVE,
+  })
+  status: LedgerAccountStatus;
+
+  /** Cash accounts only: the location (store, van, ...) the cash physically sits at. */
+  @Prop({ type: Types.ObjectId, ref: 'Location', default: null, index: true })
+  locationId: Types.ObjectId | null;
+
+  @Prop({ type: BankDetailsSchema, default: null })
+  bankDetails: BankDetails | null;
+
+  /** Virtual, derived from type. */
+  isSystemManaged?: boolean;
+}
+
+export const LedgerAccountSchema = SchemaFactory.createForClass(LedgerAccount);
+
+LedgerAccountSchema.virtual('isSystemManaged').get(function (this: LedgerAccount) {
+  return SYSTEM_MANAGED_ACCOUNT_TYPES.includes(this.type);
+});
+
+// Name is unique within a type, ignoring case ("Main Cash" == "main cash").
+LedgerAccountSchema.index(
+  { type: 1, name: 1 },
+  { unique: true, collation: { locale: 'en', strength: 2 }, name: 'type_name_ci_unique' },
+);
