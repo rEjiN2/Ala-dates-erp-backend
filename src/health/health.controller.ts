@@ -1,21 +1,15 @@
-import { setImmediate as nextTick } from 'node:timers/promises';
 import { Controller, Get, Res } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
 import type { Response } from 'express';
 import {
   databaseState,
+  ensureConnected,
   lastDatabaseError,
   type DatabaseError,
   type DatabaseState,
 } from '../database/connection-status.js';
-
-/**
- * How long /health waits for a connection attempt that has not finished yet.
- * Just above serverSelectionTimeoutMS (10s), so the first request after a cold
- * start reports the real outcome rather than a bare "disconnected".
- */
-const CONNECT_WAIT_MS = 12_000;
+import { DATABASE_WAIT_MS } from '../database/database-ready.middleware.js';
 
 export interface HealthReport {
   status: 'ok' | 'degraded';
@@ -28,7 +22,9 @@ export interface HealthReport {
 /**
  * Answers even when MongoDB is unreachable (the connection is lazy), so a
  * broken deployment explains itself here instead of failing with an opaque
- * 500. Returns 503 while the database is down, for uptime monitors.
+ * 500. If the database is down it makes a fresh connection attempt within
+ * this request, so the error reported is from now, not from a stale attempt.
+ * Returns 503 while the database is down, for uptime monitors.
  */
 @Controller('health')
 export class HealthController {
@@ -36,13 +32,11 @@ export class HealthController {
 
   @Get()
   async check(@Res({ passthrough: true }) response: Response): Promise<HealthReport> {
-    if (databaseState(this.connection) !== 'connected' && !lastDatabaseError(this.connection)) {
-      await this.waitForConnection();
-    }
+    await ensureConnected(this.connection, DATABASE_WAIT_MS);
 
     const state = databaseState(this.connection);
-    const error = state === 'connected' ? undefined : lastDatabaseError(this.connection);
     const healthy = state === 'connected';
+    const error = healthy ? undefined : lastDatabaseError(this.connection);
     response.status(healthy ? 200 : 503);
 
     return {
@@ -52,23 +46,5 @@ export class HealthController {
       node: process.version,
       database: error ? { state, error } : { state },
     };
-  }
-
-  private async waitForConnection(): Promise<void> {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, CONNECT_WAIT_MS);
-    });
-    try {
-      // The failure itself is recorded by keepConnected; only the outcome matters here.
-      await Promise.race([this.connection.asPromise().then(() => undefined), timeout]);
-    } catch {
-      // Reported through databaseState/lastDatabaseError below.
-    } finally {
-      clearTimeout(timer);
-    }
-    // Mongoose rejects first and emits 'error' on the next tick; wait for it
-    // so keepConnected has recorded the reason before we report.
-    await nextTick();
   }
 }

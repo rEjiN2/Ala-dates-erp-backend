@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { validateEnv, type EnvConfig } from './config/env.validation.js';
 import { keepConnected } from './database/connection-status.js';
+import { DatabaseReadyMiddleware } from './database/database-ready.middleware.js';
 import { HealthModule } from './health/health.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { UsersModule } from './modules/users/users.module.js';
@@ -61,4 +62,10 @@ import { DashboardModule } from './modules/dashboard/dashboard.module.js';
     DashboardModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // Every route: reconnect MongoDB within the request if a previous attempt
+    // failed (serverless instances can't do it in the background).
+    consumer.apply(DatabaseReadyMiddleware).forRoutes('{*path}');
+  }
+}

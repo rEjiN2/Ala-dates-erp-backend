@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createServer } from 'node:net';
+import { Controller, Get, type DynamicModule, type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { MongooseModule } from '@nestjs/mongoose';
-import type { DynamicModule } from '@nestjs/common';
+import { InjectConnection, MongooseModule } from '@nestjs/mongoose';
+import type { Connection } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { inject } from 'vitest';
 import { HealthModule } from './health.module.js';
 import { keepConnected } from '../database/connection-status.js';
+import { DatabaseReadyMiddleware } from '../database/database-ready.middleware.js';
 
 /** Same connection setup the app uses, so this exercises the real boot behaviour. */
 function lazyMongo(uri: string, dbName = 'health'): DynamicModule {
@@ -15,8 +17,30 @@ function lazyMongo(uri: string, dbName = 'health'): DynamicModule {
   return MongooseModule.forRoot(uri, { ...options, lazyConnection: true, connectionFactory: keepConnected(uri, options) });
 }
 
+/** An ordinary route that needs the database, behind the same middleware as the app. */
+@Controller('ping-db')
+class PingDbController {
+  constructor(@InjectConnection() private readonly connection: Connection) {}
+
+  @Get()
+  async ping() {
+    await this.connection.db!.admin().ping();
+    return { ok: true };
+  }
+}
+
+function appWith(mongo: DynamicModule) {
+  @Module({ imports: [mongo, HealthModule], controllers: [PingDbController] })
+  class TestAppModule implements NestModule {
+    configure(consumer: MiddlewareConsumer): void {
+      consumer.apply(DatabaseReadyMiddleware).forRoutes('{*path}');
+    }
+  }
+  return TestAppModule;
+}
+
 async function startApp(mongo: DynamicModule) {
-  const moduleRef = await Test.createTestingModule({ imports: [mongo, HealthModule] }).compile();
+  const moduleRef = await Test.createTestingModule({ imports: [appWith(mongo)] }).compile();
   const app = moduleRef.createNestApplication({ logger: false });
   await app.init();
   return app;
@@ -65,7 +89,9 @@ describe('GET / and GET /health', () => {
     }
   }, 20_000);
 
-  it('keeps retrying after a failed first connect, and recovers once MongoDB is reachable', async () => {
+  // Mirrors Vercel: nothing runs between requests, so recovery must happen
+  // inside the next request, not on a background timer.
+  it('reconnects within the very next request once MongoDB is reachable again', async () => {
     const port = await freePort();
     const app = await startApp(lazyMongo(`mongodb://127.0.0.1:${port}/ala?directConnection=true`));
     let mongod: MongoMemoryServer | undefined;
@@ -74,12 +100,24 @@ describe('GET / and GET /health', () => {
 
       mongod = await MongoMemoryServer.create({ instance: { port, ip: '127.0.0.1' } });
 
-      let state = 'disconnected';
-      for (let attempt = 0; attempt < 30 && state !== 'connected'; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        state = (await request(app.getHttpServer()).get('/health')).body.database.state;
-      }
-      expect(state).toBe('connected');
+      const health = await request(app.getHttpServer()).get('/health').expect(200);
+      expect(health.body.database).toEqual({ state: 'connected' });
+    } finally {
+      await app.close();
+      await mongod?.stop();
+    }
+  }, 60_000);
+
+  it('reconnects for an ordinary database route too, via the middleware', async () => {
+    const port = await freePort();
+    const app = await startApp(lazyMongo(`mongodb://127.0.0.1:${port}/ala?directConnection=true`));
+    let mongod: MongoMemoryServer | undefined;
+    try {
+      await request(app.getHttpServer()).get('/health').expect(503);
+
+      mongod = await MongoMemoryServer.create({ instance: { port, ip: '127.0.0.1' } });
+
+      await request(app.getHttpServer()).get('/ping-db').expect(200, { ok: true });
     } finally {
       await app.close();
       await mongod?.stop();

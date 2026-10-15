@@ -1,3 +1,4 @@
+import { setImmediate as nextTick } from 'node:timers/promises';
 import { Logger } from '@nestjs/common';
 import type { ConnectOptions, Connection } from 'mongoose';
 
@@ -10,56 +11,74 @@ export interface DatabaseError {
 }
 
 const lastErrors = new WeakMap<Connection, DatabaseError>();
+const reopeners = new WeakMap<Connection, () => Promise<unknown>>();
+const pendingAttempts = new WeakMap<Connection, Promise<void>>();
 const logger = new Logger('MongoDB');
-
-/** Backoff between attempts to (re)open a connection whose last attempt failed. */
-const RETRY_MIN_MS = 2_000;
-const RETRY_MAX_MS = 30_000;
 
 /**
  * Builds MongooseModule's connectionFactory. With a lazy connection the app
- * boots without waiting for MongoDB, which leaves three jobs to this hook:
- *  - catch connection failures: mongoose only handles a failed connect when an
- *    'error' listener exists; without one Node crashes on the rejection;
- *  - keep trying: mongoose never retries a failed *initial* connect, so one bad
- *    attempt (common on a serverless cold start) would otherwise leave the
- *    instance disconnected until the host recycles it. Once connected, the
- *    driver handles reconnects itself;
- *  - remember the last failure for GET /health, and log it on one line.
+ * boots without waiting for MongoDB. This hook catches connection failures
+ * (mongoose only handles a failed connect when an 'error' listener exists;
+ * without one Node crashes on the rejection), logs them on one line, keeps the
+ * last one for GET /health, and registers how to reopen the connection.
+ *
+ * Reopening is deliberately NOT done on a background timer: on Vercel the
+ * instance is frozen between requests, so background work stalls and then
+ * "times out" the moment the next request thaws it. ensureConnected() reopens
+ * during a request instead, while the instance is guaranteed to be running.
  */
 export function keepConnected(uri: string, options: ConnectOptions) {
   return (connection: Connection): Connection => {
-    let retryDelay = RETRY_MIN_MS;
-    let retryTimer: NodeJS.Timeout | undefined;
-
-    const scheduleRetry = () => {
-      if (retryTimer || connection.readyState !== 0) {
-        return;
-      }
-      logger.warn(`Retrying in ${retryDelay / 1000}s`);
-      retryTimer = setTimeout(() => {
-        retryTimer = undefined;
-        // A failure re-emits 'error', which schedules the next attempt.
-        connection.openUri(uri, options).catch(() => undefined);
-      }, retryDelay);
-      // Never keep the process alive just to retry.
-      retryTimer.unref();
-      retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
-    };
+    reopeners.set(connection, () => connection.openUri(uri, options));
 
     connection.on('error', (error: unknown) => {
       const recorded = describeError(error);
       lastErrors.set(connection, recorded);
       logger.error(`Connection failed: ${recorded.name}: ${recorded.message}`);
-      scheduleRetry();
     });
     connection.on('connected', () => {
       lastErrors.delete(connection);
-      retryDelay = RETRY_MIN_MS;
       logger.log(`Connected to ${connection.host}/${connection.name}`);
     });
     return connection;
   };
+}
+
+/**
+ * Makes sure the connection is up, waiting at most `timeoutMs`. If it is
+ * disconnected (mongoose never retries a failed first connect), a new attempt
+ * is started; concurrent callers share one attempt. Never throws: the outcome
+ * is read back through databaseState()/lastDatabaseError().
+ */
+export async function ensureConnected(connection: Connection, timeoutMs: number): Promise<void> {
+  if (connection.readyState === 1) {
+    return;
+  }
+
+  let attempt = pendingAttempts.get(connection);
+  if (!attempt) {
+    const reopen = reopeners.get(connection);
+    const started =
+      connection.readyState === 0 && reopen ? reopen() : connection.asPromise();
+    attempt = started
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => pendingAttempts.delete(connection));
+    pendingAttempts.set(connection, attempt);
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  try {
+    await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+  // Mongoose rejects first and emits 'error' on the next tick; let the
+  // listener record the reason before the caller reads it.
+  await nextTick();
 }
 
 export function databaseState(connection: Connection): DatabaseState {
