@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { validateEnv, type EnvConfig } from './config/env.validation.js';
-import { trackConnection } from './database/connection-status.js';
+import { keepConnected } from './database/connection-status.js';
 import { HealthModule } from './health/health.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { UsersModule } from './modules/users/users.module.js';
@@ -24,16 +24,25 @@ import { DashboardModule } from './modules/dashboard/dashboard.module.js';
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     MongooseModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService<EnvConfig, true>) => ({
-        uri: configService.get('MONGODB_URI', { infer: true }),
-        // Boot without waiting for MongoDB: if it is unreachable, the app still
-        // starts and GET /health reports why, instead of the process exiting
-        // and the host showing a bare 500. Queries wait for the connection.
-        lazyConnection: true,
-        connectionFactory: trackConnection,
-        // Fail a bad connection in seconds, not the driver's 30s default.
-        serverSelectionTimeoutMS: 10_000,
-      }),
+      useFactory: (configService: ConfigService<EnvConfig, true>) => {
+        const uri = configService.get('MONGODB_URI', { infer: true });
+        const options = {
+          // Fail a bad connection in seconds, not the driver's 30s default.
+          serverSelectionTimeoutMS: 10_000,
+          // Each serverless instance holds its own pool; keep it small so many
+          // instances can't exhaust the Atlas connection limit.
+          maxPoolSize: 10,
+        };
+        return {
+          uri,
+          ...options,
+          // Boot without waiting for MongoDB: if it is unreachable, the app
+          // still starts, keeps retrying, and GET /health reports why, instead
+          // of the process exiting behind a bare 500. Queries wait for it.
+          lazyConnection: true,
+          connectionFactory: keepConnected(uri, options),
+        };
+      },
     }),
     HealthModule,
     AuthModule,

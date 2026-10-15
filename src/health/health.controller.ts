@@ -60,7 +60,7 @@ export class HealthController {
       timer = setTimeout(resolve, CONNECT_WAIT_MS);
     });
     try {
-      // The failure itself is recorded by trackConnection; only the outcome matters here.
+      // The failure itself is recorded by keepConnected; only the outcome matters here.
       await Promise.race([this.connection.asPromise().then(() => undefined), timeout]);
     } catch {
       // Reported through databaseState/lastDatabaseError below.
@@ -68,7 +68,7 @@ export class HealthController {
       clearTimeout(timer);
     }
     // Mongoose rejects first and emits 'error' on the next tick; wait for it
-    // so trackConnection has recorded the reason before we report.
+    // so keepConnected has recorded the reason before we report.
     await nextTick();
   }
 }
