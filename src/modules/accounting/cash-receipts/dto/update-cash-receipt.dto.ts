@@ -1,25 +1,9 @@
-import { PartialType } from '@nestjs/mapped-types';
-import { Transform } from 'class-transformer';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IntersectionType, PartialType } from '@nestjs/mapped-types';
 import { CreateCashReceiptDto } from './create-cash-receipt.dto.js';
+import { CancelVoucherDto, ChangeNoteFieldDto } from '../../vouchers/dto/voucher.dto.js';
 
-const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+export { CANCEL_REASON_MIN_LENGTH } from '../../vouchers/dto/voucher.dto.js';
 
-export class UpdateCashReceiptDto extends PartialType(CreateCashReceiptDto) {
-  /** Why the edit was made; stored as the audit entry's reason. */
-  @IsOptional()
-  @Transform(trim)
-  @IsString()
-  @MaxLength(500)
-  changeNote?: string;
-}
+export class UpdateCashReceiptDto extends IntersectionType(PartialType(CreateCashReceiptDto), ChangeNoteFieldDto) {}
 
-export const CANCEL_REASON_MIN_LENGTH = 3;
-
-export class CancelCashReceiptDto {
-  @Transform(trim)
-  @IsString()
-  @MinLength(CANCEL_REASON_MIN_LENGTH)
-  @MaxLength(500)
-  reason: string;
-}
+export class CancelCashReceiptDto extends CancelVoucherDto {}

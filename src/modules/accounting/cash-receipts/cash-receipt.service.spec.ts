@@ -41,6 +41,9 @@ import { createAppValidationPipe } from '../../../common/pipes/app-validation.pi
 import { Permission } from '../../roles/permissions.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { CashReceiptPrintService } from './cash-receipt-print.service.js';
+import { VoucherPostingService } from '../vouchers/voucher-posting.service.js';
+import { VoucherPrintService } from '../vouchers/voucher-print.service.js';
+import { LedgerEntry, LedgerEntrySchema } from '../vouchers/schemas/ledger-entry.schema.js';
 import { Cashier, CashierDocument, CashierSchema, CashierStatus } from '../../cashier/schemas/cashier.schema.js';
 import { CashierService } from '../../cashier/cashier.service.js';
 import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
@@ -108,6 +111,7 @@ describe('CashReceiptService (transactional)', () => {
           { name: Cashier.name, schema: CashierSchema },
           { name: User.name, schema: UserSchema },
           { name: CompanySettings.name, schema: CompanySettingsSchema },
+          { name: LedgerEntry.name, schema: LedgerEntrySchema },
         ]),
       ],
       controllers: [CashReceiptController, CommentsController, ActivityController],
@@ -126,6 +130,8 @@ describe('CashReceiptService (transactional)', () => {
         UsersService,
         CompanyService,
         CashReceiptPrintService,
+        VoucherPostingService,
+        VoucherPrintService,
         // No logo is configured in these tests, so storage is never reached.
         { provide: FilesService, useValue: {} },
       ],
@@ -177,6 +183,7 @@ describe('CashReceiptService (transactional)', () => {
     // Audit logs and comments refuse deletes through Mongoose; use the driver.
     await auditModel.collection.deleteMany({});
     await commentModel.collection.deleteMany({});
+    await moduleRef.get(getModelToken(LedgerEntry.name)).collection.deleteMany({});
     await cashierModel.deleteMany({}).exec();
     await companyModel.deleteMany({}).exec();
   });
@@ -241,6 +248,22 @@ describe('CashReceiptService (transactional)', () => {
   }
 
   describe('posting', () => {
+    it('writes a ledger entry per side through the shared posting service', async () => {
+      const { cash, party, receipt } = await postedReceipt();
+      const entries = await moduleRef
+        .get(getModelToken(LedgerEntry.name))
+        .find({ voucherId: receipt._id })
+        .sort({ _id: 1 })
+        .lean()
+        .exec();
+      expect(
+        entries.map((e: Record<string, unknown>) => [String(e.accountId), e.debit, e.credit, e.voucherType, e.kind]),
+      ).toEqual([
+        [cash.id, 105, 0, 'cash-receipt', 'posting'],
+        [party.id, 0, 105, 'cash-receipt', 'posting'],
+      ]);
+    });
+
     it('posts a receipt and moves both sides of the balance', async () => {
       const { cash, party, receipt } = await postedReceipt();
 
@@ -346,7 +369,7 @@ describe('CashReceiptService (transactional)', () => {
           },
           sachin,
         ),
-      ).rejects.toThrow(/must be received into a cash, wallet or bank account/);
+      ).rejects.toThrow(/Choose a cash, wallet or bank account/);
 
       expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
     });
@@ -1337,7 +1360,11 @@ describe('CashReceiptService (transactional)', () => {
       expect(await balanceOf(party)).toBe(-750);
 
       const [row] = (await service.findAll({ q: 'tt-2026' })).items;
-      expect(row).toMatchObject({ voucherNo: 'CR000001', paymentMethod: 'bank', cashAccount: { name: 'Emirates NBD Current' } });
+      expect(row).toMatchObject({
+        voucherNo: 'CR000001',
+        paymentMethod: 'bank',
+        cashAccount: { name: 'Emirates NBD Current' },
+      });
 
       const { definition, buffer } = await printService.print(receipt.id, sachin);
       const text = JSON.stringify(definition);
@@ -1386,7 +1413,10 @@ describe('CashReceiptService (transactional)', () => {
       const { bank, party } = await accounts();
       await ledgerAccountModel.updateOne({ _id: bank._id }, { $set: { status: LedgerAccountStatus.INACTIVE } }).exec();
       await expect(
-        createReceipt({ voucherDate: '2026-09-21', cashAccountId: bank.id, lines: [{ accountId: party.id, amount: 10 }] }, sachin),
+        createReceipt(
+          { voucherDate: '2026-09-21', cashAccountId: bank.id, lines: [{ accountId: party.id, amount: 10 }] },
+          sachin,
+        ),
       ).rejects.toThrow(/inactive/);
 
       const pipe = createAppValidationPipe();
@@ -1398,10 +1428,16 @@ describe('CashReceiptService (transactional)', () => {
         lines: [{ accountId: party.id, amount: 10 }],
       };
       await expect(
-        pipe.transform({ ...body, paymentReference: 'x'.repeat(100) }, { type: 'body', metatype: CreateCashReceiptDto }),
+        pipe.transform(
+          { ...body, paymentReference: 'x'.repeat(100) },
+          { type: 'body', metatype: CreateCashReceiptDto },
+        ),
       ).resolves.toBeDefined();
       await expect(
-        pipe.transform({ ...body, paymentReference: 'x'.repeat(101) }, { type: 'body', metatype: CreateCashReceiptDto }),
+        pipe.transform(
+          { ...body, paymentReference: 'x'.repeat(101) },
+          { type: 'body', metatype: CreateCashReceiptDto },
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
       await expect(
         pipe.transform({ ...body, paymentMethod: 'bank' }, { type: 'body', metatype: CreateCashReceiptDto }),
@@ -1410,11 +1446,14 @@ describe('CashReceiptService (transactional)', () => {
 
     it('rejects the received-into account on a line, on create and on edit', async () => {
       const { bank, party } = await accounts();
-      const lines = [{ accountId: party.id, amount: 10 }, { accountId: bank.id, amount: 5 }];
+      const lines = [
+        { accountId: party.id, amount: 10 },
+        { accountId: bank.id, amount: 5 },
+      ];
 
-      await expect(
-        createReceipt({ voucherDate: '2026-09-21', cashAccountId: bank.id, lines }, sachin),
-      ).rejects.toThrow('The "received into" account cannot also be used on a line');
+      await expect(createReceipt({ voucherDate: '2026-09-21', cashAccountId: bank.id, lines }, sachin)).rejects.toThrow(
+        'The "received into" account cannot also be used on a line',
+      );
 
       const receipt = await createReceipt(
         { voucherDate: '2026-09-21', cashAccountId: bank.id, lines: [{ accountId: party.id, amount: 10 }] },
@@ -1422,7 +1461,7 @@ describe('CashReceiptService (transactional)', () => {
       );
       await expect(service.update(receipt.id, { lines }, sachin)).rejects.toThrow(/cannot also be used on a line/);
       await expect(service.update(receipt.id, { cashAccountId: party.id }, sachin)).rejects.toThrow(
-        /must be received into a cash, wallet or bank account/,
+        /Choose a cash, wallet or bank account/,
       );
       expect(await balanceOf(bank)).toBe(2010);
     });
@@ -1437,10 +1476,85 @@ describe('CashReceiptService (transactional)', () => {
           pipe.transform({ accountId: party.id, amount }, { type: 'body', metatype: CashReceiptLineDto }),
         ).rejects.toBeInstanceOf(BadRequestException);
         await expect(
-          createReceipt({ voucherDate: '2026-09-21', cashAccountId: bank.id, lines: [{ accountId: party.id, amount }] }, sachin),
+          createReceipt(
+            { voucherDate: '2026-09-21', cashAccountId: bank.id, lines: [{ accountId: party.id, amount }] },
+            sachin,
+          ),
         ).rejects.toThrow('Each line needs a positive amount and a VAT of 0 or more');
       }
       expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
+    });
+  });
+
+  describe('account types', () => {
+    async function accounts() {
+      return {
+        bank: await makeAccount('BNK-0001', LedgerAccountType.BANK, 0, 'ADCB'),
+        otherBank: await makeAccount('BNK-0002', LedgerAccountType.BANK, 0, 'Emirates NBD'),
+        cash: await makeAccount('CASH-0001', LedgerAccountType.CASH, 0, 'Main Cash'),
+        wallet: await makeAccount('WAL-0001', LedgerAccountType.WALLET, 0, 'STC Pay'),
+        customer: await makeAccount('CUS-0001', LedgerAccountType.PARTY, 0, 'Ali Traders'),
+        supplier: await makeAccount('SUP-0001', LedgerAccountType.SUPPLIER, 0, 'Omar Farms'),
+        income: await makeAccount('INC-0001', LedgerAccountType.INCOME, 0, 'Scrap Sales'),
+        expense: await makeAccount('EXP-0001', LedgerAccountType.EXPENSE, 0, 'Rent'),
+        other: await makeAccount('OTH-0001', LedgerAccountType.OTHER, 0, 'Suspense'),
+      };
+    }
+    const receive = (header: LedgerAccountDocument, ...lineAccounts: LedgerAccountDocument[]) =>
+      createReceipt(
+        {
+          voucherDate: '2026-09-21',
+          cashAccountId: header.id,
+          lines: lineAccounts.map((account) => ({ accountId: account.id, amount: 10 })),
+        },
+        sachin,
+      );
+
+    it('accepts a bank account as the header account', async () => {
+      const { bank, customer } = await accounts();
+      const receipt = await receive(bank, customer);
+      expect(receipt.paymentMethod).toBe('bank');
+      expect(await balanceOf(bank)).toBe(10);
+    });
+
+    it('rejects a customer (or any non cash/wallet/bank) account as the header account', async () => {
+      const { customer, supplier, income, bank } = await accounts();
+      for (const header of [customer, supplier, income]) {
+        await expect(receive(header, bank)).rejects.toThrow(
+          `${header.code} (${header.name}) is a ${header.type} account. Choose a cash, wallet or bank account.`,
+        );
+      }
+      expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
+    });
+
+    it('rejects a bank, cash or wallet account as a line account', async () => {
+      const { bank, otherBank, cash, wallet, customer } = await accounts();
+
+      await expect(receive(bank, customer, otherBank)).rejects.toThrow(
+        "Line 2: BNK-0002 (Emirates NBD) is a bank account. Money can't be received from the company's own cash, wallet or bank accounts; choose a customer, supplier, income, expense or other account.",
+      );
+      await expect(receive(bank, cash)).rejects.toThrow(/Line 1: CASH-0001 \(Main Cash\) is a cash account/);
+      await expect(receive(cash, wallet)).rejects.toThrow(/Line 1: WAL-0001 \(STC Pay\) is a wallet account/);
+      expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
+      expect(await balanceOf(bank)).toBe(0);
+    });
+
+    it('accepts customer, supplier, income, expense and other accounts as lines', async () => {
+      const { cash, customer, supplier, income, expense, other } = await accounts();
+      const receipt = await receive(cash, customer, supplier, income, expense, other);
+      expect(receipt.grandTotal).toBe(50);
+    });
+
+    it('checks the lines sent with an edit, but keeps lines already posted on older receipts', async () => {
+      const { bank, otherBank, customer } = await accounts();
+      const receipt = await receive(bank, customer);
+      await expect(
+        service.update(receipt.id, { lines: [{ accountId: otherBank.id, amount: 10 }] }, sachin),
+      ).rejects.toThrow(/Line 1: BNK-0002 \(Emirates NBD\) is a bank account/);
+
+      // A receipt posted before the rule existed, with a bank account on a line:
+      await cashReceiptModel.updateOne({ _id: receipt._id }, { $set: { 'lines.0.accountId': otherBank._id } }).exec();
+      await expect(service.update(receipt.id, { comments: 'Checked' }, sachin)).resolves.toBeDefined();
     });
   });
 

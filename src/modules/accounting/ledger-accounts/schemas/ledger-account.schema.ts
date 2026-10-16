@@ -26,6 +26,29 @@ export const SYSTEM_MANAGED_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
   LedgerAccountType.SUPPLIER,
 ];
 
+/**
+ * Company accounts are the business's own (cash, bank, wallet, income,
+ * expense, other); party accounts belong to customers and suppliers and are
+ * managed from the Parties module. Lists and pickers never mix the two
+ * unless asked to.
+ */
+export enum LedgerAccountScope {
+  COMPANY = 'company',
+  PARTY = 'party',
+}
+
+export const SCOPE_ACCOUNT_TYPES: Readonly<Record<LedgerAccountScope, readonly LedgerAccountType[]>> = {
+  [LedgerAccountScope.COMPANY]: [
+    LedgerAccountType.CASH,
+    LedgerAccountType.BANK,
+    LedgerAccountType.WALLET,
+    LedgerAccountType.INCOME,
+    LedgerAccountType.EXPENSE,
+    LedgerAccountType.OTHER,
+  ],
+  [LedgerAccountScope.PARTY]: [LedgerAccountType.PARTY, LedgerAccountType.SUPPLIER],
+};
+
 export type LedgerAccountDocument = HydratedDocument<LedgerAccount>;
 
 /** Only ever present on bank accounts. */

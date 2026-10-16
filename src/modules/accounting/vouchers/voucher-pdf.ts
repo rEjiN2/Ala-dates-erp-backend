@@ -1,8 +1,18 @@
 import type { Column, Content, TDocumentDefinitions } from 'pdfmake/interfaces.js';
 import { amountInWords } from '../../../common/utils/amount-in-words.js';
 
+/** Labels that differ between voucher types (see VoucherDefinition.pdf and headerLabel). */
+export interface VoucherPdfLabels {
+  titles: { cash: string; bank: string };
+  documentTitle: string;
+  /** Info-table label for the header account, e.g. "Received Into". */
+  headerLabel: string;
+  counterpartyColumn: string;
+  signatures: readonly [string, string];
+}
+
 /** Everything printed on the voucher, already resolved to display values. */
-export interface CashReceiptPdfData {
+export interface VoucherPdfData {
   company: {
     legalName: string;
     addressLines: string[];
@@ -13,15 +23,15 @@ export interface CashReceiptPdfData {
     /** PNG/JPEG as a data URL; pdfmake is never given a URL or path to fetch. */
     logoDataUrl: string | null;
   };
-  receipt: {
+  voucher: {
     voucherNo: string;
     voucherDate: Date;
-    /** The "received into" account. */
-    cashAccountName: string;
+    /** The header (cash/wallet/bank) account. */
+    headerAccountName: string;
     paymentMethod: 'cash' | 'bank';
     paymentReference: string | null;
     cashierName: string | null;
-    lines: { receivedFrom: string; narration: string | null; amount: number; vat: number; netAmount: number }[];
+    lines: { counterparty: string; narration: string | null; amount: number; vat: number; netAmount: number }[];
     grossTotal: number;
     totalTax: number;
     grandTotal: number;
@@ -37,11 +47,6 @@ export interface CashReceiptPdfData {
 }
 
 export const PDF_TIME_ZONE = 'Asia/Dubai';
-
-/** Bank accounts print as a bank receipt; cash and wallet accounts as a cash receipt. */
-export function voucherTitle(paymentMethod: 'cash' | 'bank'): string {
-  return paymentMethod === 'bank' ? 'BANK RECEIPT VOUCHER' : 'CASH RECEIPT VOUCHER';
-}
 
 /** "ORIGINAL" for the first print, then "DUPLICATE - Reprint 1", "DUPLICATE - Reprint 2", ... */
 export function copyLabel(copyNumber: number): string {
@@ -81,8 +86,8 @@ const GREY = '#666666';
 const BORDER = '#999999';
 
 /** A4 voucher layout. Pure: the same data always gives the same definition. */
-export function buildCashReceiptPdf(data: CashReceiptPdfData): TDocumentDefinitions {
-  const { company, receipt } = data;
+export function buildVoucherPdf(data: VoucherPdfData, labels: VoucherPdfLabels): TDocumentDefinitions {
+  const { company, voucher: receipt } = data;
   const isCancelled = receipt.cancelled !== null;
 
   const companyBlock: Content[] = [
@@ -116,8 +121,8 @@ export function buildCashReceiptPdf(data: CashReceiptPdfData): TDocumentDefiniti
           formatVoucherDate(receipt.voucherDate),
         ],
         [
-          { text: 'Received Into', style: 'label' },
-          receipt.cashAccountName,
+          { text: labels.headerLabel, style: 'label' },
+          receipt.headerAccountName,
           { text: 'Cashier', style: 'label' },
           receipt.cashierName ?? '-',
         ],
@@ -140,14 +145,14 @@ export function buildCashReceiptPdf(data: CashReceiptPdfData): TDocumentDefiniti
       headerRows: 1,
       widths: [18, '*', '*', 65, 55, 70],
       body: [
-        ['#', 'Received From', 'Narration', 'Amount', 'VAT', 'Net'].map((text, i) => ({
+        ['#', labels.counterpartyColumn, 'Narration', 'Amount', 'VAT', 'Net'].map((text, i) => ({
           text,
           style: 'tableHeader',
           alignment: i >= 3 ? 'right' : 'left',
         })),
         ...receipt.lines.map((line, index) => [
           String(index + 1),
-          line.receivedFrom,
+          line.counterparty,
           line.narration ?? '',
           right(formatMoney(line.amount)),
           right(formatMoney(line.vat)),
@@ -220,13 +225,13 @@ export function buildCashReceiptPdf(data: CashReceiptPdfData): TDocumentDefiniti
   return {
     pageSize: 'A4',
     pageMargins: [40, 40, 40, 60],
-    info: { title: `Cash Receipt ${receipt.voucherNo}`, author: company.legalName },
+    info: { title: `${labels.documentTitle} ${receipt.voucherNo}`, author: company.legalName },
     ...(isCancelled
       ? { watermark: { text: 'CANCELLED', color: '#b00020', opacity: 0.15, bold: true, angle: -45, fontSize: 90 } }
       : {}),
     content: [
       header,
-      { text: voucherTitle(receipt.paymentMethod), style: 'title' },
+      { text: labels.titles[receipt.paymentMethod], style: 'title' },
       info,
       lines,
       totals,
@@ -235,7 +240,7 @@ export function buildCashReceiptPdf(data: CashReceiptPdfData): TDocumentDefiniti
       { text: [{ text: 'Prepared by: ', bold: true }, preparedBy], margin: [0, 6, 0, 0] },
       ...cancellation,
       {
-        columns: [signatureBox('Cashier Signature'), signatureBox('Payer Signature')],
+        columns: [signatureBox(labels.signatures[0]), signatureBox(labels.signatures[1])],
         columnGap: 20,
         margin: [0, 30, 0, 0],
       },

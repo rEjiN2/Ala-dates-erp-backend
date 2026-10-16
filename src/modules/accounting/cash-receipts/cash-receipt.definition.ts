@@ -1,0 +1,38 @@
+import { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
+import { VoucherDirection, type VoucherDefinition } from '../vouchers/voucher-definition.js';
+import { CASH_RECEIPT_ENTITY_TYPE } from './schemas/cash-receipt.schema.js';
+
+/**
+ * Accounts money can be received from on a receipt line. Never the company's
+ * own cash, wallet or bank accounts: that would be a transfer, not a receipt.
+ */
+export const RECEIPT_LINE_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
+  LedgerAccountType.PARTY,
+  LedgerAccountType.SUPPLIER,
+  LedgerAccountType.INCOME,
+  LedgerAccountType.EXPENSE,
+  LedgerAccountType.OTHER,
+];
+
+/** Money in: debit the "received into" account, credit each line account. */
+export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
+  entityType: CASH_RECEIPT_ENTITY_TYPE,
+  label: 'Cash receipt',
+  sequence: { key: 'cash-receipt', prefix: 'CR', width: 6 },
+  direction: VoucherDirection.RECEIPT,
+  headerField: 'cashAccountId',
+  headerLabel: 'Received into',
+  lineAccountTypes: RECEIPT_LINE_ACCOUNT_TYPES,
+  lineTypeHint:
+    "Money can't be received from the company's own cash, wallet or bank accounts; choose a customer, supplier, income, expense or other account.",
+  warnOnOverdraw: false,
+  usageSource: 'cash receipts',
+  pdf: {
+    titles: { cash: 'CASH RECEIPT VOUCHER', bank: 'BANK RECEIPT VOUCHER' },
+    documentTitle: 'Cash Receipt',
+    counterpartyColumn: 'Received From',
+    signatures: ['Cashier Signature', 'Payer Signature'],
+  },
+};
+
+export const CASH_RECEIPT_VOUCHER_SEQUENCE = CASH_RECEIPT_DEFINITION.sequence;

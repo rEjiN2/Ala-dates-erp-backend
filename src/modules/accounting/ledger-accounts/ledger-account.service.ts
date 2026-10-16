@@ -12,8 +12,10 @@ import {
   BankDetails,
   LedgerAccount,
   LedgerAccountDocument,
+  LedgerAccountScope,
   LedgerAccountStatus,
   LedgerAccountType,
+  SCOPE_ACCOUNT_TYPES,
   SYSTEM_MANAGED_ACCOUNT_TYPES,
 } from './schemas/ledger-account.schema.js';
 import { CreateLedgerAccountDto } from './dto/create-ledger-account.dto.js';
@@ -78,8 +80,10 @@ export class LedgerAccountService {
   async list(query: LedgerAccountQueryDto): Promise<LedgerAccountPage> {
     const filter: QueryFilter<LedgerAccountDocument> = {
       ...this.searchFilter(query.q, ['code', 'legacyCode', 'name']),
+      type: {
+        $in: this.allowedTypes(query.scope ?? LedgerAccountScope.COMPANY, query.type ? [query.type] : undefined),
+      },
     };
-    if (query.type) filter.type = query.type;
     if (query.status) filter.status = query.status;
 
     const page = query.page ?? 1;
@@ -103,7 +107,9 @@ export class LedgerAccountService {
       ...this.searchFilter(query.q, ['code', 'name']),
       status: LedgerAccountStatus.ACTIVE,
     };
-    if (query.types?.length) filter.type = { $in: query.types };
+    if (query.scope || query.types?.length) {
+      filter.type = { $in: this.allowedTypes(query.scope, query.types) };
+    }
 
     const accounts = await this.ledgerAccountModel
       .find(filter)
@@ -291,7 +297,7 @@ export class LedgerAccountService {
 
     if (!RECEIPT_ACCOUNT_TYPES.includes(account.type)) {
       throw new BadRequestException(
-        `Ledger account ${account.code} is of type "${account.type}"; a receipt must be received into a cash, wallet or bank account`,
+        `${account.code} (${account.name}) is a ${account.type} account. Choose a cash, wallet or bank account.`,
       );
     }
     if (account.status !== LedgerAccountStatus.ACTIVE) {
@@ -316,6 +322,29 @@ export class LedgerAccountService {
       .exec();
 
     return new Map(accounts.map((account) => [account._id.toString(), account.balance]));
+  }
+
+  /** code, name and type of each account, keyed by id. Missing accounts are simply absent from the map. */
+  async getSummaries(
+    ids: readonly string[],
+    session?: ClientSession,
+  ): Promise<Map<string, { code: string; name: string; type: LedgerAccountType }>> {
+    const objectIds = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+    if (objectIds.length === 0) {
+      return new Map();
+    }
+    const accounts = await this.ledgerAccountModel
+      .find({ _id: { $in: objectIds } })
+      .select('code name type')
+      .session(session ?? null)
+      .lean()
+      .exec();
+    return new Map(
+      accounts.map((account) => [
+        account._id.toString(),
+        { code: account.code, name: account.name, type: account.type },
+      ]),
+    );
   }
 
   /** Account names for display (lists, audit diffs). Missing accounts are simply absent from the map. */
@@ -365,18 +394,14 @@ export class LedgerAccountService {
   ): Promise<void> {
     if (fields.locationId) {
       if (type !== LedgerAccountType.CASH) {
-        throw new BadRequestException(
-          `locationId is only allowed on cash accounts, not on a ${type} account`,
-        );
+        throw new BadRequestException(`locationId is only allowed on cash accounts, not on a ${type} account`);
       }
       await this.locationService.findById(fields.locationId);
     }
 
     if (fields.bankDetails) {
       if (type !== LedgerAccountType.BANK) {
-        throw new BadRequestException(
-          `bankDetails are only allowed on bank accounts, not on a ${type} account`,
-        );
+        throw new BadRequestException(`bankDetails are only allowed on bank accounts, not on a ${type} account`);
       }
       const chargeAccountId = fields.bankDetails.bankChargeAccountId;
       if (chargeAccountId) {
@@ -407,6 +432,15 @@ export class LedgerAccountService {
     if (SYSTEM_MANAGED_ACCOUNT_TYPES.includes(account.type)) {
       throw this.systemManagedError(account.type, action);
     }
+  }
+
+  /** Types a query may return: the scope's types, narrowed further by an explicit type list. Empty means no match. */
+  private allowedTypes(
+    scope: LedgerAccountScope | undefined,
+    types: readonly LedgerAccountType[] | undefined,
+  ): LedgerAccountType[] {
+    const inScope = scope ? SCOPE_ACCOUNT_TYPES[scope] : Object.values(LedgerAccountType);
+    return types?.length ? inScope.filter((type) => types.includes(type)) : [...inScope];
   }
 
   private assertSystemManagedType(type: LedgerAccountType): void {
@@ -449,9 +483,7 @@ export class LedgerAccountService {
     // keys, not the name. The attempted type/name come from the caller.
     const keyPattern = (error as { keyPattern?: Record<string, unknown> }).keyPattern;
     if (keyPattern && 'name' in keyPattern) {
-      return new ConflictException(
-        `A ${type} account named "${name}" already exists (names are case-insensitive)`,
-      );
+      return new ConflictException(`A ${type} account named "${name}" already exists (names are case-insensitive)`);
     }
     return new ConflictException(
       'Generated account code is already in use; the code counter is behind existing data and needs re-syncing (pnpm migrate:ledger-account-codes)',

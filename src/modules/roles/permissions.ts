@@ -5,6 +5,7 @@
 export const Permission = {
   ACCOUNTS_MANAGE: 'accounts:manage',
   CASH_RECEIPTS_MANAGE: 'cash-receipts:manage',
+  CASH_PAYMENTS_MANAGE: 'cash-payments:manage',
   CASHIERS_MANAGE: 'cashiers:manage',
   COMPANY_MANAGE: 'company:manage',
   LOCATIONS_MANAGE: 'locations:manage',

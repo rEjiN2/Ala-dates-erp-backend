@@ -1,34 +1,78 @@
-# Project: Dates Trading ERP — Backend
+# Ala Dates ERP: Backend
 
-## Stack
-- NestJS + TypeScript, organized by business module (party, supplier, product,
-  location, purchase, sales, inventory, accounting...)
-- MongoDB via Mongoose. Use Mongo transactions for anything touching money or
-  stock quantity so a partial write can never leave balances inconsistent.
-- File storage: adapter pattern behind a `StorageService` interface
-  (`upload`, `getUrl`, `delete`). Default implementation targets Cloudflare R2
-  via the S3-compatible SDK — never hard-code an AWS-specific SDK call outside
-  that one adapter file.
-- Auth: JWT-based, with a role/permission model (not just a single "admin"
-  role) since Stock Adjustment and other sensitive actions need approval
-  gating later.
+NestJS + TypeScript, MongoDB (Mongoose), pnpm. UAE dates-trading company,
+multi-location stock. Replaces a legacy ERP (atACC).
+
+## Working rules (read first)
+- Be economical. Read only the files you need; do not scan the whole repo.
+  Check "Where things live" before searching.
+- Mirror the closest existing module instead of inventing structure.
+  Prefer a small change to an existing service over a new abstraction.
+- Keep command output small: run targeted tests (`pnpm test <path>`), and
+  never paste long logs back into the conversation.
+- Tests: always for money/stock posting, permissions and validation rules.
+  Plain CRUD masters need only a few tests.
+- Do not commit unless asked. Never put real secrets in any tracked file;
+  `.env.example` holds placeholders only.
+- If a business rule is listed under "Open questions", ask; do not assume.
+- Finish every task with a summary of at most 10 lines: what changed, what
+  was tested, decisions I need to make.
+
+## Where things live (verify on first use, then correct this section)
+src/modules/<domain>/ with: auth, users, roles, location, product-group,
+accounts (LedgerAccount), party, cashier, company, cash-receipt,
+cash-payment, dashboard, files (storage), sequence, audit, comments.
+Shared: PERMISSIONS constant, VoucherPostingService, SequenceService,
+AuditService, StorageService interface, amount-in-words utility, sum2.
+
+## Conventions
+- Permissions: one PERMISSIONS constant, used by every @RequirePermission().
+  A new permission means: add to the constant, add to the seed. The seed
+  must be idempotent and upsert the admin role with ALL permissions. Users
+  must log in again to receive new permissions.
+- Codes: SequenceService (atomic findOneAndUpdate $inc, accepts a Mongo
+  session). Clients never send codes; codes are immutable. Prefixes:
+  BR/WH/ST/VAN (locations), PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
+  CSH (cashier), CR (receipt), CP (payment).
+- Money: LedgerAccount.Balance = debits minus credits (customer owing us is
+  positive). LedgerEntry is insert-only. Every voucher posts through
+  VoucherPostingService inside ONE Mongo transaction: voucher number,
+  entries, balances, audit. Totals are always computed server-side. Never
+  hard-delete a voucher: Cancel with a reason posts reversing entries; Edit
+  reverses and reposts; a no-change edit is rejected.
+- Audit and comments: AuditService.record(entry, session) is written in the
+  same transaction as the change. The actor comes from the JWT, never the
+  request body. Audit and comments are insert-only. /activity merges both.
+- Accounts: scope=company (cash, bank, wallet, income, expense, other) and
+  scope=party (customer, supplier). Party ledger accounts are managed only
+  by the Parties module. Receipt/Payment header account: cash, wallet or
+  bank (active). Voucher line accounts: never cash, wallet or bank.
+- Locations: one self-referencing collection. Parent rules live only in the
+  ALLOWED_PARENT_TYPES map, exposed at GET /locations/rules. Ancestors and
+  depth are maintained by the backend. Max depth 6, no cycles.
+- Delete rule for masters: block if balance is not 0 or the record is used;
+  offer deactivate instead.
+- Storage: StorageService interface with a MEGA adapter (megajs). Files are
+  private and streamed through the backend; never expose a share link or
+  import the SDK outside the adapter.
+- Auth: JWT in httpOnly cookies; GET /auth/me returns user and permissions.
+- Errors: global exception filter, one response shape; class-validator DTOs
+  with a global ValidationPipe; config validated at startup.
+- Lookups: GET /<module>/lookup returns light { id, code, name, ... } for
+  dropdowns. Time zone for display is Asia/Dubai; store UTC.
 
 ## Business context
-- Dates trading company, multi-branch, multi-location stock.
-- Location hierarchy is ONE self-referencing collection:
-  `Location { code, name, type: branch|warehouse|store|van, parentId, status }`
-  Branch and Warehouse are organizational only. Store and Van each carry their
-  own stock balance. Don't model Branch/Warehouse/Van as separate collections.
-- Bundling converts N component products into 1 finished bundle product (or
-  reverses it) — this needs its own stock-movement logic, not a generic
-  transfer.
-- Bill-wise allocation (linking a receipt/payment to specific outstanding
-  invoices) is central to the accounting flow — design the Cash
-  Receipt/Payment schema with this in mind even before it's implemented.
+Dates in many package sizes. Bundling (components into a gift pack and back)
+is a core feature and needs its own stock-movement logic. Location tree:
+Branch > Warehouse / Store / Van (vans can nest). Branch is organisational;
+warehouse, store and van hold their own stock.
 
-## Ground truth
-- Exact field lists, validation, and screen behavior come from the uploaded
-  Functional Specification. Ask for the relevant section before inventing
-  field names or business rules.
-- Anything the spec marks "Clarification Required" is a genuine open
-  question — do not silently pick an assumption for it; ask.
+## Open questions (ask, do not assume)
+Q15 extra tax types; Q17 stock on purchase invoice vs goods received;
+Q25 allocation mandatory vs on-account; Q27 when a cheque affects the bank
+balance; Q32 stock adjustment approval; Q33 transfer in-transit; Q35 to Q39
+bundling rules; Q44 history migration. VAT is stored per line only for now.
+
+## Not built, do not build unless asked
+Journal Entry, Credit/Debit Note, Advance Allocation, Bank Reconciliation,
+Contra Voucher.

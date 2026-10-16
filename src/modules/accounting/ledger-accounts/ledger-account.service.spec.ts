@@ -13,11 +13,12 @@ import {
   LedgerAccountDocument,
   LedgerAccountSchema,
   LedgerAccountStatus,
+  LedgerAccountScope,
   LedgerAccountType,
 } from './schemas/ledger-account.schema.js';
 import { CreateLedgerAccountDto } from './dto/create-ledger-account.dto.js';
 import { UpdateLedgerAccountDto } from './dto/update-ledger-account.dto.js';
-import { LedgerAccountLookupQueryDto } from './dto/ledger-account-query.dto.js';
+import { LedgerAccountLookupQueryDto, LedgerAccountQueryDto } from './dto/ledger-account-query.dto.js';
 import { CashReceiptService } from '../cash-receipts/cash-receipt.service.js';
 import { CashReceipt, CashReceiptDocument, CashReceiptSchema } from '../cash-receipts/schemas/cash-receipt.schema.js';
 import { LocationService } from '../../location/location.service.js';
@@ -37,6 +38,8 @@ import { CashierService } from '../../cashier/cashier.service.js';
 import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
 import { UsersService } from '../../users/users.service.js';
 import { User, UserSchema } from '../../users/schemas/user.schema.js';
+import { VoucherPostingService } from '../vouchers/voucher-posting.service.js';
+import { LedgerEntry, LedgerEntrySchema } from '../vouchers/schemas/ledger-entry.schema.js';
 
 const { CASH, BANK, WALLET, PARTY, SUPPLIER, INCOME, EXPENSE, OTHER } = LedgerAccountType;
 
@@ -61,6 +64,7 @@ describe('Accounts master (LedgerAccountService)', () => {
           { name: Comment.name, schema: CommentSchema },
           { name: Cashier.name, schema: CashierSchema },
           { name: User.name, schema: UserSchema },
+          { name: LedgerEntry.name, schema: LedgerEntrySchema },
         ]),
       ],
       // CashReceiptService is included so its usage check registers, exactly as in the app.
@@ -76,6 +80,7 @@ describe('Accounts master (LedgerAccountService)', () => {
         CashierService,
         CashierUsageRegistry,
         UsersService,
+        VoucherPostingService,
       ],
     }).compile();
 
@@ -206,16 +211,22 @@ describe('Accounts master (LedgerAccountService)', () => {
       expect(await accountModel.countDocuments().exec()).toBe(2);
     });
 
-    it('still appears in lists, flagged as system-managed', async () => {
+    it('is left out of the Accounts list by default, and listed (flagged) only with scope=party', async () => {
       await systemAccount(PARTY, 'P-0001');
+      await systemAccount(SUPPLIER, 'S-0001');
       await create(CASH);
 
-      const page = await service.list({ page: 1, limit: 20 });
-      const json = page.items.map((item) => item.toJSON() as { code: string; isSystemManaged: boolean });
+      const byDefault = await service.list({ page: 1, limit: 20 });
+      expect(byDefault.items.map((item) => item.code)).toEqual(['CASH-0001']);
+      expect(byDefault.total).toBe(1);
+      // Asking for the type without the scope still doesn't leak it into the master list.
+      expect((await service.list({ type: PARTY, page: 1, limit: 20 })).items).toEqual([]);
 
+      const parties = await service.list({ scope: LedgerAccountScope.PARTY, page: 1, limit: 20 });
+      const json = parties.items.map((item) => item.toJSON() as { code: string; isSystemManaged: boolean });
       expect(json.map(({ code, isSystemManaged }) => [code, isSystemManaged])).toEqual([
-        ['CASH-0001', false],
         ['P-0001', true],
+        ['S-0001', true],
       ]);
     });
   });
@@ -257,9 +268,9 @@ describe('Accounts master (LedgerAccountService)', () => {
 
     it('rejects a bank charge account that is not an expense account, or does not exist', async () => {
       const income = await create(INCOME);
-      await expect(
-        create(BANK, 'B1', { bankDetails: { bankChargeAccountId: income.id } }),
-      ).rejects.toThrow(/must be an expense account/);
+      await expect(create(BANK, 'B1', { bankDetails: { bankChargeAccountId: income.id } })).rejects.toThrow(
+        /must be an expense account/,
+      );
       await expect(
         create(BANK, 'B2', { bankDetails: { bankChargeAccountId: new Types.ObjectId().toString() } }),
       ).rejects.toBeInstanceOf(NotFoundException);
@@ -376,6 +387,55 @@ describe('Accounts master (LedgerAccountService)', () => {
       ]);
     });
 
+    it('lookup with scope=company never returns party or supplier accounts, even when their types are asked for', async () => {
+      await seedMix();
+      await systemAccount(SUPPLIER, 'S-0001');
+
+      const company = await service.lookup({ scope: LedgerAccountScope.COMPANY, limit: 50 });
+      expect(company.map((item) => item.type)).not.toContain(PARTY);
+      expect(company.map((item) => item.type)).not.toContain(SUPPLIER);
+      expect(company.map((item) => item.code)).toEqual(['BNK-0001', 'CASH-0001', 'EXP-0001', 'WAL-0001']);
+
+      expect(await service.lookup({ scope: LedgerAccountScope.COMPANY, types: [PARTY, SUPPLIER], limit: 50 })).toEqual(
+        [],
+      );
+      expect(
+        (await service.lookup({ scope: LedgerAccountScope.COMPANY, types: [BANK, PARTY], limit: 50 })).map(
+          (i) => i.code,
+        ),
+      ).toEqual(['BNK-0001']);
+      expect((await service.lookup({ scope: LedgerAccountScope.PARTY, limit: 50 })).map((i) => i.code)).toEqual([
+        'P-0001',
+        'S-0001',
+      ]);
+      expect(
+        (await service.lookup({ scope: LedgerAccountScope.PARTY, types: [SUPPLIER, CASH], limit: 50 })).map(
+          (i) => i.code,
+        ),
+      ).toEqual(['S-0001']);
+    });
+
+    it('parses scope and accepts type names in any case', async () => {
+      const parse = (query: object) =>
+        pipe.transform(query, {
+          type: 'query',
+          metatype: LedgerAccountLookupQueryDto,
+        }) as Promise<LedgerAccountLookupQueryDto>;
+      expect(await parse({ scope: 'company', types: 'Cash, BANK' })).toMatchObject({
+        scope: LedgerAccountScope.COMPANY,
+        types: [CASH, BANK],
+      });
+      for (const [query, metatype] of [
+        [{ scope: 'everything' }, LedgerAccountLookupQueryDto],
+        [{ scope: 'customers' }, LedgerAccountQueryDto],
+      ] as const) {
+        await expect(pipe.transform(query, { type: 'query', metatype })).rejects.toBeInstanceOf(BadRequestException);
+      }
+      expect(
+        ((await pipe.transform({}, { type: 'query', metatype: LedgerAccountQueryDto })) as LedgerAccountQueryDto).scope,
+      ).toBe(LedgerAccountScope.COMPANY);
+    });
+
     it('lookup filters by types and q, returns only active accounts in the compact shape', async () => {
       await seedMix();
 
@@ -402,9 +462,10 @@ describe('Accounts master (LedgerAccountService)', () => {
       const inactiveCash = await service.list({ type: CASH, status: LedgerAccountStatus.INACTIVE, page: 1, limit: 20 });
       expect(inactiveCash.items.map((item) => item.name)).toEqual(['Van Cash']);
 
+      // Six accounts seeded, but the party account is outside the default company scope.
       const page2 = await service.list({ page: 2, limit: 4 });
-      expect(page2).toMatchObject({ total: 6, page: 2, limit: 4 });
-      expect(page2.items).toHaveLength(2);
+      expect(page2).toMatchObject({ total: 5, page: 2, limit: 4 });
+      expect(page2.items).toHaveLength(1);
     });
 
     it('list search also matches a legacy code', async () => {

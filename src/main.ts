@@ -5,12 +5,14 @@ import { AppModule } from './app.module.js';
 import { createAppValidationPipe } from './common/pipes/app-validation.pipe.js';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
+import { configureHttpApp } from './common/http/configure-http-app.js';
 import type { EnvConfig } from './config/env.validation.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService<EnvConfig, true>);
 
+  configureHttpApp(app);
   app.use(cookieParser());
 
   app.useGlobalPipes(createAppValidationPipe());

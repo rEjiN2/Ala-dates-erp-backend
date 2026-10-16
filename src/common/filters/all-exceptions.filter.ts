@@ -10,8 +10,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
     const response = ctx.getResponse<Response>();
 
-    const status =
-      exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     const exceptionResponse = exception instanceof HttpException ? exception.getResponse() : null;
 
     const message = this.extractMessage(exception, exceptionResponse);
@@ -30,11 +29,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
       response.setHeader('Retry-After', String(Math.ceil(retryAfter)));
     }
 
+    // Things the client must confirm before retrying (e.g. a payment taking cash below zero).
+    const warnings =
+      exceptionResponse && typeof exceptionResponse === 'object' && 'warnings' in exceptionResponse
+        ? (exceptionResponse as { warnings: unknown }).warnings
+        : undefined;
+
     response.status(status).json({
       success: false,
       statusCode: status,
       error,
       message,
+      ...(Array.isArray(warnings) ? { warnings } : {}),
       path: request.url,
       timestamp: new Date().toISOString(),
     });
