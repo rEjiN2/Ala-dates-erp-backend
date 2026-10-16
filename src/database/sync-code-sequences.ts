@@ -3,6 +3,8 @@ import type { LocationDocument } from '../modules/location/schemas/location.sche
 import type { ProductGroupDocument } from '../modules/product/product-groups/schemas/product-group.schema.js';
 import { LOCATION_CODE_SEQUENCES } from '../modules/location/location-code.js';
 import { PRODUCT_GROUP_CODE_SEQUENCE } from '../modules/product/product-groups/product-group-code.js';
+import { PARTY_CODE_SEQUENCES } from '../modules/party/party-code.js';
+import { CASHIER_CODE_SEQUENCE } from '../modules/cashier/cashier-code.js';
 import { CodeSequence, escapeRegExp, parseSequenceCode } from '../modules/sequence/code-sequence.js';
 import type { SequenceService } from '../modules/sequence/sequence.service.js';
 
@@ -17,7 +19,8 @@ export interface CodeSequenceSyncResult {
 
 interface CodeSource {
   sequence: CodeSequence;
-  model: Model<any>;
+  /** Every collection a code in this sequence can appear in. */
+  models: Model<any>[];
 }
 
 /**
@@ -36,15 +39,31 @@ export async function syncCodeSequences(deps: {
   locationModel: Model<LocationDocument>;
   productGroupModel: Model<ProductGroupDocument>;
   sequenceService: SequenceService;
+  /**
+   * Party codes (CUS-/SUP-) are also the codes of their ledger accounts, and
+   * ledger codes are unique, so both collections are scanned: a hand-entered
+   * supplier ledger account "SUP-0007" must push the counter past 7.
+   */
+  partyModel?: Model<any>;
+  ledgerAccountModel?: Model<any>;
+  cashierModel?: Model<any>;
 }): Promise<CodeSequenceSyncResult[]> {
+  const partyCodeHolders = [deps.partyModel, deps.ledgerAccountModel].filter((model) => model !== undefined);
   const sources: CodeSource[] = [
-    ...Object.values(LOCATION_CODE_SEQUENCES).map((sequence) => ({ sequence, model: deps.locationModel })),
-    { sequence: PRODUCT_GROUP_CODE_SEQUENCE, model: deps.productGroupModel },
+    ...Object.values(LOCATION_CODE_SEQUENCES).map((sequence) => ({ sequence, models: [deps.locationModel] })),
+    { sequence: PRODUCT_GROUP_CODE_SEQUENCE, models: [deps.productGroupModel] },
+    ...(partyCodeHolders.length > 0
+      ? Object.values(PARTY_CODE_SEQUENCES).map((sequence) => ({ sequence, models: partyCodeHolders }))
+      : []),
+    ...(deps.cashierModel ? [{ sequence: CASHIER_CODE_SEQUENCE, models: [deps.cashierModel] }] : []),
   ];
 
   const results: CodeSequenceSyncResult[] = [];
-  for (const { sequence, model } of sources) {
-    const highestExisting = await highestSuffix(model, sequence);
+  for (const { sequence, models } of sources) {
+    let highestExisting = 0;
+    for (const model of models) {
+      highestExisting = Math.max(highestExisting, await highestSuffix(model, sequence));
+    }
     const counter = await deps.sequenceService.ensureAtLeast(sequence.key, highestExisting);
     results.push({ key: sequence.key, prefix: sequence.prefix, highestExisting, counter });
   }

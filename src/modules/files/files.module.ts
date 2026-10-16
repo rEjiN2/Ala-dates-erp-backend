@@ -26,6 +26,8 @@ import { FilesController } from './files.controller.js';
   ],
   controllers: [FilesController],
   providers: [FilesService],
-  exports: [FilesService],
+  // MulterModule is re-exported so other modules' upload routes (e.g. party
+  // documents) get the same size cap through FileInterceptor.
+  exports: [FilesService, MulterModule],
 })
 export class FilesModule {}

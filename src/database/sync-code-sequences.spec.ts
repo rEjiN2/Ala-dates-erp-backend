@@ -122,4 +122,22 @@ describe('syncCodeSequences', () => {
 
     expect((await locationService.create({ name: 'New', type: LocationType.BRANCH })).code).toBe('BR-0101');
   });
+
+  it('raises the party counters above CUS-/SUP- codes held by parties or ledger accounts', async () => {
+    // The party and ledger collections are stood in for by the location and
+    // product group models: syncCodeSequences only reads their `code` field.
+    await locationModel.collection.insertMany([{ code: 'CUS-0004' }, { code: 'SUP-0002' }]);
+    await productGroupModel.collection.insertMany([{ code: 'SUP-0009' }, { code: 'SUP-LEGACY' }]);
+
+    const results = await syncCodeSequences({
+      locationModel,
+      productGroupModel,
+      sequenceService,
+      partyModel: locationModel,
+      ledgerAccountModel: productGroupModel,
+    });
+
+    expect(results.find((r) => r.key === 'party:customer')).toMatchObject({ highestExisting: 4, counter: 4 });
+    expect(results.find((r) => r.key === 'party:supplier')).toMatchObject({ highestExisting: 9, counter: 9 });
+  });
 });

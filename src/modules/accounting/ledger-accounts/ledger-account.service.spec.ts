@@ -27,6 +27,16 @@ import { Counter, CounterDocument, CounterSchema } from '../../sequence/schemas/
 import { ADMIN_PERMISSIONS, Permission } from '../../roles/permissions.js';
 import { REQUIRE_PERMISSION_KEY } from '../../../common/decorators/require-permission.decorator.js';
 import { createAppValidationPipe } from '../../../common/pipes/app-validation.pipe.js';
+import { AuditService } from '../../audit/audit.service.js';
+import { AuditLog, AuditLogSchema } from '../../audit/schemas/audit-log.schema.js';
+import { CommentsService } from '../../comments/comments.service.js';
+import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
+import { Comment, CommentSchema } from '../../comments/schemas/comment.schema.js';
+import { Cashier, CashierSchema } from '../../cashier/schemas/cashier.schema.js';
+import { CashierService } from '../../cashier/cashier.service.js';
+import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
+import { UsersService } from '../../users/users.service.js';
+import { User, UserSchema } from '../../users/schemas/user.schema.js';
 
 const { CASH, BANK, WALLET, PARTY, SUPPLIER, INCOME, EXPENSE, OTHER } = LedgerAccountType;
 
@@ -47,10 +57,26 @@ describe('Accounts master (LedgerAccountService)', () => {
           { name: CashReceipt.name, schema: CashReceiptSchema },
           { name: Location.name, schema: LocationSchema },
           { name: Counter.name, schema: CounterSchema },
+          { name: AuditLog.name, schema: AuditLogSchema },
+          { name: Comment.name, schema: CommentSchema },
+          { name: Cashier.name, schema: CashierSchema },
+          { name: User.name, schema: UserSchema },
         ]),
       ],
       // CashReceiptService is included so its usage check registers, exactly as in the app.
-      providers: [LedgerAccountService, LedgerAccountUsageRegistry, CashReceiptService, LocationService, SequenceService],
+      providers: [
+        LedgerAccountService,
+        LedgerAccountUsageRegistry,
+        CashReceiptService,
+        LocationService,
+        SequenceService,
+        AuditService,
+        CommentsService,
+        EntityAccessRegistry,
+        CashierService,
+        CashierUsageRegistry,
+        UsersService,
+      ],
     }).compile();
 
     service = moduleRef.get(LedgerAccountService);
@@ -335,6 +361,20 @@ describe('Accounts master (LedgerAccountService)', () => {
       await create(EXPENSE, 'Main Rent');
       await systemAccount(PARTY, 'P-0001');
     }
+
+    it('lookup?types=cash,wallet,bank returns the accounts a receipt can be received into', async () => {
+      await seedMix();
+      const query = (await pipe.transform(
+        { types: 'cash,wallet,bank' },
+        { type: 'query', metatype: LedgerAccountLookupQueryDto },
+      )) as LedgerAccountLookupQueryDto;
+
+      expect((await service.lookup(query)).map((item) => [item.code, item.type])).toEqual([
+        ['BNK-0001', BANK],
+        ['CASH-0001', CASH],
+        ['WAL-0001', WALLET],
+      ]);
+    });
 
     it('lookup filters by types and q, returns only active accounts in the compact shape', async () => {
       await seedMix();

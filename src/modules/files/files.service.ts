@@ -102,6 +102,21 @@ export class FilesService {
     };
   }
 
+  /** Metadata only, without touching storage. */
+  async describe(id: string): Promise<StoredFileResponse> {
+    return this.toResponse(await this.getByIdOrThrow(id));
+  }
+
+  /** The whole file in memory, for embedding (e.g. a logo in a PDF). Keep to small files. */
+  async readBuffer(id: string): Promise<{ buffer: Buffer; mimeType: string }> {
+    const file = await this.download(id);
+    const chunks: Buffer[] = [];
+    for await (const chunk of file.stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+    }
+    return { buffer: Buffer.concat(chunks), mimeType: file.mimeType };
+  }
+
   async remove(id: string): Promise<{ success: true }> {
     const attachment = await this.getByIdOrThrow(id);
 

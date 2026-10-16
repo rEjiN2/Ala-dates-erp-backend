@@ -22,6 +22,7 @@
     "migrate:code-sequences": "nest build && node dist/database/migrate-code-sequences.js",
     "migrate:location-ancestors": "nest build && node dist/database/migrate-location-ancestors.js",
     "migrate:ledger-account-codes": "nest build && node dist/database/migrate-ledger-account-codes.js",
+    "migrate:cash-receipt-cashiers": "nest build && node dist/database/migrate-cash-receipt-cashiers.js",
     "lint": "oxlint --type-aware src/ test/",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -48,6 +49,7 @@
     "multer": "^2.4.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "pdfmake": "0.3.11",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "zod": "^4.6.5"
@@ -62,6 +64,7 @@
     "@types/multer": "^2.2.0",
     "@types/node": "^24.0.0",
     "@types/passport-jwt": "^4.0.1",
+    "@types/pdfmake": "0.3.3",
     "@types/supertest": "^7.0.0",
     "@vitest/coverage-v8": "^4.1.2",
     "mongodb-memory-server": "^11.2.0",

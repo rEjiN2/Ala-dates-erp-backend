@@ -12,6 +12,7 @@ import { LedgerAccountService } from '../modules/accounting/ledger-accounts/ledg
 import { Counter, CounterDocument } from '../modules/sequence/schemas/counter.schema.js';
 import { Role, RoleDocument } from '../modules/roles/schemas/role.schema.js';
 import { ensureAdminRole } from './seed-roles.js';
+import { CompanyService } from '../modules/company/company.service.js';
 
 const CASH_ACCOUNT_NAMES = ['Main Cash Counter', 'Branch Petty Cash'];
 
@@ -43,6 +44,13 @@ async function seed(): Promise<void> {
       .exec();
     logger.log('Voucher counter ready: cash-receipt');
 
+    // Created with the defaults (ALA DATES LLC, Jurf 3, Ajman) only if missing;
+    // an edited profile is left as it is.
+    const company = await app.get(CompanyService).ensure();
+    logger.log(`Company profile ready: ${company.legalName}`);
+
+    // ADMIN_PERMISSIONS is every value of the Permission constant, so this
+    // also grants cashiers:manage and company:manage to an existing admin role.
     const adminRole = await ensureAdminRole(app.get<Model<RoleDocument>>(getModelToken(Role.name)));
     logger.log(`Role ready: ${adminRole.name} (${adminRole.permissions.join(', ')})`);
   } finally {

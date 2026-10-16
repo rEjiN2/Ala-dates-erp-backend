@@ -28,6 +28,13 @@ import { escapeRegExp } from '../../sequence/code-sequence.js';
 import { round2 } from '../../../common/utils/money.util.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
+/** Account types money can be received into on a receipt voucher. */
+export const RECEIPT_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
+  LedgerAccountType.CASH,
+  LedgerAccountType.WALLET,
+  LedgerAccountType.BANK,
+];
+
 export interface LedgerAccountPage {
   items: LedgerAccountDocument[];
   total: number;
@@ -211,18 +218,80 @@ export class LedgerAccountService {
     });
   }
 
+  /**
+   * Creates the ledger account behind a party or supplier. Only the Parties
+   * module calls this, always inside its own transaction, so the two records
+   * are created or rolled back together. The balance always starts at 0:
+   * opening balances are posted separately.
+   */
+  async createSystemAccount(
+    input: { code: string; name: string; type: LedgerAccountType; status: LedgerAccountStatus },
+    session: ClientSession,
+  ): Promise<LedgerAccountDocument> {
+    this.assertSystemManagedType(input.type);
+    try {
+      const [created] = await this.ledgerAccountModel.create(
+        [{ code: input.code, name: input.name, type: input.type, balance: 0, status: input.status }],
+        { session },
+      );
+      return created;
+    } catch (error) {
+      throw this.toFriendlyError(error, input.type, input.name);
+    }
+  }
+
+  /** Keeps a party/supplier ledger account's name and status in step with its party. Caller's transaction only. */
+  async syncSystemAccount(
+    id: Types.ObjectId,
+    changes: { name?: string; status?: LedgerAccountStatus },
+    session: ClientSession,
+  ): Promise<void> {
+    const account = await this.findById(id.toString(), session);
+    this.assertSystemManagedType(account.type);
+    if (changes.name !== undefined) account.name = changes.name;
+    if (changes.status !== undefined) account.status = changes.status;
+    try {
+      await account.save({ session });
+    } catch (error) {
+      throw this.toFriendlyError(error, account.type, account.name);
+    }
+  }
+
+  /** Deletes a party/supplier ledger account. The caller has already checked balance and usage. */
+  async deleteSystemAccount(id: Types.ObjectId, session: ClientSession): Promise<void> {
+    const account = await this.findById(id.toString(), session);
+    this.assertSystemManagedType(account.type);
+    await this.ledgerAccountModel.deleteOne({ _id: account._id }, { session }).exec();
+  }
+
+  /** The account of this type with this name, ignoring case, or null. */
+  async findByTypeAndName(
+    type: LedgerAccountType,
+    name: string,
+    session?: ClientSession,
+  ): Promise<LedgerAccountDocument | null> {
+    return this.ledgerAccountModel
+      .findOne({ type, name: name.trim() })
+      .collation({ locale: 'en', strength: 2 })
+      .session(session ?? null)
+      .exec();
+  }
+
   /** True when any registered module (vouchers, bank details, ...) references the account. */
   async isLedgerAccountUsed(id: string, session?: ClientSession): Promise<boolean> {
     return (await this.usageRegistry.findUsage(new Types.ObjectId(id), session)) !== null;
   }
 
-  /** Resolves the posting account for a cash voucher, rejecting anything that is not a usable cash account. */
-  async findActiveCashAccount(id: string): Promise<LedgerAccountDocument> {
+  /**
+   * Resolves the "received into" account of a receipt voucher: an active
+   * cash, wallet or bank account. Anything else is rejected.
+   */
+  async findActiveReceiptAccount(id: string): Promise<LedgerAccountDocument> {
     const account = await this.findById(id);
 
-    if (account.type !== LedgerAccountType.CASH) {
+    if (!RECEIPT_ACCOUNT_TYPES.includes(account.type)) {
       throw new BadRequestException(
-        `Ledger account ${account.code} is of type "${account.type}", a cash receipt must post to a "cash" account`,
+        `Ledger account ${account.code} is of type "${account.type}"; a receipt must be received into a cash, wallet or bank account`,
       );
     }
     if (account.status !== LedgerAccountStatus.ACTIVE) {
@@ -247,6 +316,23 @@ export class LedgerAccountService {
       .exec();
 
     return new Map(accounts.map((account) => [account._id.toString(), account.balance]));
+  }
+
+  /** Account names for display (lists, audit diffs). Missing accounts are simply absent from the map. */
+  async getNames(ids: readonly string[], session?: ClientSession): Promise<Map<string, string>> {
+    const objectIds = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+    if (objectIds.length === 0) {
+      return new Map();
+    }
+
+    const accounts = await this.ledgerAccountModel
+      .find({ _id: { $in: objectIds } })
+      .select('name')
+      .session(session ?? null)
+      .lean()
+      .exec();
+
+    return new Map(accounts.map((account) => [account._id.toString(), account.name]));
   }
 
   /**
@@ -320,6 +406,12 @@ export class LedgerAccountService {
   private assertNotSystemManaged(account: LedgerAccountDocument, action: string): void {
     if (SYSTEM_MANAGED_ACCOUNT_TYPES.includes(account.type)) {
       throw this.systemManagedError(account.type, action);
+    }
+  }
+
+  private assertSystemManagedType(type: LedgerAccountType): void {
+    if (!SYSTEM_MANAGED_ACCOUNT_TYPES.includes(type)) {
+      throw new BadRequestException(`Only party and supplier accounts are managed by the Parties module, not ${type}`);
     }
   }
 

@@ -19,6 +19,10 @@ import { AccountingModule } from './modules/accounting/accounting.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
 import { FilesModule } from './modules/files/files.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
+import { AuditModule } from './modules/audit/audit.module.js';
+import { CommentsModule } from './modules/comments/comments.module.js';
+import { CashierModule } from './modules/cashier/cashier.module.js';
+import { CompanyModule } from './modules/company/company.module.js';
 
 @Module({
   imports: [
@@ -60,6 +64,10 @@ import { DashboardModule } from './modules/dashboard/dashboard.module.js';
     StorageModule,
     FilesModule,
     DashboardModule,
+    AuditModule,
+    CommentsModule,
+    CashierModule,
+    CompanyModule,
   ],
 })
 export class AppModule implements NestModule {

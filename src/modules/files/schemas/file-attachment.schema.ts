@@ -6,6 +6,7 @@ export enum FileOwnerType {
   SUPPLIER = 'supplier',
   PRODUCT = 'product',
   BUNDLE = 'bundle',
+  COMPANY = 'company',
   OTHER = 'other',
 }
 

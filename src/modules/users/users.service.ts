@@ -29,6 +29,29 @@ export class UsersService {
     return this.userModel.findById(id).select('+refreshTokenHash').populate('role').exec();
   }
 
+  /** Names by id, for display; unknown ids are absent. */
+  async findNames(ids: readonly string[]): Promise<Map<string, string>> {
+    const objectIds = ids.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+    if (objectIds.length === 0) {
+      return new Map();
+    }
+    const users = await this.userModel.find({ _id: { $in: objectIds } }).select('name').lean().exec();
+    return new Map(users.map((user) => [user._id.toString(), user.name]));
+  }
+
+  async exists(id: string): Promise<boolean> {
+    return Types.ObjectId.isValid(id) && Boolean(await this.userModel.exists({ _id: id }).exec());
+  }
+
+  /**
+   * Every user, inactive ones included, for filters such as "Created by":
+   * a deactivated user can still be the creator of existing records.
+   */
+  async lookup(): Promise<{ id: string; name: string }[]> {
+    const users = await this.userModel.find().select('name').sort({ name: 1 }).lean().exec();
+    return users.map((user) => ({ id: user._id.toString(), name: user.name }));
+  }
+
   async setRefreshTokenHash(id: string, refreshTokenHash: string | null): Promise<void> {
     await this.userModel.updateOne({ _id: id }, { refreshTokenHash }).exec();
   }

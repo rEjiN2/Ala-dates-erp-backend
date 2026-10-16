@@ -5,7 +5,10 @@
 export const Permission = {
   ACCOUNTS_MANAGE: 'accounts:manage',
   CASH_RECEIPTS_MANAGE: 'cash-receipts:manage',
+  CASHIERS_MANAGE: 'cashiers:manage',
+  COMPANY_MANAGE: 'company:manage',
   LOCATIONS_MANAGE: 'locations:manage',
+  PARTIES_MANAGE: 'parties:manage',
   PRODUCT_GROUPS_MANAGE: 'product-groups:manage',
   /** Read every ledger balance (incl. each party/supplier) in one call. */
   DASHBOARD_VIEW: 'dashboard:view',
