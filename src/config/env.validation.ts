@@ -10,7 +10,25 @@ const baseEnvSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
-  COOKIE_DOMAIN: z.string().optional(),
+  /**
+   * Bare domain the auth cookies are scoped to, e.g. ".example.com" when the
+   * API and frontend share a parent domain. Leave unset to scope them to the
+   * API's own host (required when they are on different sites, e.g. two
+   * *.vercel.app projects). A bad value would otherwise only surface as a
+   * crash on login, so it is checked here.
+   */
+  COOKIE_DOMAIN: z
+    .string()
+    .trim()
+    .regex(
+      /^\.?[a-z0-9-]+(\.[a-z0-9-]+)*$/i,
+      'COOKIE_DOMAIN must be a bare domain like ".example.com" (no https://, path, port or quotes), or left empty',
+    )
+    .refine(
+      (domain) => !/^\.?vercel\.app$/i.test(domain),
+      'COOKIE_DOMAIN cannot be "vercel.app": browsers reject cookies for that shared suffix. Leave it empty',
+    )
+    .optional(),
   COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).default('lax'),
   CORS_ORIGIN: z.string().optional(),
 
@@ -65,8 +83,11 @@ export type EnvConfig = z.infer<typeof envSchema>;
 
 export function validateEnv(config: Record<string, unknown>): EnvConfig {
   // `KEY=` in a .env file arrives as "", which would fail e.g. `.url().optional()`
-  // for a provider that isn't even selected. Blank means "not set".
-  const provided = Object.fromEntries(Object.entries(config).filter(([, value]) => value !== ''));
+  // for a provider that isn't even selected. Blank (or only spaces, easy to
+  // save by accident in a hosting dashboard) means "not set".
+  const provided = Object.fromEntries(
+    Object.entries(config).filter(([, value]) => !(typeof value === 'string' && value.trim() === '')),
+  );
   const parsed = envSchema.safeParse(provided);
   if (!parsed.success) {
     const issues = parsed.error.issues
