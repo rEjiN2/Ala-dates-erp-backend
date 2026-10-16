@@ -17,7 +17,7 @@ import { PermissionsGuard } from '../../common/guards/permissions.guard.js';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
-import { Permission } from '../roles/permissions.js';
+import { Permission, hasPermission } from '../roles/permissions.js';
 import { PartyService } from './party.service.js';
 import {
   CreatePartyDto,
@@ -39,9 +39,12 @@ export class PartyController {
   }
 
   // Declared before ':id' so "lookup" is not captured as an id.
+  /** Every active party (name, code); the ledger balance only with balances:view. */
   @Get('lookup')
-  lookup(@Query() query: PartyLookupQueryDto) {
-    return this.partyService.lookup(query);
+  async lookup(@Query() query: PartyLookupQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const parties = await this.partyService.lookup(query);
+    if (hasPermission(user, Permission.BALANCES_VIEW)) return parties;
+    return parties.map(({ balance: _balance, ...party }) => party);
   }
 
   @Get(':id')

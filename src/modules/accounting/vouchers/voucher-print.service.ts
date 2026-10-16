@@ -7,6 +7,7 @@ import { VoucherStatus } from './schemas/voucher.schema.js';
 import type { VoucherDefinition } from './voucher-definition.js';
 import type { VoucherModel } from './voucher-posting.service.js';
 import { buildVoucherPdf, copyLabel } from './voucher-pdf.js';
+import { withScope } from './data-scope.js';
 import { LedgerAccountService } from '../ledger-accounts/ledger-account.service.js';
 import { CompanyService } from '../../company/company.service.js';
 import { AuditService } from '../../audit/audit.service.js';
@@ -38,7 +39,14 @@ export class VoucherPrintService {
    * printCount increment means two simultaneous prints can't both be the
    * ORIGINAL, and a render that fails leaves neither a count nor an entry.
    */
-  async print(def: VoucherDefinition, model: VoucherModel, id: string, actor: Actor): Promise<PrintedVoucher> {
+  /** `scope` (from VoucherPostingService.scopeFilter) limits which vouchers the actor may print; others are 404. */
+  async print(
+    def: VoucherDefinition,
+    model: VoucherModel,
+    id: string,
+    actor: Actor,
+    scope: Record<string, unknown> | null = null,
+  ): Promise<PrintedVoucher> {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException(`${def.label} id "${id}" is not a valid id`);
     }
@@ -48,7 +56,7 @@ export class VoucherPrintService {
     return runInTransaction(this.connection, async (session) => {
       const voucher = await model
         .findOneAndUpdate(
-          { _id: new Types.ObjectId(id) },
+          withScope({ _id: new Types.ObjectId(id) }, scope),
           { $inc: { printCount: 1 } },
           { returnDocument: 'after', session },
         )

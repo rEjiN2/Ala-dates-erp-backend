@@ -19,17 +19,25 @@ multi-location stock. Replaces a legacy ERP (atACC).
   was tested, decisions I need to make.
 
 ## Where things live (verify on first use, then correct this section)
-src/modules/<domain>/ with: auth, users, roles, location, product-group,
-accounts (LedgerAccount), party, cashier, company, cash-receipt,
-cash-payment, dashboard, files (storage), sequence, audit, comments.
-Shared: PERMISSIONS constant, VoucherPostingService, SequenceService,
-AuditService, StorageService interface, amount-in-words utility, sum2.
+src/modules/<domain>/ with: auth, users (UsersService + UserManagementService),
+roles (permissions.ts = PERMISSIONS constant + seeded role sets), location,
+product, party, cashier, company, dashboard, files, storage, sequence, audit,
+comments (+ EntityAccessRegistry). Accounting lives in src/modules/accounting/:
+ledger-accounts, cash-receipts, cash-payments, vouchers (VoucherPostingService,
+VoucherPrintService, data-scope.ts helper, voucher-view.ts balance redaction).
+Seeds: src/database/seed.ts + seed-roles.ts. Test harness: test/voucher-test-module.ts.
+Shared: SequenceService, AuditService, StorageService, amount-in-words, sum2.
 
 ## Conventions
 - Permissions: one PERMISSIONS constant, used by every @RequirePermission().
   A new permission means: add to the constant, add to the seed. The seed
-  must be idempotent and upsert the admin role with ALL permissions. Users
-  must log in again to receive new permissions.
+  must be idempotent and upsert the admin role with ALL permissions. The JWT
+  strategy reloads user + role every request, so permission, scope and status
+  changes apply at once (only the frontend's cached /auth/me is stale).
+- Data scope: role.dataScope own|all. "own" users see only vouchers they
+  created or on their linked cashier (others 404) and post only for that
+  cashier into User.allowedCashAccountIds (else 403). Balances need
+  balances:view.
 - Codes: SequenceService (atomic findOneAndUpdate $inc, accepts a Mongo
   session). Clients never send codes; codes are immutable. Prefixes:
   BR/WH/ST/VAN (locations), PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,

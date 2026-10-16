@@ -1,4 +1,5 @@
 import type { CodeSequence } from '../../sequence/code-sequence.js';
+import type { Permission } from '../../roles/permissions.js';
 import type { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
 
 /** Which side of the ledger the header account is on. */
@@ -31,6 +32,8 @@ export interface VoucherDefinition {
   warnOnOverdraw: boolean;
   /** Usage registry source name, e.g. "cash receipts". */
   usageSource: string;
+  /** Needed to read the voucher, its comments and its activity. */
+  readPermission: Permission;
   pdf: {
     /** Title by payment method. */
     titles: { cash: string; bank: string };

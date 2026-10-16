@@ -583,6 +583,22 @@ describe('Parties (PartyService)', () => {
       expect(ADMIN_PERMISSIONS).toContain(Permission.PARTIES_MANAGE);
     });
 
+    it('lists every customer in the lookup, with balances only for balances:view', async () => {
+      await create({ name: 'Ali Traders' });
+      const server = app.getHttpServer();
+      const viewer = { id: admin.id, email: 'v@x.ae', name: 'Viewer', role: { id: 'r', name: 'viewer' } };
+
+      tokenUser = { ...viewer, permissions: [] };
+      const hidden = await request(server).get('/parties/lookup').query({ kind: 'customer' });
+      expect(hidden.body).toEqual([
+        { id: expect.any(String), code: 'CUS-0001', name: 'Ali Traders', kind: 'customer', ledgerAccountId: expect.any(String) },
+      ]);
+
+      tokenUser = { ...viewer, permissions: [Permission.BALANCES_VIEW] };
+      const shown = await request(server).get('/parties/lookup').query({ kind: 'customer' });
+      expect(shown.body[0]).toMatchObject({ code: 'CUS-0001', balance: 0 });
+    });
+
     it('is accepted by comments and the activity timeline as entityType "party"', async () => {
       const party = await create({ name: 'Ali Traders' });
       await expect(entityAccess.assertReadable('party', party.id, tokenUser)).resolves.toEqual(

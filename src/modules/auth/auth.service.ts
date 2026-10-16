@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import bcrypt from 'bcryptjs';
 import { UsersService } from '../users/users.service.js';
+import { isUserActive } from '../users/schemas/user.schema.js';
 import type { EnvConfig } from '../../config/env.validation.js';
 import type { AuthenticatedUser, JwtAccessPayload, JwtRefreshPayload } from './interfaces/auth.types.js';
 import type { UserDocument } from '../users/schemas/user.schema.js';
@@ -23,7 +24,7 @@ export class AuthService {
 
   async validateCredentials(email: string, password: string): Promise<UserDocument> {
     const user = await this.usersService.findByEmailWithCredentials(email);
-    if (!user || !user.isActive) {
+    if (!user || !isUserActive(user)) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -65,7 +66,7 @@ export class AuthService {
 
   async rotateRefreshToken(userId: string, presentedRefreshToken: string): Promise<AuthTokens> {
     const user = await this.usersService.findByIdWithRefreshHash(userId);
-    if (!user || !user.isActive || !user.refreshTokenHash) {
+    if (!user || !isUserActive(user) || !user.refreshTokenHash) {
       throw new UnauthorizedException('Session expired, please log in again');
     }
 
@@ -77,18 +78,20 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
+  /** The user with their role, for issuing tokens after a password change. */
+  async reloadForTokens(userId: string): Promise<UserDocument> {
+    const user = await this.usersService.findByIdWithRole(userId);
+    if (!user || !isUserActive(user)) {
+      throw new UnauthorizedException('User no longer active');
+    }
+    return user;
+  }
+
   async logout(userId: string): Promise<void> {
     await this.usersService.setRefreshTokenHash(userId, null);
   }
 
   toAuthenticatedUser(user: UserDocument): AuthenticatedUser {
-    const role = user.role as RoleDocument;
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: { id: role.id, name: role.name },
-      permissions: role.permissions,
-    };
+    return this.usersService.toAuthenticatedUser(user);
   }
 }

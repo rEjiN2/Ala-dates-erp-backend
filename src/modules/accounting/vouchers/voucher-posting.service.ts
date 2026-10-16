@@ -31,6 +31,16 @@ import {
   userRefOf,
 } from '../../../common/schemas/user-snapshot.schema.js';
 import { round2, sum2 } from '../../../common/utils/money.util.js';
+import { hasPermission } from '../../roles/permissions.js';
+import {
+  type LinkedCashier,
+  type ScopedUser,
+  assertScopedHeaderAccount,
+  isOwnScope,
+  resolveScopedCashier,
+  voucherScopeFilter,
+  withScope,
+} from './data-scope.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
 export type VoucherModel = Model<VoucherDocument>;
@@ -47,7 +57,8 @@ export interface VoucherLineInput {
 export interface VoucherCreateInput {
   voucherDate: string;
   headerAccountId: string;
-  cashierId: string;
+  /** Required unless the user is "own"-scoped: their linked cashier is then used. */
+  cashierId?: string;
   paymentReference?: string | null;
   comments?: string;
   lines: VoucherLineInput[];
@@ -209,19 +220,34 @@ export class VoucherPostingService {
           .exec(),
       ),
     );
-    // Readable by anyone logged in, the same rule as the voucher's GET routes.
+    // Comments and activity follow the voucher's GET routes: the read
+    // permission, and for "own"-scoped users only their own vouchers.
     this.entityAccess.register(def.entityType, {
-      exists: async (id) => Boolean(await model.exists({ _id: id }).exec()),
-      canRead: () => true,
+      exists: async (id, user) => Boolean(await model.exists(withScope({ _id: id }, await this.scopeFilter(user))).exec()),
+      canRead: (user) => hasPermission(user, def.readPermission),
     });
+  }
+
+  /** Mongo filter limiting `user` to the vouchers they may see; null when they see all. */
+  async scopeFilter(user: ScopedUser | undefined): Promise<Record<string, unknown> | null> {
+    if (!isOwnScope(user)) {
+      return null;
+    }
+    return voucherScopeFilter(user, await this.linkedCashierOf(user));
+  }
+
+  private async linkedCashierOf(user: ScopedUser): Promise<LinkedCashier | null> {
+    const cashier = await this.cashierService.findByLinkedUser(user.id);
+    return cashier ? { id: cashier.id as string, code: cashier.code, name: cashier.name } : null;
   }
 
   async list(
     def: VoucherDefinition,
     model: VoucherModel,
     query: VoucherListQuery,
+    viewer?: ScopedUser,
   ): Promise<VoucherPage<VoucherListRow>> {
-    const filter = this.listFilter(def, query);
+    const filter = withScope(this.listFilter(def, query), await this.scopeFilter(viewer));
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const direction: SortOrder = query.sortDir === 'asc' ? 1 : -1;
@@ -295,29 +321,42 @@ export class VoucherPostingService {
     };
   }
 
-  async findById(def: VoucherDefinition, model: VoucherModel, id: string): Promise<VoucherDocument> {
+  /** A voucher outside the viewer's data scope is reported as not found. */
+  async findById(def: VoucherDefinition, model: VoucherModel, id: string, viewer?: ScopedUser): Promise<VoucherDocument> {
     this.assertValidId(def, id);
-    const voucher = await model.findById(id).exec();
+    const voucher = await model.findOne(withScope({ _id: new Types.ObjectId(id) }, await this.scopeFilter(viewer))).exec();
     if (!voucher) {
       throw new NotFoundException(`${def.label} ${id} not found`);
     }
     return voucher;
   }
 
-  /** `actor` is the authenticated user; nothing in the input can set who created the voucher. */
+  /**
+   * `actor` is the authenticated user; nothing in the input can set who
+   * created the voucher. An "own"-scoped actor posts only for their linked
+   * cashier and into one of their allowed cash accounts (403 otherwise).
+   */
   async create(
     def: VoucherDefinition,
     model: VoucherModel,
     input: VoucherCreateInput,
-    actor: Actor,
+    actor: Actor & ScopedUser,
   ): Promise<VoucherDocument> {
+    let cashierId = input.cashierId;
+    if (isOwnScope(actor)) {
+      cashierId = resolveScopedCashier(await this.linkedCashierOf(actor), input.cashierId, def.label);
+      assertScopedHeaderAccount(actor, input.headerAccountId, def.label);
+    }
+    if (!cashierId) {
+      throw new BadRequestException('cashierId is required');
+    }
     const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(input.headerAccountId);
     const pricedLines = this.priceLines(input.lines);
     this.assertHeaderNotOnLines(def, input.headerAccountId, pricedLines);
 
     return runInTransaction(this.connection, async (session) => {
       await this.assertLineAccountTypes(def, pricedLines, session);
-      const cashier = await this.cashierService.findActiveForPosting(input.cashierId, session);
+      const cashier = await this.cashierService.findActiveForPosting(cashierId, session);
       const watch = await this.watchBalances(def, [input.headerAccountId], session);
       const lines = await this.snapshotLines(pricedLines, session);
       // Issued on the transaction's session: if anything below aborts, the
@@ -379,13 +418,22 @@ export class VoucherPostingService {
     model: VoucherModel,
     id: string,
     input: VoucherUpdateInput,
-    actor: Actor,
+    actor: Actor & ScopedUser,
   ): Promise<VoucherDocument> {
-    const current = await this.findById(def, model, id);
+    const current = await this.findById(def, model, id, actor);
     this.assertNotCancelled(def, current, 'edited');
 
     const currentHeaderId = this.headerOf(def, current).toString();
     const nextHeaderId = input.headerAccountId ?? currentHeaderId;
+    if (isOwnScope(actor)) {
+      // Keeping what the voucher already has is fine; changing it follows the create rules.
+      if (input.cashierId && input.cashierId !== current.cashierId?.toString()) {
+        resolveScopedCashier(await this.linkedCashierOf(actor), input.cashierId, def.label);
+      }
+      if (nextHeaderId !== currentHeaderId) {
+        assertScopedHeaderAccount(actor, nextHeaderId, def.label);
+      }
+    }
     const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(nextHeaderId);
     const pricedLines = input.lines ? this.priceLines(input.lines) : null;
 
@@ -490,9 +538,10 @@ export class VoucherPostingService {
     model: VoucherModel,
     id: string,
     rawReason: unknown,
-    actor: Actor,
+    actor: Actor & ScopedUser,
   ): Promise<VoucherDocument> {
     this.assertValidId(def, id);
+    const scope = await this.scopeFilter(actor);
     const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
     if (reason.length < CANCEL_REASON_MIN_LENGTH) {
       throw new BadRequestException(
@@ -501,7 +550,10 @@ export class VoucherPostingService {
     }
 
     return runInTransaction(this.connection, async (session) => {
-      const existing = await model.findById(id).session(session).exec();
+      const existing = await model
+        .findOne(withScope({ _id: new Types.ObjectId(id) }, scope))
+        .session(session)
+        .exec();
       if (!existing) {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
@@ -534,8 +586,13 @@ export class VoucherPostingService {
   }
 
   /** Hard delete, reversing the posting first unless a cancel already did. */
-  async remove(def: VoucherDefinition, model: VoucherModel, id: string): Promise<{ success: true }> {
-    const existing = await this.findById(def, model, id);
+  async remove(
+    def: VoucherDefinition,
+    model: VoucherModel,
+    id: string,
+    viewer?: ScopedUser,
+  ): Promise<{ success: true }> {
+    const existing = await this.findById(def, model, id, viewer);
 
     return runInTransaction(this.connection, async (session) => {
       if (existing.status !== VoucherStatus.CANCELLED) {

@@ -22,10 +22,15 @@ import { CashReceiptPrintService } from './cash-receipt-print.service.js';
 import { CreateCashReceiptDto } from './dto/create-cash-receipt.dto.js';
 import { CancelCashReceiptDto, UpdateCashReceiptDto } from './dto/update-cash-receipt.dto.js';
 import { CashReceiptQueryDto } from './dto/cash-receipt-query.dto.js';
+import { voucherView } from '../vouchers/voucher-view.js';
 
-/** Every write takes its actor from the authenticated user, never from the body. */
+/**
+ * Every route needs a cash-receipts permission; every write takes its actor
+ * from the authenticated user, never from the body. "own"-scoped users only
+ * ever see their own receipts (others are 404). Line balances need balances:view.
+ */
 @Controller('cash-receipts')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CashReceiptController {
   constructor(
     private readonly cashReceiptService: CashReceiptService,
@@ -33,13 +38,15 @@ export class CashReceiptController {
   ) {}
 
   @Get()
-  findAll(@Query() query: CashReceiptQueryDto) {
-    return this.cashReceiptService.findAll(query);
+  @RequirePermission(Permission.CASH_RECEIPTS_READ)
+  findAll(@Query() query: CashReceiptQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashReceiptService.findAll(query, user);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.cashReceiptService.findById(id);
+  @RequirePermission(Permission.CASH_RECEIPTS_READ)
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashReceiptService.findById(id, user), user);
   }
 
   /**
@@ -47,6 +54,7 @@ export class CashReceiptController {
    * audited, and every copy after the first is marked DUPLICATE.
    */
   @Get(':id/pdf')
+  @RequirePermission(Permission.CASH_RECEIPTS_READ)
   @Header('Cache-Control', 'private, no-store')
   async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
     const printed = await this.printService.print(id, user);
@@ -58,30 +66,27 @@ export class CashReceiptController {
   }
 
   @Post()
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_RECEIPTS_MANAGE)
-  create(@Body() dto: CreateCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashReceiptService.create(dto, user);
+  @RequirePermission(Permission.CASH_RECEIPTS_CREATE)
+  async create(@Body() dto: CreateCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashReceiptService.create(dto, user), user);
   }
 
   @Patch(':id')
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_RECEIPTS_MANAGE)
-  update(@Param('id') id: string, @Body() dto: UpdateCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashReceiptService.update(id, dto, user);
+  @RequirePermission(Permission.CASH_RECEIPTS_EDIT)
+  async update(@Param('id') id: string, @Body() dto: UpdateCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashReceiptService.update(id, dto, user), user);
   }
 
   @Post(':id/cancel')
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_RECEIPTS_MANAGE)
-  cancel(@Param('id') id: string, @Body() dto: CancelCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashReceiptService.cancel(id, dto, user);
+  @RequirePermission(Permission.CASH_RECEIPTS_CANCEL)
+  async cancel(@Param('id') id: string, @Body() dto: CancelCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashReceiptService.cancel(id, dto, user), user);
   }
 
+  /** Hard delete (reverses the posting). Kept from before cancellation existed; needs the cancel permission. */
   @Delete(':id')
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_RECEIPTS_MANAGE)
-  remove(@Param('id') id: string) {
-    return this.cashReceiptService.remove(id);
+  @RequirePermission(Permission.CASH_RECEIPTS_CANCEL)
+  remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashReceiptService.remove(id, user);
   }
 }

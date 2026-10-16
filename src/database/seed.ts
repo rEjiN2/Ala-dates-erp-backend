@@ -11,7 +11,8 @@ import {
 import { LedgerAccountService } from '../modules/accounting/ledger-accounts/ledger-account.service.js';
 import { Counter, CounterDocument } from '../modules/sequence/schemas/counter.schema.js';
 import { Role, RoleDocument } from '../modules/roles/schemas/role.schema.js';
-import { ensureAdminRole } from './seed-roles.js';
+import { User, UserDocument } from '../modules/users/schemas/user.schema.js';
+import { backfillUserStatus, ensureDefaultRoles } from './seed-roles.js';
 import { CompanyService } from '../modules/company/company.service.js';
 
 const CASH_ACCOUNT_NAMES = ['Main Cash Counter', 'Branch Petty Cash'];
@@ -53,10 +54,17 @@ async function seed(): Promise<void> {
     const company = await app.get(CompanyService).ensure();
     logger.log(`Company profile ready: ${company.legalName}`);
 
-    // ADMIN_PERMISSIONS is every value of the Permission constant, so this
-    // also grants cashiers:manage and company:manage to an existing admin role.
-    const adminRole = await ensureAdminRole(app.get<Model<RoleDocument>>(getModelToken(Role.name)));
-    logger.log(`Role ready: ${adminRole.name} (${adminRole.permissions.join(', ')})`);
+    // Splits legacy permissions (cash-receipts:manage, ...) in every role, then
+    // upserts admin (every permission, scope all, protected), Accountant and
+    // Van Salesman. Users must log in again only for the frontend's cached
+    // copy: the API reads permissions from the database on every request.
+    const roles = await ensureDefaultRoles(app.get<Model<RoleDocument>>(getModelToken(Role.name)));
+    for (const role of roles) {
+      logger.log(`Role ready: ${role.name} [${role.dataScope}] (${role.permissions.join(', ')})`);
+    }
+
+    const movedUsers = await backfillUserStatus(app.get<Model<UserDocument>>(getModelToken(User.name)));
+    logger.log(`User status ready (${movedUsers} moved from isActive)`);
   } finally {
     await app.close();
   }

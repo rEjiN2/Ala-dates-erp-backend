@@ -22,6 +22,7 @@ import { Counter, CounterSchema } from '../../sequence/schemas/counter.schema.js
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard.js';
 import { createAppValidationPipe } from '../../../common/pipes/app-validation.pipe.js';
 import { configureHttpApp } from '../../../common/http/configure-http-app.js';
+import { Permission } from '../../roles/permissions.js';
 
 /**
  * GET /accounts and GET /accounts/lookup over HTTP, with the same query
@@ -32,6 +33,8 @@ describe('Accounts lookup over HTTP', () => {
   let moduleRef: TestingModule;
   let app: INestApplication;
   let accountModel: Model<LedgerAccountDocument>;
+  /** Permissions of the user the fake JWT guard attaches. */
+  let permissions: string[] = [];
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
@@ -49,7 +52,7 @@ describe('Accounts lookup over HTTP', () => {
       .overrideGuard(JwtAuthGuard)
       .useValue({
         canActivate: (context: ExecutionContext) => {
-          context.switchToHttp().getRequest().user = { id: new Types.ObjectId().toString(), permissions: [] };
+          context.switchToHttp().getRequest().user = { id: new Types.ObjectId().toString(), permissions };
           return true;
         },
       })
@@ -92,7 +95,22 @@ describe('Accounts lookup over HTTP', () => {
     const res = await get('/accounts/lookup?types=cash,wallet,bank&q=');
     expect(res.status).toBe(200);
     expect(codes(res.body)).toEqual(['BNK-0001', 'CASH-001', 'WAL-0001']);
-    expect(res.body[0]).toEqual({ id: expect.any(String), code: 'BNK-0001', name: 'ADCB', type: 'bank', balance: 0 });
+    expect(res.body[0]).toEqual({ id: expect.any(String), code: 'BNK-0001', name: 'ADCB', type: 'bank' });
+  });
+
+  it('includes balances in the lookup, list and detail only with balances:view', async () => {
+    const [bank] = (await get('/accounts/lookup?types=bank')).body as { id: string }[];
+    expect((await get('/accounts')).body.items.every((item: object) => !('balance' in item))).toBe(true);
+    expect((await get(`/accounts/${bank.id}`)).body).not.toHaveProperty('balance');
+
+    permissions = [Permission.BALANCES_VIEW];
+    try {
+      expect((await get('/accounts/lookup?types=bank')).body[0]).toMatchObject({ code: 'BNK-0001', balance: 0 });
+      expect((await get('/accounts')).body.items[0]).toHaveProperty('balance');
+      expect((await get(`/accounts/${bank.id}`)).body).toHaveProperty('balance', 0);
+    } finally {
+      permissions = [];
+    }
   });
 
   it('accepts the other common array encodings of types', async () => {

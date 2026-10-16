@@ -65,9 +65,13 @@ export class VoucherFieldsDto {
   @MaxLength(100)
   paymentReference?: string | null;
 
-  /** Must be an active cashier when the voucher is saved. */
+  /**
+   * Must be an active cashier when the voucher is saved. Required, except for
+   * an "own"-scoped user: their linked cashier is used (any other is 403).
+   */
+  @IsOptional()
   @IsMongoId()
-  cashierId: string;
+  cashierId?: string;
 
   @IsOptional()
   @IsString()

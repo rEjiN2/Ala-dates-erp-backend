@@ -1,3 +1,4 @@
+import { Permission } from '../../roles/permissions.js';
 import { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
 import { VoucherDirection, type VoucherDefinition } from '../vouchers/voucher-definition.js';
 import { CASH_PAYMENT_ENTITY_TYPE } from './schemas/cash-payment.schema.js';
@@ -31,6 +32,7 @@ export const CASH_PAYMENT_DEFINITION: VoucherDefinition = {
     "Money can't be paid to the company's own cash, wallet or bank accounts; choose a supplier, customer, expense, income or other account.",
   warnOnOverdraw: true,
   usageSource: 'cash payments',
+  readPermission: Permission.CASH_PAYMENTS_READ,
   pdf: {
     titles: { cash: 'CASH PAYMENT VOUCHER', bank: 'BANK PAYMENT VOUCHER' },
     documentTitle: 'Cash Payment',

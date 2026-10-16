@@ -3,10 +3,13 @@ import type { Request, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { AuthService, type AuthTokens } from './auth.service.js';
 import { LoginDto } from './dto/login.dto.js';
+import { ChangePasswordDto } from '../users/dto/user.dto.js';
+import { UserManagementService } from '../users/user-management.service.js';
+import { AllowPendingPasswordChange } from '../../common/decorators/allow-pending-password-change.decorator.js';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
 import { JwtRefreshGuard } from '../../common/guards/jwt-refresh.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
-import type { AuthenticatedUser } from './interfaces/auth.types.js';
+import type { AuthenticatedUser, AuthProfile } from './interfaces/auth.types.js';
 import type { RefreshTokenContext } from './strategies/jwt-refresh.strategy.js';
 import type { EnvConfig } from '../../config/env.validation.js';
 
@@ -18,6 +21,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService<EnvConfig, true>,
+    private readonly userManagement: UserManagementService,
   ) {}
 
   @Post('login')
@@ -25,11 +29,12 @@ export class AuthController {
   async login(
     @Body() loginDto: LoginDto,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<AuthenticatedUser> {
+  ): Promise<AuthProfile> {
     const user = await this.authService.validateCredentials(loginDto.email, loginDto.password);
     const tokens = await this.authService.issueTokens(user);
     this.setAuthCookies(response, tokens);
-    return this.authService.toAuthenticatedUser(user);
+    // mustChangePassword: true here means the client must show the password change first.
+    return this.userManagement.profile(user.id as string);
   }
 
   @Post('refresh')
@@ -48,6 +53,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
+  @AllowPendingPasswordChange()
   async logout(
     @CurrentUser() user: AuthenticatedUser,
     @Res({ passthrough: true }) response: Response,
@@ -57,10 +63,28 @@ export class AuthController {
     return { success: true };
   }
 
+  /** The user, role, permissions, data scope, linked cashier and allowed cash accounts. */
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  me(@CurrentUser() user: AuthenticatedUser): AuthenticatedUser {
-    return user;
+  @AllowPendingPasswordChange()
+  me(@CurrentUser() user: AuthenticatedUser): Promise<AuthProfile> {
+    return this.userManagement.profile(user.id);
+  }
+
+  /** The caller's own password. Required after first login or an admin reset; new tokens are issued. */
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @AllowPendingPasswordChange()
+  async changePassword(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<AuthProfile> {
+    await this.userManagement.changeOwnPassword(user, dto);
+    const reloaded = await this.authService.reloadForTokens(user.id);
+    this.setAuthCookies(response, await this.authService.issueTokens(reloaded));
+    return this.userManagement.profile(user.id);
   }
 
   private setAuthCookies(response: Response, tokens: AuthTokens): void {

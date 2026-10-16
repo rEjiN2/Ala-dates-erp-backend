@@ -14,7 +14,7 @@ import bcrypt from 'bcryptjs';
 import { AppModule } from '../app.module.js';
 import type { EnvConfig } from '../config/env.validation.js';
 import { Role, RoleDocument } from '../modules/roles/schemas/role.schema.js';
-import { User, UserDocument } from '../modules/users/schemas/user.schema.js';
+import { User, UserDocument, UserStatus } from '../modules/users/schemas/user.schema.js';
 import { ensureAdminRole } from './seed-roles.js';
 
 async function seedDevUser(): Promise<void> {
@@ -47,7 +47,7 @@ async function seedDevUser(): Promise<void> {
             name: 'Dev Admin',
             passwordHash: await bcrypt.hash(password, 10),
             role: role._id,
-            isActive: true,
+            status: UserStatus.ACTIVE,
           },
         },
         { upsert: true },

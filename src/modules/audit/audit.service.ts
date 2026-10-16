@@ -61,6 +61,16 @@ export class AuditService {
     return created;
   }
 
+  /** Whether this user performed any audited action, i.e. has history that must keep pointing at them. */
+  async hasActor(actorId: Types.ObjectId, session?: ClientSession): Promise<boolean> {
+    return Boolean(
+      await this.auditLogModel
+        .exists({ actorId })
+        .session(session ?? null)
+        .exec(),
+    );
+  }
+
   /** Newest first. */
   async findForEntity(entityType: string, entityId: Types.ObjectId): Promise<AuditLogRecord[]> {
     return this.auditLogModel.find({ entityType, entityId }).sort({ at: -1, _id: -1 }).lean<AuditLogRecord[]>().exec();

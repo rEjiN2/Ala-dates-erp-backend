@@ -2,6 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema.js';
+import type { RoleDocument } from '../roles/schemas/role.schema.js';
+import { DataScope } from '../roles/permissions.js';
+import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 
 @Injectable()
 export class UsersService {
@@ -50,6 +53,21 @@ export class UsersService {
   async lookup(): Promise<{ id: string; name: string }[]> {
     const users = await this.userModel.find().select('name').sort({ name: 1 }).lean().exec();
     return users.map((user) => ({ id: user._id.toString(), name: user.name }));
+  }
+
+  /** The request user for a user loaded with its role populated. */
+  toAuthenticatedUser(user: UserDocument): AuthenticatedUser {
+    const role = user.role as RoleDocument;
+    return {
+      id: user.id as string,
+      email: user.email,
+      name: user.name,
+      role: { id: role.id as string, name: role.name },
+      permissions: role.permissions,
+      dataScope: role.dataScope ?? DataScope.ALL,
+      allowedCashAccountIds: (user.allowedCashAccountIds ?? []).map((id) => id.toString()),
+      mustChangePassword: Boolean(user.mustChangePassword),
+    };
   }
 
   async setRefreshTokenHash(id: string, refreshTokenHash: string | null): Promise<void> {

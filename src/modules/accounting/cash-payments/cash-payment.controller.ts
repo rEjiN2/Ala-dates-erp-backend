@@ -12,25 +12,33 @@ import {
   CreateCashPaymentDto,
   UpdateCashPaymentDto,
 } from './dto/cash-payment.dto.js';
+import { voucherView } from '../vouchers/voucher-view.js';
 
-/** Reads for any logged-in user; writes need cash-payments:manage. The actor always comes from the token. */
+/**
+ * Every route needs a cash-payments permission; the actor always comes from
+ * the token. "own"-scoped users only ever see their own payments (others are
+ * 404). Line balances need balances:view.
+ */
 @Controller('cash-payments')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CashPaymentController {
   constructor(private readonly cashPaymentService: CashPaymentService) {}
 
   @Get()
-  findAll(@Query() query: CashPaymentQueryDto) {
-    return this.cashPaymentService.findAll(query);
+  @RequirePermission(Permission.CASH_PAYMENTS_READ)
+  findAll(@Query() query: CashPaymentQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashPaymentService.findAll(query, user);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.cashPaymentService.findById(id);
+  @RequirePermission(Permission.CASH_PAYMENTS_READ)
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashPaymentService.findById(id, user), user);
   }
 
   /** The voucher as an A4 PDF, shown inline. Every call is a print: it is audited, and later copies are DUPLICATEs. */
   @Get(':id/pdf')
+  @RequirePermission(Permission.CASH_PAYMENTS_READ)
   @Header('Cache-Control', 'private, no-store')
   async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
     const printed = await this.cashPaymentService.print(id, user);
@@ -42,23 +50,20 @@ export class CashPaymentController {
   }
 
   @Post()
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_PAYMENTS_MANAGE)
-  create(@Body() dto: CreateCashPaymentDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashPaymentService.create(dto, user);
+  @RequirePermission(Permission.CASH_PAYMENTS_CREATE)
+  async create(@Body() dto: CreateCashPaymentDto, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashPaymentService.create(dto, user), user);
   }
 
   @Patch(':id')
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_PAYMENTS_MANAGE)
-  update(@Param('id') id: string, @Body() dto: UpdateCashPaymentDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashPaymentService.update(id, dto, user);
+  @RequirePermission(Permission.CASH_PAYMENTS_EDIT)
+  async update(@Param('id') id: string, @Body() dto: UpdateCashPaymentDto, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashPaymentService.update(id, dto, user), user);
   }
 
   @Post(':id/cancel')
-  @UseGuards(PermissionsGuard)
-  @RequirePermission(Permission.CASH_PAYMENTS_MANAGE)
-  cancel(@Param('id') id: string, @Body() dto: CancelCashPaymentDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashPaymentService.cancel(id, dto, user);
+  @RequirePermission(Permission.CASH_PAYMENTS_CANCEL)
+  async cancel(@Param('id') id: string, @Body() dto: CancelCashPaymentDto, @CurrentUser() user: AuthenticatedUser) {
+    return voucherView(await this.cashPaymentService.cancel(id, dto, user), user);
   }
 }

@@ -17,6 +17,10 @@ import {
 } from '../vouchers/voucher-posting.service.js';
 import { VoucherPrintService, type PrintedVoucher } from '../vouchers/voucher-print.service.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
+import type { ScopedUser } from '../vouchers/data-scope.js';
+
+/** The authenticated user; "own"-scoped users see and post only their own payments. */
+type Viewer = Actor & ScopedUser;
 
 export type CashPaymentListRow = Omit<VoucherListRow, 'header'> & { paidFromAccount: VoucherListRow['header'] };
 export type CashPaymentPage = VoucherPage<CashPaymentListRow>;
@@ -38,24 +42,31 @@ export class CashPaymentService {
     posting.registerVoucherType(CASH_PAYMENT_DEFINITION, this.model);
   }
 
-  async findAll(query: CashPaymentQueryDto = {}): Promise<CashPaymentPage> {
+  async findAll(query: CashPaymentQueryDto = {}, viewer?: Viewer): Promise<CashPaymentPage> {
     const { paidFromAccountId, ...rest } = query;
-    const page = await this.posting.list(CASH_PAYMENT_DEFINITION, this.model, {
-      ...rest,
-      headerAccountId: paidFromAccountId,
-    });
+    const page = await this.posting.list(
+      CASH_PAYMENT_DEFINITION,
+      this.model,
+      { ...rest, headerAccountId: paidFromAccountId },
+      viewer,
+    );
     return { ...page, items: page.items.map(({ header, ...row }) => ({ ...row, paidFromAccount: header })) };
   }
 
-  async findById(id: string): Promise<CashPaymentDocument> {
-    return (await this.posting.findById(CASH_PAYMENT_DEFINITION, this.model, id)) as unknown as CashPaymentDocument;
+  async findById(id: string, viewer?: Viewer): Promise<CashPaymentDocument> {
+    return (await this.posting.findById(
+      CASH_PAYMENT_DEFINITION,
+      this.model,
+      id,
+      viewer,
+    )) as unknown as CashPaymentDocument;
   }
 
   /**
    * Rejects with 409 and a `warnings` list when the payment would take a
    * cash or wallet account below zero, unless acknowledgeWarnings is true.
    */
-  async create(dto: CreateCashPaymentDto, actor: Actor): Promise<CashPaymentDocument> {
+  async create(dto: CreateCashPaymentDto, actor: Viewer): Promise<CashPaymentDocument> {
     const { paidFromAccountId, ...rest } = dto;
     return (await this.posting.create(
       CASH_PAYMENT_DEFINITION,
@@ -65,7 +76,7 @@ export class CashPaymentService {
     )) as unknown as CashPaymentDocument;
   }
 
-  async update(id: string, dto: UpdateCashPaymentDto, actor: Actor): Promise<CashPaymentDocument> {
+  async update(id: string, dto: UpdateCashPaymentDto, actor: Viewer): Promise<CashPaymentDocument> {
     const { paidFromAccountId, ...rest } = dto;
     return (await this.posting.update(
       CASH_PAYMENT_DEFINITION,
@@ -77,7 +88,7 @@ export class CashPaymentService {
   }
 
   /** Reverses the posting and keeps the payment, marked cancelled, with who/when/why. */
-  async cancel(id: string, dto: CancelCashPaymentDto, actor: Actor): Promise<CashPaymentDocument> {
+  async cancel(id: string, dto: CancelCashPaymentDto, actor: Viewer): Promise<CashPaymentDocument> {
     return (await this.posting.cancel(
       CASH_PAYMENT_DEFINITION,
       this.model,
@@ -88,7 +99,13 @@ export class CashPaymentService {
   }
 
   /** CASH or BANK PAYMENT VOUCHER, ORIGINAL then DUPLICATEs; every call is audited as a print. */
-  print(id: string, actor: Actor): Promise<PrintedVoucher> {
-    return this.printService.print(CASH_PAYMENT_DEFINITION, this.model, id, actor);
+  async print(id: string, actor: Viewer): Promise<PrintedVoucher> {
+    return this.printService.print(
+      CASH_PAYMENT_DEFINITION,
+      this.model,
+      id,
+      actor,
+      await this.posting.scopeFilter(actor),
+    );
   }
 }

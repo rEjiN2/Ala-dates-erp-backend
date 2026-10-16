@@ -1,3 +1,4 @@
+import { Permission } from '../../roles/permissions.js';
 import { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
 import { VoucherDirection, type VoucherDefinition } from '../vouchers/voucher-definition.js';
 import { CASH_RECEIPT_ENTITY_TYPE } from './schemas/cash-receipt.schema.js';
@@ -27,6 +28,7 @@ export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
     "Money can't be received from the company's own cash, wallet or bank accounts; choose a customer, supplier, income, expense or other account.",
   warnOnOverdraw: false,
   usageSource: 'cash receipts',
+  readPermission: Permission.CASH_RECEIPTS_READ,
   pdf: {
     titles: { cash: 'CASH RECEIPT VOUCHER', bank: 'BANK RECEIPT VOUCHER' },
     documentTitle: 'Cash Receipt',

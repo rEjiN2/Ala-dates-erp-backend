@@ -1,3 +1,5 @@
+import type { DataScope } from '../../roles/permissions.js';
+
 export interface JwtAccessPayload {
   sub: string;
   tokenType: 'access';
@@ -12,6 +14,10 @@ export interface JwtRefreshPayload {
   tokenType: 'refresh';
 }
 
+/**
+ * The request user, rebuilt from the database on every request (see
+ * JwtAccessStrategy), so role, scope and status changes apply at once.
+ */
 export interface AuthenticatedUser {
   id: string;
   email: string;
@@ -21,4 +27,17 @@ export interface AuthenticatedUser {
     name: string;
   };
   permissions: string[];
+  /** Absent only on hand-built users (tests, scripts); treated as "all". */
+  dataScope?: DataScope;
+  /** Cash/wallet accounts an "own"-scoped user may receive money into. */
+  allowedCashAccountIds?: string[];
+  mustChangePassword?: boolean;
+}
+
+/** GET /auth/me (and the login response). */
+export interface AuthProfile extends AuthenticatedUser {
+  dataScope: DataScope;
+  mustChangePassword: boolean;
+  linkedCashier: { id: string; code: string; name: string; status: string } | null;
+  allowedCashAccounts: { id: string; code: string; name: string; type: string }[];
 }

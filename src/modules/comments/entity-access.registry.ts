@@ -3,8 +3,11 @@ import { Types } from 'mongoose';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 
 export interface EntityAccessHandler {
-  /** Whether a record with this id exists. */
-  exists(id: Types.ObjectId): Promise<boolean>;
+  /**
+   * Whether a record with this id exists for this user. A record outside the
+   * user's data scope must answer false, so it reads as 404, not 403.
+   */
+  exists(id: Types.ObjectId, user: AuthenticatedUser): Promise<boolean>;
   /** Whether this user may read records of this type. Mirror the entity's own GET route guards. */
   canRead(user: AuthenticatedUser): boolean;
 }
@@ -37,7 +40,7 @@ export class EntityAccessRegistry {
     }
 
     const id = new Types.ObjectId(entityId);
-    if (!(await handler.exists(id))) {
+    if (!(await handler.exists(id, user))) {
       throw new NotFoundException(`${entityType} ${entityId} not found`);
     }
     return id;

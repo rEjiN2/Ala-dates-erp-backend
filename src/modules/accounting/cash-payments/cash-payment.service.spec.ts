@@ -10,6 +10,8 @@ import { VoucherWarningsException } from '../vouchers/voucher-posting.service.js
 import { CreateCashPaymentDto, UpdateCashPaymentDto } from './dto/cash-payment.dto.js';
 import { createAppValidationPipe } from '../../../common/pipes/app-validation.pipe.js';
 import { Permission } from '../../roles/permissions.js';
+import { CashPaymentController } from './cash-payment.controller.js';
+import { REQUIRE_PERMISSION_KEY } from '../../../common/decorators/require-permission.decorator.js';
 
 const { CASH, WALLET, BANK, PARTY, SUPPLIER, INCOME, EXPENSE, OTHER } = LedgerAccountType;
 
@@ -165,9 +167,11 @@ describe('CashPaymentService', () => {
           pipe.transform({ ...body, ...extra }, { type: 'body', metatype: CreateCashPaymentDto }),
         ).rejects.toBeInstanceOf(BadRequestException);
       }
+      // Optional in the body (an "own"-scoped user gets their linked cashier), but required by the service otherwise.
+      const { cashierId: _cashierId, ...withoutCashier } = body;
       await expect(
-        pipe.transform({ ...body, cashierId: undefined }, { type: 'body', metatype: CreateCashPaymentDto }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+        h.payments.create(withoutCashier as unknown as CreateCashPaymentDto, sachin),
+      ).rejects.toThrow('cashierId is required');
     });
   });
 
@@ -454,11 +458,20 @@ describe('CashPaymentService', () => {
   });
 
   describe('access, comments and activity', () => {
-    it('needs cash-payments:manage to write, and accepts comments and activity for "cash-payment"', async () => {
+    it('needs cash-payments:read to read or comment, and create/edit/cancel to write', async () => {
       const { cash, supplier } = await accounts();
       const payment = await pay(cash, [{ account: supplier, amount: 10 }]);
-      h.harness.tokenUser = makeUser('Viewer', []);
       const server = h.app.getHttpServer();
+
+      h.harness.tokenUser = makeUser('Nobody', []);
+      expect((await request(server).get('/cash-payments')).status).toBe(403);
+      expect((await request(server).get(`/cash-payments/${payment.id}`)).status).toBe(403);
+      expect((await request(server).get(`/cash-payments/${payment.id}/pdf`)).status).toBe(403);
+      expect(
+        (await request(server).get('/comments').query({ entityType: 'cash-payment', entityId: payment.id })).status,
+      ).toBe(403);
+
+      h.harness.tokenUser = makeUser('Viewer', [Permission.CASH_PAYMENTS_READ]);
       const body = {
         voucherDate: '2026-10-01',
         paidFromAccountId: cash.id,
@@ -483,7 +496,26 @@ describe('CashPaymentService', () => {
         .query({ entityType: 'cash-payment', entityId: payment.id });
       expect(activity.body.items.map((item: { kind: string }) => item.kind)).toEqual(['comment', 'audit']);
       expect(activity.body.commentCount).toBe(1);
-      expect(makeUser('Admin').permissions).toContain(Permission.CASH_PAYMENTS_MANAGE);
+      for (const permission of [
+        Permission.CASH_PAYMENTS_READ,
+        Permission.CASH_PAYMENTS_CREATE,
+        Permission.CASH_PAYMENTS_EDIT,
+        Permission.CASH_PAYMENTS_CANCEL,
+      ]) {
+        expect(makeUser('Admin').permissions).toContain(permission);
+      }
+      for (const [method, permission] of [
+        ['findAll', Permission.CASH_PAYMENTS_READ],
+        ['findOne', Permission.CASH_PAYMENTS_READ],
+        ['pdf', Permission.CASH_PAYMENTS_READ],
+        ['create', Permission.CASH_PAYMENTS_CREATE],
+        ['update', Permission.CASH_PAYMENTS_EDIT],
+        ['cancel', Permission.CASH_PAYMENTS_CANCEL],
+      ] as const) {
+        expect(Reflect.getMetadata(REQUIRE_PERMISSION_KEY, CashPaymentController.prototype[method])).toEqual([
+          permission,
+        ]);
+      }
     });
   });
 });

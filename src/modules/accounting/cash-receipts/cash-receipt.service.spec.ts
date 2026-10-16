@@ -59,7 +59,15 @@ import { FilesService } from '../../files/files.service.js';
 import { backfillCashReceiptCashiers } from '../../../database/backfill-cash-receipt-cashiers.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
 
-function makeUser(name: string, permissions: string[] = [Permission.CASH_RECEIPTS_MANAGE]): AuthenticatedUser {
+const RECEIPT_PERMISSIONS: string[] = [
+  Permission.CASH_RECEIPTS_READ,
+  Permission.CASH_RECEIPTS_CREATE,
+  Permission.CASH_RECEIPTS_EDIT,
+  Permission.CASH_RECEIPTS_CANCEL,
+  Permission.BALANCES_VIEW,
+];
+
+function makeUser(name: string, permissions: string[] = RECEIPT_PERMISSIONS): AuthenticatedUser {
   return {
     id: new Types.ObjectId().toString(),
     email: `${name.toLowerCase()}@example.com`,
@@ -1135,11 +1143,20 @@ describe('CashReceiptService (transactional)', () => {
       expect(noReason.status).toBe(400);
     });
 
-    it('needs cash-receipts:manage for writes but not for reading or commenting', async () => {
+    it('needs cash-receipts:read to read or comment, and create/edit/cancel to write', async () => {
       const { body } = await accounts();
       const { body: receipt } = await request(app.getHttpServer()).post('/cash-receipts').send(body);
-      tokenUser = makeUser('Viewer', []);
       const server = app.getHttpServer();
+
+      tokenUser = makeUser('Nobody', []);
+      expect((await request(server).get('/cash-receipts')).status).toBe(403);
+      expect((await request(server).get(`/cash-receipts/${receipt._id}`)).status).toBe(403);
+      expect((await request(server).get(`/cash-receipts/${receipt._id}/pdf`)).status).toBe(403);
+      expect(
+        (await request(server).get('/activity').query({ entityType: 'cash-receipt', entityId: receipt._id })).status,
+      ).toBe(403);
+
+      tokenUser = makeUser('Viewer', [Permission.CASH_RECEIPTS_READ]);
 
       expect((await request(server).post('/cash-receipts').send(body)).status).toBe(403);
       expect((await request(server).patch(`/cash-receipts/${receipt._id}`).send({ comments: 'X' })).status).toBe(403);
@@ -1211,9 +1228,8 @@ describe('CashReceiptService (transactional)', () => {
       const pipe = createAppValidationPipe();
       const { CreateCashReceiptDto } = await import('./dto/create-cash-receipt.dto.js');
 
-      await expect(pipe.transform(dto, { type: 'body', metatype: CreateCashReceiptDto })).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      // Optional in the body (an "own"-scoped user gets their linked cashier), but required by the service otherwise.
+      await expect(service.create(dto as CreateCashReceiptDto, sachin)).rejects.toThrow('cashierId is required');
       await expect(
         pipe.transform({ ...dto, cashier: 'Free text' }, { type: 'body', metatype: CreateCashReceiptDto }),
       ).rejects.toBeInstanceOf(BadRequestException);

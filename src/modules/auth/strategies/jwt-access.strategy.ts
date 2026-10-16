@@ -4,9 +4,9 @@ import { ConfigService } from '@nestjs/config';
 import { Strategy } from 'passport-jwt';
 import type { Request } from 'express';
 import { UsersService } from '../../users/users.service.js';
+import { isUserActive } from '../../users/schemas/user.schema.js';
 import type { EnvConfig } from '../../../config/env.validation.js';
 import type { JwtAccessPayload, AuthenticatedUser } from '../interfaces/auth.types.js';
-import type { RoleDocument } from '../../roles/schemas/role.schema.js';
 
 function extractFromCookie(request: Request): string | null {
   return request?.cookies?.access_token ?? null;
@@ -25,23 +25,20 @@ export class JwtAccessStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
+  /**
+   * The user is reloaded on every request: role, permissions, data scope and
+   * status come from the database, never from the token, so deactivating a
+   * user or changing their role applies on their next request.
+   */
   async validate(payload: JwtAccessPayload): Promise<AuthenticatedUser> {
     if (payload.tokenType !== 'access') {
       throw new UnauthorizedException('Invalid token type');
     }
 
     const user = await this.usersService.findByIdWithRole(payload.sub);
-    if (!user || !user.isActive) {
+    if (!user || !isUserActive(user)) {
       throw new UnauthorizedException('User no longer active');
     }
-
-    const role = user.role as RoleDocument;
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: { id: role.id, name: role.name },
-      permissions: role.permissions,
-    };
+    return this.usersService.toAuthenticatedUser(user);
   }
 }

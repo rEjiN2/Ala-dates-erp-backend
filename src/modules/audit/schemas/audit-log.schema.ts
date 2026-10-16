@@ -12,6 +12,12 @@ export enum AuditAction {
   DEACTIVATED = 'deactivated',
   /** A document (e.g. a voucher PDF) was generated. */
   PRINTED = 'printed',
+  /** A master record with no history (user, role) was removed. */
+  DELETED = 'deleted',
+  /** An administrator set a new password for a user. */
+  PASSWORD_RESET = 'password-reset',
+  /** A user changed their own password. */
+  PASSWORD_CHANGED = 'password-changed',
 }
 
 /** One human-readable difference, e.g. { field: 'cashier', label: 'Cashier', from: 'Ali', to: 'Omar' }. */
