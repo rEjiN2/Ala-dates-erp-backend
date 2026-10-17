@@ -1,6 +1,7 @@
 import type { CodeSequence } from '../../sequence/code-sequence.js';
 import type { Permission } from '../../roles/permissions.js';
 import type { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
+import type { VoucherDocument } from './schemas/voucher.schema.js';
 
 /** Which side of the ledger the header account is on. */
 export enum VoucherDirection {
@@ -8,6 +9,14 @@ export enum VoucherDirection {
   RECEIPT = 'receipt',
   /** Money out: credit the header (cash/bank) account, debit each line account. */
   PAYMENT = 'payment',
+}
+
+/** Which vouchers an "own"-scoped user sees. */
+export enum VoucherScopeRule {
+  /** Ones they created, or on their linked cashier. */
+  CREATOR_OR_CASHIER = 'creator-or-cashier',
+  /** Only ones on their linked cashier (cashierId), whoever entered them. */
+  CASHIER = 'cashier',
 }
 
 /**
@@ -34,6 +43,10 @@ export interface VoucherDefinition {
   usageSource: string;
   /** Needed to read the voucher, its comments and its activity. */
   readPermission: Permission;
+  /** Defaults to CREATOR_OR_CASHIER. */
+  scopeRule?: VoucherScopeRule;
+  /** What the voucher's cashier is called in diffs and on the PDF; defaults to "Cashier". */
+  cashierLabel?: string;
   pdf: {
     /** Title by payment method. */
     titles: { cash: string; bank: string };
@@ -42,5 +55,7 @@ export interface VoucherDefinition {
     /** Column heading for the line account, e.g. "Received From" / "Paid To". */
     counterpartyColumn: string;
     signatures: readonly [string, string];
+    /** More rows for the PDF's info table, from the voucher's own extra fields. */
+    extraInfo?: (voucher: VoucherDocument) => { label: string; value: string }[];
   };
 }

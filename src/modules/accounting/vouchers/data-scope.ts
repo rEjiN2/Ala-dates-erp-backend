@@ -1,6 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { DataScope } from '../../roles/permissions.js';
+import { VoucherScopeRule } from './voucher-definition.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 
 /**
@@ -25,13 +26,20 @@ export function isOwnScope(user: ScopedUser | undefined): user is ScopedUser {
   return user?.dataScope === DataScope.OWN;
 }
 
+/** Matches no document: an "own"-scoped user with no cashier sees nothing under the CASHIER rule. */
+const NOTHING = { _id: { $exists: false } };
+
 /** Mongo filter for the vouchers `user` may see, or null when they see all. Builds ObjectIds itself, so it is safe in $match. */
 export function voucherScopeFilter(
   user: ScopedUser | undefined,
   linkedCashier: LinkedCashier | null,
+  rule: VoucherScopeRule = VoucherScopeRule.CREATOR_OR_CASHIER,
 ): Record<string, unknown> | null {
   if (!isOwnScope(user)) {
     return null;
+  }
+  if (rule === VoucherScopeRule.CASHIER) {
+    return linkedCashier ? { cashierId: new Types.ObjectId(linkedCashier.id) } : NOTHING;
   }
   const mine: Record<string, unknown>[] = [{ 'createdBy.id': new Types.ObjectId(user.id) }];
   if (linkedCashier) {

@@ -28,6 +28,15 @@ export class Role {
   /** Seeded and protected (the admin role): can't be edited or deleted through the API. */
   @Prop({ default: false })
   isSystem: boolean;
+
+  /**
+   * Every permission the seed has ever granted this starter role. A re-run
+   * grants only starter permissions not in here, so permissions added in a
+   * later release reach existing roles once, and ones an administrator
+   * removed stay removed.
+   */
+  @Prop({ type: [String], default: [], select: false })
+  seededPermissions: string[];
 }
 
 export const RoleSchema = SchemaFactory.createForClass(Role);

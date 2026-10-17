@@ -25,7 +25,7 @@ export class CashReceiptPrintService {
       this.cashReceiptModel as unknown as VoucherModel,
       id,
       actor,
-      await this.posting.scopeFilter(actor),
+      await this.posting.scopeFilter(actor, CASH_RECEIPT_DEFINITION),
     );
   }
 }

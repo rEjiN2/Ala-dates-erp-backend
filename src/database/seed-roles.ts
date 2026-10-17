@@ -56,8 +56,10 @@ export async function ensureAdminRole(roleModel: Model<RoleDocument>): Promise<R
 }
 
 /**
- * Creates a starter role if missing. An existing one is left exactly as it
- * is: once seeded, its permissions and scope belong to whoever manages roles.
+ * Creates a starter role if missing. On an existing one, grants only starter
+ * permissions the seed has never granted it before (see Role.seededPermissions):
+ * new permissions arrive once, ones an administrator removed stay removed,
+ * and its scope and description are left alone.
  */
 async function ensureStarterRole(
   roleModel: Model<RoleDocument>,
@@ -66,13 +68,25 @@ async function ensureStarterRole(
   permissions: readonly Permission[],
   dataScope: DataScope,
 ): Promise<RoleDocument> {
-  const role = await roleModel
-    .findOneAndUpdate(
+  await roleModel
+    .updateOne(
       { name },
-      { $setOnInsert: { name, description, permissions: [...permissions], dataScope, isSystem: false } },
-      { upsert: true, returnDocument: 'after' },
+      { $setOnInsert: { name, description, permissions: [], dataScope, isSystem: false, seededPermissions: [] } },
+      { upsert: true },
     )
     .exec();
+  const existing = await roleModel.findOne({ name }).select('+seededPermissions').lean().exec();
+  const alreadySeeded = new Set(existing?.seededPermissions ?? []);
+  const fresh = permissions.filter((permission) => !alreadySeeded.has(permission));
+  if (fresh.length > 0) {
+    await roleModel
+      .updateOne(
+        { name },
+        { $addToSet: { permissions: { $each: fresh }, seededPermissions: { $each: fresh } } },
+      )
+      .exec();
+  }
+  const role = await roleModel.findOne({ name }).exec();
   if (!role) {
     throw new Error(`Failed to create or load the "${name}" role`);
   }

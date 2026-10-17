@@ -48,6 +48,10 @@ async function seed(): Promise<void> {
       .updateOne({ key: 'cash-payment' }, { $setOnInsert: { key: 'cash-payment', seq: 0 } }, { upsert: true })
       .exec();
     logger.log('Voucher counter ready: cash-payment');
+    await counterModel
+      .updateOne({ key: 'cash-handover' }, { $setOnInsert: { key: 'cash-handover', seq: 0 } }, { upsert: true })
+      .exec();
+    logger.log('Voucher counter ready: cash-handover');
 
     // Created with the defaults (ALA DATES LLC, Jurf 3, Ajman) only if missing;
     // an edited profile is left as it is.

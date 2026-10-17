@@ -105,7 +105,7 @@ export class CashPaymentService {
       this.model,
       id,
       actor,
-      await this.posting.scopeFilter(actor),
+      await this.posting.scopeFilter(actor, CASH_PAYMENT_DEFINITION),
     );
   }
 }

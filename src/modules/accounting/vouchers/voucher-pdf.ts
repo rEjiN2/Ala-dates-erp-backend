@@ -9,6 +9,8 @@ export interface VoucherPdfLabels {
   headerLabel: string;
   counterpartyColumn: string;
   signatures: readonly [string, string];
+  /** Info-table label for the voucher's cashier; defaults to "Cashier". */
+  cashierLabel?: string;
 }
 
 /** Everything printed on the voucher, already resolved to display values. */
@@ -31,6 +33,8 @@ export interface VoucherPdfData {
     paymentMethod: 'cash' | 'bank';
     paymentReference: string | null;
     cashierName: string | null;
+    /** Extra info-table rows (e.g. "Received By" on a handover). */
+    extraInfo?: { label: string; value: string }[];
     lines: { counterparty: string; narration: string | null; amount: number; vat: number; netAmount: number }[];
     grossTotal: number;
     totalTax: number;
@@ -123,9 +127,15 @@ export function buildVoucherPdf(data: VoucherPdfData, labels: VoucherPdfLabels):
         [
           { text: labels.headerLabel, style: 'label' },
           receipt.headerAccountName,
-          { text: 'Cashier', style: 'label' },
+          { text: labels.cashierLabel ?? 'Cashier', style: 'label' },
           receipt.cashierName ?? '-',
         ],
+        ...(receipt.extraInfo ?? []).map((row) => [
+          { text: row.label, style: 'label' },
+          { text: row.value, colSpan: 3 },
+          '',
+          '',
+        ]),
         ...(receipt.paymentReference
           ? [[{ text: 'Reference', style: 'label' }, { text: receipt.paymentReference, colSpan: 3 }, '', '']]
           : []),

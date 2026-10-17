@@ -19,7 +19,7 @@ import { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.sch
 import { SequenceService } from '../../sequence/sequence.service.js';
 import { escapeRegExp } from '../../sequence/code-sequence.js';
 import { AuditService } from '../../audit/audit.service.js';
-import { AuditAction } from '../../audit/schemas/audit-log.schema.js';
+import { AuditAction, type AuditChange } from '../../audit/schemas/audit-log.schema.js';
 import { CommentsService } from '../../comments/comments.service.js';
 import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { CashierService } from '../../cashier/cashier.service.js';
@@ -63,6 +63,8 @@ export interface VoucherCreateInput {
   comments?: string;
   lines: VoucherLineInput[];
   acknowledgeWarnings?: boolean;
+  /** Voucher-specific document fields, already validated by the voucher's own service. */
+  extraFields?: Record<string, unknown>;
 }
 
 export interface VoucherUpdateInput {
@@ -74,6 +76,9 @@ export interface VoucherUpdateInput {
   lines?: VoucherLineInput[];
   changeNote?: string;
   acknowledgeWarnings?: boolean;
+  /** Voucher-specific fields to set, and their audit changes (they count towards "no changes"). */
+  extraFields?: Record<string, unknown>;
+  extraChanges?: AuditChange[];
 }
 
 export interface VoucherListQuery extends Omit<VoucherQueryDto, never> {
@@ -223,17 +228,18 @@ export class VoucherPostingService {
     // Comments and activity follow the voucher's GET routes: the read
     // permission, and for "own"-scoped users only their own vouchers.
     this.entityAccess.register(def.entityType, {
-      exists: async (id, user) => Boolean(await model.exists(withScope({ _id: id }, await this.scopeFilter(user))).exec()),
+      exists: async (id, user) =>
+        Boolean(await model.exists(withScope({ _id: id }, await this.scopeFilter(user, def))).exec()),
       canRead: (user) => hasPermission(user, def.readPermission),
     });
   }
 
   /** Mongo filter limiting `user` to the vouchers they may see; null when they see all. */
-  async scopeFilter(user: ScopedUser | undefined): Promise<Record<string, unknown> | null> {
+  async scopeFilter(user: ScopedUser | undefined, def?: VoucherDefinition): Promise<Record<string, unknown> | null> {
     if (!isOwnScope(user)) {
       return null;
     }
-    return voucherScopeFilter(user, await this.linkedCashierOf(user));
+    return voucherScopeFilter(user, await this.linkedCashierOf(user), def?.scopeRule);
   }
 
   private async linkedCashierOf(user: ScopedUser): Promise<LinkedCashier | null> {
@@ -246,8 +252,9 @@ export class VoucherPostingService {
     model: VoucherModel,
     query: VoucherListQuery,
     viewer?: ScopedUser,
+    extraFilter: Record<string, unknown> | null = null,
   ): Promise<VoucherPage<VoucherListRow>> {
-    const filter = withScope(this.listFilter(def, query), await this.scopeFilter(viewer));
+    const filter = withScope(withScope(this.listFilter(def, query), extraFilter), await this.scopeFilter(viewer, def));
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const direction: SortOrder = query.sortDir === 'asc' ? 1 : -1;
@@ -324,7 +331,9 @@ export class VoucherPostingService {
   /** A voucher outside the viewer's data scope is reported as not found. */
   async findById(def: VoucherDefinition, model: VoucherModel, id: string, viewer?: ScopedUser): Promise<VoucherDocument> {
     this.assertValidId(def, id);
-    const voucher = await model.findOne(withScope({ _id: new Types.ObjectId(id) }, await this.scopeFilter(viewer))).exec();
+    const voucher = await model
+      .findOne(withScope({ _id: new Types.ObjectId(id) }, await this.scopeFilter(viewer, def)))
+      .exec();
     if (!voucher) {
       throw new NotFoundException(`${def.label} ${id} not found`);
     }
@@ -380,6 +389,7 @@ export class VoucherPostingService {
             status: VoucherStatus.POSTED,
             createdBy: toUserSnapshot(actor),
             createdAt: now,
+            ...input.extraFields,
           },
         ],
         { session },
@@ -482,7 +492,10 @@ export class VoucherPostingService {
         [before, after].flatMap((version) => [version.headerAccountId, ...version.lines.map((line) => line.accountId)]),
         session,
       );
-      const changes = diffVoucher(before, after, names, def.headerLabel);
+      const changes = [
+        ...diffVoucher(before, after, names, def.headerLabel, def.cashierLabel),
+        ...(input.extraChanges ?? []),
+      ];
       if (changes.length === 0) {
         throw new BadRequestException('No changes to save');
       }
@@ -503,6 +516,7 @@ export class VoucherPostingService {
       if (input.comments !== undefined) existing.comments = input.comments;
       existing.set(def.headerField, new Types.ObjectId(nextHeaderId));
       existing.lines = nextLines;
+      if (input.extraFields) existing.set(input.extraFields);
 
       const totals = this.totalsOf(nextLines);
       existing.grossTotal = totals.grossTotal;
@@ -541,7 +555,7 @@ export class VoucherPostingService {
     actor: Actor & ScopedUser,
   ): Promise<VoucherDocument> {
     this.assertValidId(def, id);
-    const scope = await this.scopeFilter(actor);
+    const scope = await this.scopeFilter(actor, def);
     const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
     if (reason.length < CANCEL_REASON_MIN_LENGTH) {
       throw new BadRequestException(

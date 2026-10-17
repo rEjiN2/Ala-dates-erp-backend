@@ -94,6 +94,7 @@ export class VoucherPrintService {
             voucherDate: voucher.voucherDate,
             headerAccountName: nameOf(headerAccountId),
             cashierName: voucher.cashierName,
+            extraInfo: def.pdf.extraInfo?.(voucher) ?? [],
             paymentMethod: voucher.paymentMethod ?? 'cash',
             paymentReference: voucher.paymentReference ?? null,
             lines: voucher.lines.map((line) => ({
@@ -123,6 +124,7 @@ export class VoucherPrintService {
           headerLabel: titleCase(def.headerLabel),
           counterpartyColumn: def.pdf.counterpartyColumn,
           signatures: def.pdf.signatures,
+          cashierLabel: def.cashierLabel,
         },
       );
       const buffer = await renderPdf(definition);

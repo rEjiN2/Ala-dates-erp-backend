@@ -10,6 +10,14 @@ import { CashReceipt, CashReceiptSchema } from '../src/modules/accounting/cash-r
 import { CashPaymentService } from '../src/modules/accounting/cash-payments/cash-payment.service.js';
 import { CashPaymentController } from '../src/modules/accounting/cash-payments/cash-payment.controller.js';
 import { CashPayment, CashPaymentSchema } from '../src/modules/accounting/cash-payments/schemas/cash-payment.schema.js';
+import { CashHandoverService } from '../src/modules/accounting/cash-handovers/cash-handover.service.js';
+import { CashHandoverController } from '../src/modules/accounting/cash-handovers/cash-handover.controller.js';
+import {
+  CashHandover,
+  CashHandoverSchema,
+} from '../src/modules/accounting/cash-handovers/schemas/cash-handover.schema.js';
+import { SalesmanCollectionsService } from '../src/modules/reports/salesman-collections.service.js';
+import { ReportsController } from '../src/modules/reports/reports.controller.js';
 import { VoucherPostingService } from '../src/modules/accounting/vouchers/voucher-posting.service.js';
 import { VoucherPrintService } from '../src/modules/accounting/vouchers/voucher-print.service.js';
 import { LedgerEntry, LedgerEntrySchema } from '../src/modules/accounting/vouchers/schemas/ledger-entry.schema.js';
@@ -73,6 +81,7 @@ export async function createVoucherHarness(dbName: string) {
       MongooseModule.forFeature([
         { name: CashReceipt.name, schema: CashReceiptSchema },
         { name: CashPayment.name, schema: CashPaymentSchema },
+        { name: CashHandover.name, schema: CashHandoverSchema },
         { name: LedgerEntry.name, schema: LedgerEntrySchema },
         { name: LedgerAccount.name, schema: LedgerAccountSchema },
         { name: Counter.name, schema: CounterSchema },
@@ -84,11 +93,20 @@ export async function createVoucherHarness(dbName: string) {
         { name: CompanySettings.name, schema: CompanySettingsSchema },
       ]),
     ],
-    controllers: [CashReceiptController, CashPaymentController, CommentsController, ActivityController],
+    controllers: [
+      CashReceiptController,
+      CashPaymentController,
+      CashHandoverController,
+      ReportsController,
+      CommentsController,
+      ActivityController,
+    ],
     providers: [
       CashReceiptService,
       CashReceiptPrintService,
       CashPaymentService,
+      CashHandoverService,
+      SalesmanCollectionsService,
       VoucherPostingService,
       VoucherPrintService,
       LedgerAccountService,
@@ -126,6 +144,7 @@ export async function createVoucherHarness(dbName: string) {
   const models = {
     receipt: model(CashReceipt.name),
     payment: model(CashPayment.name),
+    handover: model(CashHandover.name),
     entry: model(LedgerEntry.name),
     account: model<LedgerAccountDocument>(LedgerAccount.name),
     counter: model(Counter.name),
@@ -166,6 +185,8 @@ export async function createVoucherHarness(dbName: string) {
     receipts: moduleRef.get(CashReceiptService),
     receiptPrints: moduleRef.get(CashReceiptPrintService),
     payments: moduleRef.get(CashPaymentService),
+    handovers: moduleRef.get(CashHandoverService),
+    collections: moduleRef.get(SalesmanCollectionsService),
     posting: moduleRef.get(VoucherPostingService),
     audit: moduleRef.get(AuditService),
     cashiers: moduleRef.get(CashierService),

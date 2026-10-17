@@ -12,6 +12,7 @@ import {
   ADMIN_ROLE_NAME,
   DataScope,
   Permission,
+  VAN_SALESMAN_PERMISSIONS,
   VAN_SALESMAN_ROLE_NAME,
 } from '../modules/roles/permissions.js';
 
@@ -102,7 +103,7 @@ describe('role seed', () => {
 
     const salesman = await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec();
     expect(salesman).toMatchObject({ dataScope: DataScope.OWN, isSystem: false });
-    expect(sorted(salesman!.permissions)).toEqual(sorted([Permission.CASH_RECEIPTS_READ, Permission.CASH_RECEIPTS_CREATE]));
+    expect(sorted(salesman!.permissions)).toEqual(sorted([...VAN_SALESMAN_PERMISSIONS]));
 
     const admin = await roleModel.findOne({ name: ADMIN_ROLE_NAME }).lean().exec();
     expect(sorted(admin!.permissions)).toEqual(sorted(ADMIN_PERMISSIONS));
@@ -111,6 +112,26 @@ describe('role seed', () => {
     await roleModel.updateOne({ name: VAN_SALESMAN_ROLE_NAME }, { permissions: [Permission.CASH_RECEIPTS_READ] }).exec();
     await ensureDefaultRoles(roleModel);
     expect(await roleModel.countDocuments().exec()).toBe(3);
+    expect((await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec())!.permissions).toEqual([
+      Permission.CASH_RECEIPTS_READ,
+    ]);
+  });
+
+  it('grants starter permissions added in a later release once, without restoring removed ones', async () => {
+    // A Van Salesman role seeded before cash handovers existed.
+    await roleModel.create({
+      name: VAN_SALESMAN_ROLE_NAME,
+      permissions: [Permission.CASH_RECEIPTS_READ],
+      dataScope: DataScope.OWN,
+      seededPermissions: [Permission.CASH_RECEIPTS_READ, Permission.CASH_RECEIPTS_CREATE],
+    });
+    await ensureDefaultRoles(roleModel);
+    const salesman = await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec();
+    // New: cash-handovers:read. Removed by an administrator earlier: cash-receipts:create stays removed.
+    expect(sorted(salesman!.permissions)).toEqual(sorted([Permission.CASH_RECEIPTS_READ, Permission.CASH_HANDOVERS_READ]));
+
+    await roleModel.updateOne({ name: VAN_SALESMAN_ROLE_NAME }, { permissions: [Permission.CASH_RECEIPTS_READ] }).exec();
+    await ensureDefaultRoles(roleModel);
     expect((await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec())!.permissions).toEqual([
       Permission.CASH_RECEIPTS_READ,
     ]);

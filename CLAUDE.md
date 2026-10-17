@@ -23,8 +23,9 @@ src/modules/<domain>/ with: auth, users (UsersService + UserManagementService),
 roles (permissions.ts = PERMISSIONS constant + seeded role sets), location,
 product, party, cashier, company, dashboard, files, storage, sequence, audit,
 comments (+ EntityAccessRegistry). Accounting lives in src/modules/accounting/:
-ledger-accounts, cash-receipts, cash-payments, vouchers (VoucherPostingService,
+ledger-accounts, cash-receipts, cash-payments, cash-handovers, vouchers (VoucherPostingService,
 VoucherPrintService, data-scope.ts helper, voucher-view.ts balance redaction).
+Reports: src/modules/reports (salesman collections).
 Seeds: src/database/seed.ts + seed-roles.ts. Test harness: test/voucher-test-module.ts.
 Shared: SequenceService, AuditService, StorageService, amount-in-words, sum2.
 
@@ -41,7 +42,7 @@ Shared: SequenceService, AuditService, StorageService, amount-in-words, sum2.
 - Codes: SequenceService (atomic findOneAndUpdate $inc, accepts a Mongo
   session). Clients never send codes; codes are immutable. Prefixes:
   BR/WH/ST/VAN (locations), PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CSH (cashier), CR (receipt), CP (payment).
+  CSH (cashier), CR (receipt), CP (payment), CH (handover).
 - Money: LedgerAccount.Balance = debits minus credits (customer owing us is
   positive). LedgerEntry is insert-only. Every voucher posts through
   VoucherPostingService inside ONE Mongo transaction: voucher number,

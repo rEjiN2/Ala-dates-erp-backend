@@ -14,11 +14,17 @@ export const Permission = {
   CASH_PAYMENTS_CREATE: 'cash-payments:create',
   CASH_PAYMENTS_EDIT: 'cash-payments:edit',
   CASH_PAYMENTS_CANCEL: 'cash-payments:cancel',
+  CASH_HANDOVERS_READ: 'cash-handovers:read',
+  CASH_HANDOVERS_CREATE: 'cash-handovers:create',
+  CASH_HANDOVERS_EDIT: 'cash-handovers:edit',
+  CASH_HANDOVERS_CANCEL: 'cash-handovers:cancel',
   CASHIERS_MANAGE: 'cashiers:manage',
   COMPANY_MANAGE: 'company:manage',
   LOCATIONS_MANAGE: 'locations:manage',
   PARTIES_MANAGE: 'parties:manage',
   PRODUCT_GROUPS_MANAGE: 'product-groups:manage',
+  /** The salesman collections report (cash collected vs handed over, per cashier). */
+  REPORTS_SALESMAN: 'reports:salesman',
   ROLES_MANAGE: 'roles:manage',
   USERS_MANAGE: 'users:manage',
   /** Read every ledger balance (incl. each party/supplier) in one call. */
@@ -73,6 +79,7 @@ export const ACCOUNTANT_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS.fil
 export const VAN_SALESMAN_PERMISSIONS: readonly Permission[] = [
   Permission.CASH_RECEIPTS_READ,
   Permission.CASH_RECEIPTS_CREATE,
+  Permission.CASH_HANDOVERS_READ,
 ];
 
 export function hasPermission(user: { permissions?: readonly string[] } | undefined, permission: Permission): boolean {

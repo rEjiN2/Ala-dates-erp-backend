@@ -23,6 +23,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
 import { CommentsModule } from './modules/comments/comments.module.js';
 import { CashierModule } from './modules/cashier/cashier.module.js';
 import { CompanyModule } from './modules/company/company.module.js';
+import { ReportsModule } from './modules/reports/reports.module.js';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { CompanyModule } from './modules/company/company.module.js';
     CommentsModule,
     CashierModule,
     CompanyModule,
+    ReportsModule,
   ],
 })
 export class AppModule implements NestModule {

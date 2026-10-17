@@ -41,6 +41,7 @@ export function diffVoucher(
   after: DiffableVoucher,
   accountNames: ReadonlyMap<string, string>,
   headerLabel: string,
+  cashierLabel = 'Cashier',
 ): AuditChange[] {
   const nameOf = (accountId: string) => accountNames.get(accountId) ?? `Account ${accountId}`;
   const changes: AuditChange[] = [];
@@ -67,7 +68,7 @@ export function diffVoucher(
 
   // Compared by id: a cashier renamed in the master since is not a change here.
   if (before.cashierId !== after.cashierId) {
-    changes.push({ field: 'cashier', label: 'Cashier', from: text(before.cashierName), to: text(after.cashierName) });
+    changes.push({ field: 'cashier', label: cashierLabel, from: text(before.cashierName), to: text(after.cashierName) });
   }
 
   const fromReference = text(before.paymentReference);
