@@ -3,10 +3,15 @@ import { HydratedDocument, Types } from 'mongoose';
 import type { Schema as MongooseSchema } from 'mongoose';
 import { LedgerAccount, LedgerAccountType } from '../../ledger-accounts/schemas/ledger-account.schema.js';
 import { UserSnapshot, UserSnapshotSchema } from '../../../../common/schemas/user-snapshot.schema.js';
+import { StaffType } from '../../../cashier/schemas/cashier.schema.js';
 
+/** Receipts and payments are posted or cancelled; handovers go submitted, then approved or rejected (or cancelled). */
 export enum VoucherStatus {
   POSTED = 'posted',
   CANCELLED = 'cancelled',
+  SUBMITTED = 'submitted',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
 }
 
 /**
@@ -76,6 +81,10 @@ export abstract class VoucherBase {
   /** Cashier's name when it was set on this voucher. Historical snapshot, not refreshed on rename. */
   @Prop({ type: String, trim: true, default: null })
   cashierName: string | null;
+
+  /** Cashier's staff type when it was set on this voucher (snapshot, like cashierName). null on older vouchers. */
+  @Prop({ type: String, enum: [...Object.values(StaffType), null], default: null })
+  cashierStaffType: StaffType | null;
 
   /** Set by the server from the header account's type. Vouchers from before bank support read as "cash". */
   @Prop({ type: String, enum: PaymentMethod, default: PaymentMethod.CASH })

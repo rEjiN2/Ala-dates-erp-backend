@@ -411,6 +411,8 @@ describe('CashPaymentService', () => {
         '"Paid To"',
         '"Received by"',
         '"Cashier Signature"',
+        '"Paid By"',
+        '"Prepared by: "',
         'Omar Farms',
         'Dates lot 4',
         'UAE Dirhams One Thousand Two Hundred Fifty and Fifty Fils Only',

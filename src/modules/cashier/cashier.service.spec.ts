@@ -14,8 +14,9 @@ import { mongooseTestRoot } from '../../../test/mongo-test-db.js';
 import { CashierService } from './cashier.service.js';
 import { CashierController } from './cashier.controller.js';
 import { CashierUsageRegistry } from './cashier-usage.registry.js';
-import { Cashier, CashierDocument, CashierSchema, CashierStatus } from './schemas/cashier.schema.js';
-import { CashierLookupQueryDto, CreateCashierDto, UpdateCashierDto } from './dto/cashier.dto.js';
+import { Cashier, CashierDocument, CashierSchema, CashierStatus, StaffType } from './schemas/cashier.schema.js';
+import { CashierLookupQueryDto, CashierQueryDto, CreateCashierDto, UpdateCashierDto } from './dto/cashier.dto.js';
+import { backfillStaffTypes } from '../../database/backfill-staff-types.js';
 import { LocationService } from '../location/location.service.js';
 import { Location, LocationDocument, LocationSchema, LocationType } from '../location/schemas/location.schema.js';
 import { SequenceService } from '../sequence/sequence.service.js';
@@ -323,12 +324,76 @@ describe('Cashier master (CashierService)', () => {
       await expect(parse({ activeOnly: 'maybe' })).rejects.toBeInstanceOf(BadRequestException);
 
       expect(await service.lookup(await parse({}))).toEqual([
-        { id: expect.any(String), code: 'CSH-0001', name: 'Ali' },
+        { id: expect.any(String), code: 'CSH-0001', name: 'Ali', staffType: 'cashier', settlesWithOffice: false },
       ]);
       expect((await service.lookup(await parse({ activeOnly: 'false' }))).map((c) => c.name)).toEqual(['Ali', 'Zaid']);
       expect((await service.lookup(await parse({ q: 'zai', activeOnly: 'false' }))).map((c) => c.code)).toEqual([
         'CSH-0002',
       ]);
+    });
+  });
+
+  describe('staff type and settlesWithOffice', () => {
+    it('defaults to cashier, not settling; a van salesman settles unless told otherwise', async () => {
+      expect(await create({ name: 'Ali' })).toMatchObject({ staffType: StaffType.CASHIER, settlesWithOffice: false });
+      expect(await create({ name: 'Rashid', staffType: StaffType.VAN_SALESMAN })).toMatchObject({
+        staffType: StaffType.VAN_SALESMAN,
+        settlesWithOffice: true,
+      });
+      expect(
+        await create({ name: 'Yousef', staffType: StaffType.VAN_SALESMAN, settlesWithOffice: false }),
+      ).toMatchObject({ settlesWithOffice: false });
+      expect(await create({ name: 'Mona', staffType: StaffType.ACCOUNTANT, settlesWithOffice: true })).toMatchObject({
+        settlesWithOffice: true,
+      });
+    });
+
+    it('edits and audits staffType and settlesWithOffice', async () => {
+      const ali = await create({ name: 'Ali' });
+      await service.update(ali.id, { staffType: StaffType.ACCOUNTANT, settlesWithOffice: true }, admin);
+      const [updated] = await historyOf(ali);
+      expect(updated.changes).toEqual([
+        { field: 'staffType', label: 'Staff type', from: 'Cashier', to: 'Accountant' },
+        { field: 'settlesWithOffice', label: 'Settles with office', from: 'No', to: 'Yes' },
+      ]);
+      await expect(service.update(ali.id, { staffType: StaffType.ACCOUNTANT }, admin)).rejects.toThrow(
+        'No changes to save',
+      );
+    });
+
+    it('filters list and lookup by staffType and settlesWithOffice, parsing query text', async () => {
+      await create({ name: 'Ali' });
+      await create({ name: 'Rashid', staffType: StaffType.VAN_SALESMAN });
+      await create({ name: 'Mona', staffType: StaffType.ACCOUNTANT });
+
+      const parseList = async (query: object) =>
+        (await pipe.transform(query, { type: 'query', metatype: CashierQueryDto })) as CashierQueryDto;
+      const parseLookup = async (query: object) =>
+        (await pipe.transform(query, { type: 'query', metatype: CashierLookupQueryDto })) as CashierLookupQueryDto;
+
+      const names = async (query: object) => (await service.list(await parseList(query))).items.map((c) => c.name);
+      expect(await names({ staffType: 'accountant' })).toEqual(['Mona']);
+      expect(await names({ settlesWithOffice: 'true' })).toEqual(['Rashid']);
+      expect(await names({ settlesWithOffice: 'false' })).toEqual(['Ali', 'Mona']);
+      await expect(parseList({ staffType: 'driver' })).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(await service.lookup(await parseLookup({ settlesWithOffice: 'true' }))).toEqual([
+        { id: expect.any(String), code: 'CSH-0002', name: 'Rashid', staffType: 'van_salesman', settlesWithOffice: true },
+      ]);
+    });
+
+    it('backfills old records as cashier, not settling, without touching set values', async () => {
+      await cashierModel.collection.insertOne({ code: 'CSH-0009', name: 'Legacy', status: 'active' });
+      const rashid = await create({ name: 'Rashid', staffType: StaffType.VAN_SALESMAN });
+
+      expect(await backfillStaffTypes(cashierModel)).toEqual({ staffType: 1, settles: 1 });
+      expect(await backfillStaffTypes(cashierModel)).toEqual({ staffType: 0, settles: 0 });
+      const raw = await cashierModel.collection.find({}, { sort: { code: 1 } }).toArray();
+      expect(raw.map((doc) => [doc.name, doc.staffType, doc.settlesWithOffice])).toEqual([
+        ['Rashid', 'van_salesman', true],
+        ['Legacy', 'cashier', false],
+      ]);
+      expect(rashid.code).toBe('CSH-0001');
     });
   });
 

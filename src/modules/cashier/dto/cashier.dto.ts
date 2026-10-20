@@ -14,7 +14,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { CashierStatus } from '../schemas/cashier.schema.js';
+import { CashierStatus, StaffType } from '../schemas/cashier.schema.js';
 
 /** Trims strings and turns a blank one into null, so "" clears an optional field. */
 const trimToNull = ({ value }: { value: unknown }) => {
@@ -23,6 +23,13 @@ const trimToNull = ({ value }: { value: unknown }) => {
   return trimmed === '' ? null : trimmed;
 };
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+/** Query strings arrive as text; implicit conversion would read "false" as true, so parse the raw text. */
+const toBoolean = ({ obj, key }: { obj: Record<string, unknown>; key: string }) => {
+  const raw = obj[key];
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return raw;
+};
 
 // No `code`: it is generated server-side, and the global pipe
 // (forbidNonWhitelisted) rejects a client that sends one.
@@ -48,6 +55,16 @@ export class CreateCashierDto {
   @IsOptional()
   @IsEnum(CashierStatus)
   status?: CashierStatus;
+
+  /** Defaults to "cashier". */
+  @IsOptional()
+  @IsEnum(StaffType)
+  staffType?: StaffType;
+
+  /** Defaults to true for a van salesman, otherwise false. */
+  @IsOptional()
+  @IsBoolean()
+  settlesWithOffice?: boolean;
 
   @IsOptional()
   @IsMongoId()
@@ -79,6 +96,15 @@ export class CashierQueryDto {
   status?: CashierStatus;
 
   @IsOptional()
+  @IsEnum(StaffType)
+  staffType?: StaffType;
+
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  settlesWithOffice?: boolean;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   page: number = 1;
@@ -106,6 +132,16 @@ export class CashierLookupQueryDto {
   })
   @IsBoolean()
   activeOnly: boolean = true;
+
+  @IsOptional()
+  @IsEnum(StaffType)
+  staffType?: StaffType;
+
+  /** e.g. true for the "Handed by" dropdown on a handover. */
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  settlesWithOffice?: boolean;
 
   @IsOptional()
   @IsInt()

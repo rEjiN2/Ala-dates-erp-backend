@@ -16,7 +16,9 @@ export const Permission = {
   CASH_PAYMENTS_CANCEL: 'cash-payments:cancel',
   CASH_HANDOVERS_READ: 'cash-handovers:read',
   CASH_HANDOVERS_CREATE: 'cash-handovers:create',
-  CASH_HANDOVERS_EDIT: 'cash-handovers:edit',
+  /** Approve or reject a submitted handover (posts the received cash). */
+  CASH_HANDOVERS_APPROVE: 'cash-handovers:approve',
+  /** Cancel any handover, including approved ones; a submitter may cancel their own submitted one without it. */
   CASH_HANDOVERS_CANCEL: 'cash-handovers:cancel',
   CASHIERS_MANAGE: 'cashiers:manage',
   COMPANY_MANAGE: 'company:manage',
@@ -52,6 +54,8 @@ export const LEGACY_PERMISSION_REPLACEMENTS: Readonly<Record<string, readonly Pe
     Permission.CASH_PAYMENTS_EDIT,
     Permission.CASH_PAYMENTS_CANCEL,
   ],
+  // Handovers are no longer edited (submit, then approve/reject/cancel): just removed.
+  'cash-handovers:edit': [],
 };
 
 /** Which records a role's users see: only their own ("own") or everyone's ("all"). */
@@ -75,11 +79,12 @@ export const ACCOUNTANT_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS.fil
     permission !== Permission.COMPANY_MANAGE,
 );
 
-/** Enters receipts in the field; sees only their own (dataScope own), no balances, no dashboard. */
+/** Enters receipts and submits handovers; sees only their own (dataScope own), no balances, no dashboard. */
 export const VAN_SALESMAN_PERMISSIONS: readonly Permission[] = [
   Permission.CASH_RECEIPTS_READ,
   Permission.CASH_RECEIPTS_CREATE,
   Permission.CASH_HANDOVERS_READ,
+  Permission.CASH_HANDOVERS_CREATE,
 ];
 
 export function hasPermission(user: { permissions?: readonly string[] } | undefined, permission: Permission): boolean {

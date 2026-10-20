@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsMongoId, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsMongoId, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
 
 /** Trims strings and turns a blank one into null, so "" clears an optional field. */
 const trimToNull = ({ value }: { value: unknown }) => {
@@ -88,4 +88,9 @@ export class UpdateCompanySettingsDto {
   @IsString()
   @MaxLength(500)
   receiptFooterText?: string | null;
+
+  /** Omitted means off, like every other field of this PUT. */
+  @IsOptional()
+  @IsBoolean()
+  allowSelfApproval?: boolean;
 }

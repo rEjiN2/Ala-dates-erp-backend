@@ -11,6 +11,12 @@ export class SalesmanCollectionsQueryDto {
   @IsDateString()
   dateTo?: string;
 
+  /** The staff (cashier) record. */
+  @IsOptional()
+  @IsMongoId()
+  staffId?: string;
+
+  /** Older name for staffId. */
   @IsOptional()
   @IsMongoId()
   cashierId?: string;

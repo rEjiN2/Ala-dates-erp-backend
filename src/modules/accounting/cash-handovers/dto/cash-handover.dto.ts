@@ -1,89 +1,100 @@
-import { IntersectionType, PartialType } from '@nestjs/mapped-types';
 import { Transform } from 'class-transformer';
 import {
-  IsBoolean,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
   IsDateString,
+  IsIn,
   IsMongoId,
   IsNumber,
   IsOptional,
-  IsPositive,
   IsString,
   MaxLength,
+  Min,
 } from 'class-validator';
-import { CancelVoucherDto, ChangeNoteFieldDto, VoucherQueryDto } from '../../vouchers/dto/voucher.dto.js';
+import { CancelVoucherDto, VoucherQueryDto } from '../../vouchers/dto/voucher.dto.js';
 
-/** Trims strings and turns a blank one into null, so "" clears an optional field. */
 const trimToNull = ({ value }: { value: unknown }) => {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
 };
 
-/** No number, totals, method or who/when: the server sets them. */
+export const HANDOVER_STATUSES = ['submitted', 'approved', 'rejected', 'cancelled'] as const;
+
+/** Submit. No number, totals or who/when: the server sets them; expectedCash and bankTotal come from the receipts. */
 export class CreateCashHandoverDto {
   @IsDateString()
   voucherDate: string;
 
-  /** Active cash, wallet or bank account the money leaves (credited). */
-  @IsMongoId()
-  fromAccountId: string;
-
-  /** Active cash, wallet or bank account the money arrives in (debited); not the from account. */
-  @IsMongoId()
-  toAccountId: string;
-
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
-  amount: number;
-
   /**
-   * Active cashier handing the money over. Required, except for an
-   * "own"-scoped user: their linked cashier is used (any other is 403).
+   * Staff (cashier record) handing over; must settle with the office.
+   * Required, except for an "own"-scoped user: their linked staff is used (any other is 403).
    */
   @IsOptional()
   @IsMongoId()
-  handedByCashierId?: string;
+  staffId?: string;
 
-  /** Active cashier receiving it; not the one handing over. */
+  /** Active cash or wallet account the cash receipts were received into. */
   @IsMongoId()
-  receivedByCashierId: string;
+  sourceAccountId: string;
 
-  @IsOptional()
-  @Transform(trimToNull)
-  @IsString()
-  @MaxLength(100)
-  reference?: string | null;
+  /** That staff member's unsettled receipts. */
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayUnique()
+  @IsMongoId({ each: true })
+  receiptIds: string[];
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  countedCash: number;
 
   @IsOptional()
   @IsString()
   @MaxLength(1000)
   notes?: string;
-
-  /** Confirms the warnings returned by a previous attempt (the from account going below zero). */
-  @IsOptional()
-  @IsBoolean()
-  acknowledgeWarnings?: boolean;
 }
 
-export class UpdateCashHandoverDto extends IntersectionType(PartialType(CreateCashHandoverDto), ChangeNoteFieldDto) {}
+export class ApproveCashHandoverDto {
+  /** Equal to expectedCash, or less with varianceReason; more is rejected. */
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  receivedCash: number;
+
+  /** Active cash, wallet or bank account; not the source account. */
+  @IsMongoId()
+  receivedIntoAccountId: string;
+
+  @IsOptional()
+  @Transform(trimToNull)
+  @IsString()
+  @MaxLength(500)
+  varianceReason?: string | null;
+}
+
+export class RejectCashHandoverDto extends CancelVoucherDto {}
 
 export class CancelCashHandoverDto extends CancelVoucherDto {}
 
-/** Shared voucher filters; cashierId there is the handing-over cashier, accountId the "to" account. */
+/** Shared voucher filters; cashierId there is the staff member, like staffId. */
 export class CashHandoverQueryDto extends VoucherQueryDto {
   @IsOptional()
   @IsMongoId()
-  fromAccountId?: string;
+  sourceAccountId?: string;
 
   @IsOptional()
   @IsMongoId()
-  toAccountId?: string;
+  staffId?: string;
 
   @IsOptional()
-  @IsMongoId()
-  handedByCashierId?: string;
+  @IsIn(HANDOVER_STATUSES)
+  handoverStatus?: (typeof HANDOVER_STATUSES)[number];
+}
 
+export class UnsettledReceiptsQueryDto {
+  /** Required unless "own"-scoped (their linked staff is used). */
   @IsOptional()
   @IsMongoId()
-  receivedByCashierId?: string;
+  staffId?: string;
 }

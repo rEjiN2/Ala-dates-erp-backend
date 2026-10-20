@@ -29,6 +29,8 @@ export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
   warnOnOverdraw: false,
   usageSource: 'cash receipts',
   readPermission: Permission.CASH_RECEIPTS_READ,
+  cashierLabel: 'Collected By',
+  tracksSettlement: true,
   pdf: {
     titles: { cash: 'CASH RECEIPT VOUCHER', bank: 'BANK RECEIPT VOUCHER' },
     documentTitle: 'Cash Receipt',

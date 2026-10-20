@@ -8,6 +8,9 @@ export enum AuditAction {
   CREATED = 'created',
   UPDATED = 'updated',
   CANCELLED = 'cancelled',
+  /** A submitted document (cash handover) was approved or rejected. */
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
   /** A master record (party, cashier, ...) was switched to inactive; the changes list everything else edited with it. */
   DEACTIVATED = 'deactivated',
   /** A document (e.g. a voucher PDF) was generated. */

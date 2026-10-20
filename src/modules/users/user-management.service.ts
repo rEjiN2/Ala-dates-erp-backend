@@ -21,7 +21,7 @@ import { ChangePasswordDto, CreateUserDto, ResetPasswordDto, UpdateUserDto, User
 import { UsersService } from './users.service.js';
 import { Role, RoleDocument } from '../roles/schemas/role.schema.js';
 import { ADMIN_ROLE_NAME, DataScope } from '../roles/permissions.js';
-import { Cashier, CashierDocument } from '../cashier/schemas/cashier.schema.js';
+import { Cashier, CashierDocument, StaffType } from '../cashier/schemas/cashier.schema.js';
 import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
 import {
   LedgerAccountStatus,
@@ -49,7 +49,14 @@ export interface UserView {
   mustChangePassword: boolean;
   allowedCashAccounts: { id: string; code: string; name: string; type: string }[];
   /** Set on the Cashier master (Cashier.linkedUserId), shown here read-only. */
-  linkedCashier: { id: string; code: string; name: string; status: string } | null;
+  linkedCashier: {
+    id: string;
+    code: string;
+    name: string;
+    status: string;
+    staffType: StaffType;
+    settlesWithOffice: boolean;
+  } | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -442,7 +449,7 @@ export class UserManagementService {
       this.ledgerAccountService.getSummaries(accountIds),
       this.cashierModel
         .find({ linkedUserId: { $in: users.map((user) => user._id) } })
-        .select('code name status linkedUserId')
+        .select('code name status staffType settlesWithOffice linkedUserId')
         .lean()
         .exec(),
     ]);
@@ -463,7 +470,14 @@ export class UserManagementService {
           return account ? [{ id: accountId.toString(), code: account.code, name: account.name, type: account.type }] : [];
         }),
         linkedCashier: cashier
-          ? { id: cashier._id.toString(), code: cashier.code, name: cashier.name, status: cashier.status }
+          ? {
+              id: cashier._id.toString(),
+              code: cashier.code,
+              name: cashier.name,
+              status: cashier.status,
+              staffType: cashier.staffType ?? StaffType.CASHIER,
+              settlesWithOffice: cashier.settlesWithOffice ?? false,
+            }
           : null,
         createdAt: (user as unknown as { createdAt?: Date }).createdAt,
         updatedAt: (user as unknown as { updatedAt?: Date }).updatedAt,

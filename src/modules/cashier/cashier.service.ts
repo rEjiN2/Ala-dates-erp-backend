@@ -8,6 +8,9 @@ import {
   Cashier,
   CashierDocument,
   CashierStatus,
+  STAFF_TYPE_LABELS,
+  StaffType,
+  defaultSettlesWithOffice,
 } from './schemas/cashier.schema.js';
 import { CashierLookupQueryDto, CashierQueryDto, CreateCashierDto, UpdateCashierDto } from './dto/cashier.dto.js';
 import { CashierUsageRegistry } from './cashier-usage.registry.js';
@@ -34,6 +37,8 @@ export interface CashierLookupItem {
   id: string;
   code: string;
   name: string;
+  staffType: StaffType;
+  settlesWithOffice: boolean;
 }
 
 /** A cashier's audited fields in display form: references shown by name. */
@@ -42,6 +47,8 @@ interface CashierDisplay extends Record<string, unknown> {
   mobile: string | null;
   email: string | null;
   status: string;
+  staffType: string;
+  settlesWithOffice: string;
   linkedUser: string | null;
   location: string | null;
   notes: string | null;
@@ -52,6 +59,8 @@ const AUDITED_FIELDS: readonly DiffField<CashierDisplay>[] = [
   { key: 'mobile', label: 'Mobile' },
   { key: 'email', label: 'Email' },
   { key: 'status', label: 'Status' },
+  { key: 'staffType', label: 'Staff type' },
+  { key: 'settlesWithOffice', label: 'Settles with office' },
   { key: 'linkedUser', label: 'Linked user' },
   { key: 'location', label: 'Location' },
   { key: 'notes', label: 'Notes' },
@@ -79,6 +88,8 @@ export class CashierService {
   async list(query: CashierQueryDto): Promise<CashierPage> {
     const filter: QueryFilter<CashierDocument> = { ...this.searchFilter(query.q, ['code', 'name', 'mobile', 'email']) };
     if (query.status) filter.status = query.status;
+    if (query.staffType) filter.staffType = query.staffType;
+    if (query.settlesWithOffice !== undefined) filter.settlesWithOffice = query.settlesWithOffice;
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -98,15 +109,23 @@ export class CashierService {
   async lookup(query: CashierLookupQueryDto): Promise<CashierLookupItem[]> {
     const filter: QueryFilter<CashierDocument> = { ...this.searchFilter(query.q, ['code', 'name']) };
     if (query.activeOnly !== false) filter.status = CashierStatus.ACTIVE;
+    if (query.staffType) filter.staffType = query.staffType;
+    if (query.settlesWithOffice !== undefined) filter.settlesWithOffice = query.settlesWithOffice;
 
     const cashiers = await this.cashierModel
       .find(filter)
-      .select('code name')
+      .select('code name staffType settlesWithOffice')
       .sort({ name: 1 })
       .limit(query.limit ?? 50)
       .lean()
       .exec();
-    return cashiers.map((cashier) => ({ id: cashier._id.toString(), code: cashier.code, name: cashier.name }));
+    return cashiers.map((cashier) => ({
+      id: cashier._id.toString(),
+      code: cashier.code,
+      name: cashier.name,
+      staffType: cashier.staffType ?? StaffType.CASHIER,
+      settlesWithOffice: cashier.settlesWithOffice ?? false,
+    }));
   }
 
   async findById(id: string, session?: ClientSession): Promise<CashierDocument> {
@@ -142,6 +161,7 @@ export class CashierService {
 
   async create(dto: CreateCashierDto, actor: Actor): Promise<CashierDocument> {
     const status = dto.status ?? CashierStatus.ACTIVE;
+    const staffType = dto.staffType ?? StaffType.CASHIER;
     await this.assertReferences(dto.linkedUserId ?? null, dto.locationId ?? null);
 
     return this.inTransaction(async (session) => {
@@ -160,6 +180,8 @@ export class CashierService {
             mobile: dto.mobile ?? null,
             email: dto.email ?? null,
             status,
+            staffType,
+            settlesWithOffice: dto.settlesWithOffice ?? defaultSettlesWithOffice(staffType),
             linkedUserId: dto.linkedUserId ? new Types.ObjectId(dto.linkedUserId) : null,
             locationId: dto.locationId ? new Types.ObjectId(dto.locationId) : null,
             notes: dto.notes ?? null,
@@ -208,6 +230,9 @@ export class CashierService {
       if (provided('mobile')) existing.mobile = dto.mobile ?? null;
       if (provided('email')) existing.email = dto.email ?? null;
       if (provided('status')) existing.status = dto.status!;
+      // A type change does not flip settlesWithOffice: the admin sets it explicitly.
+      if (provided('staffType')) existing.staffType = dto.staffType!;
+      if (provided('settlesWithOffice')) existing.settlesWithOffice = dto.settlesWithOffice!;
       if (provided('notes')) existing.notes = dto.notes ?? null;
       existing.linkedUserId = nextLinkedUserId ? new Types.ObjectId(nextLinkedUserId) : null;
       existing.locationId = nextLocationId ? new Types.ObjectId(nextLocationId) : null;
@@ -270,6 +295,8 @@ export class CashierService {
       mobile: cashier.mobile,
       email: cashier.email,
       status: cashier.status,
+      staffType: STAFF_TYPE_LABELS[cashier.staffType ?? StaffType.CASHIER],
+      settlesWithOffice: cashier.settlesWithOffice ? 'Yes' : 'No',
       linkedUser: linkedUserId ? (userNames.get(linkedUserId) ?? linkedUserId) : null,
       location: locationId ? (location?.name ?? locationId) : null,
       notes: cashier.notes,

@@ -44,11 +44,12 @@ export interface CompanySettingsView extends Record<EditableField, string | null
   currencyCode: string;
   /** Our own file reference; fetch the image through GET /files/:id. */
   logo: { id: string; url: string } | null;
+  allowSelfApproval: boolean;
   updatedBy: { id: string; name: string } | null;
   updatedAt: Date | null;
 }
 
-type DisplayRecord = Record<EditableField | 'logo', string | null>;
+type DisplayRecord = Record<EditableField | 'logo' | 'allowSelfApproval', string | null>;
 
 const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'legalName', label: 'Legal name' },
@@ -64,6 +65,7 @@ const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'logo', label: 'Logo' },
   { key: 'currencyCode', label: 'Currency' },
   { key: 'receiptFooterText', label: 'Receipt footer text' },
+  { key: 'allowSelfApproval', label: 'Allow self-approval of handovers' },
 ];
 
 @Injectable()
@@ -125,6 +127,7 @@ export class CompanyService {
       }
       settings.legalName = dto.legalName;
       settings.logoFileRef = dto.logoFileRef ? new Types.ObjectId(dto.logoFileRef) : null;
+      settings.allowSelfApproval = dto.allowSelfApproval ?? false;
 
       const changes = diffFields(before, await this.display(settings), AUDITED_FIELDS);
       if (changes.length === 0) {
@@ -189,7 +192,7 @@ export class CompanyService {
         .then((file) => file.originalName)
         .catch(() => logoId);
     }
-    return { ...record, logo };
+    return { ...record, logo, allowSelfApproval: settings.allowSelfApproval ? 'Yes' : 'No' };
   }
 
   private toView(settings: CompanySettingsDocument): CompanySettingsView {
@@ -204,6 +207,7 @@ export class CompanyService {
       legalName: settings.legalName,
       currencyCode: settings.currencyCode,
       logo: logoId ? { id: logoId, url: `/files/${logoId}` } : null,
+      allowSelfApproval: settings.allowSelfApproval ?? false,
       updatedBy: userRefOf(settings.updatedBy),
       updatedAt: settings.updatedAt ?? null,
     };

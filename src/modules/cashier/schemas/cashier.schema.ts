@@ -12,6 +12,31 @@ export enum CashierStatus {
   INACTIVE = 'inactive',
 }
 
+/**
+ * What the staff member does. The master was "Cashier" and now covers anyone
+ * who handles money; records from before staffType read as cashiers.
+ */
+export enum StaffType {
+  CASHIER = 'cashier',
+  VAN_SALESMAN = 'van_salesman',
+  ACCOUNTANT = 'accountant',
+  OWNER = 'owner',
+  OTHER = 'other',
+}
+
+export const STAFF_TYPE_LABELS: Record<StaffType, string> = {
+  [StaffType.CASHIER]: 'Cashier',
+  [StaffType.VAN_SALESMAN]: 'Van salesman',
+  [StaffType.ACCOUNTANT]: 'Accountant',
+  [StaffType.OWNER]: 'Owner',
+  [StaffType.OTHER]: 'Other',
+};
+
+/** settlesWithOffice when the admin does not say: only van salesmen hand cash over by default. */
+export function defaultSettlesWithOffice(staffType: StaffType): boolean {
+  return staffType === StaffType.VAN_SALESMAN;
+}
+
 /** Case-insensitive comparison for cashier names (index and queries must use the same one). */
 export const CASHIER_NAME_COLLATION = { locale: 'en', strength: 2 } as const;
 
@@ -32,6 +57,16 @@ export class Cashier {
 
   @Prop({ type: String, enum: CashierStatus, required: true, default: CashierStatus.ACTIVE, index: true })
   status: CashierStatus;
+
+  @Prop({ type: String, enum: StaffType, required: true, default: StaffType.CASHIER, index: true })
+  staffType: StaffType;
+
+  /**
+   * Holds collected cash and hands it over to the office. Only these staff can
+   * hand over, and only their receipts count as unsettled cash.
+   */
+  @Prop({ type: Boolean, required: true, default: false, index: true })
+  settlesWithOffice: boolean;
 
   /** The app user who works as this cashier, if any; at most one cashier per user. */
   @Prop({ type: Types.ObjectId, ref: 'User', default: null })

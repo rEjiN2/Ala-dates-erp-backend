@@ -1,86 +1,107 @@
 # Ala Dates ERP: Backend
 
 NestJS + TypeScript, MongoDB (Mongoose), pnpm. UAE dates-trading company,
-multi-location stock. Replaces a legacy ERP (atACC).
+multi-location stock. Replaces legacy ERP (atACC).
 
-## Working rules (read first)
-- Be economical. Read only the files you need; do not scan the whole repo.
-  Check "Where things live" before searching.
-- Mirror the closest existing module instead of inventing structure.
-  Prefer a small change to an existing service over a new abstraction.
-- Keep command output small: run targeted tests (`pnpm test <path>`), and
-  never paste long logs back into the conversation.
-- Tests: always for money/stock posting, permissions and validation rules.
-  Plain CRUD masters need only a few tests.
-- Do not commit unless asked. Never put real secrets in any tracked file;
-  `.env.example` holds placeholders only.
-- If a business rule is listed under "Open questions", ask; do not assume.
-- Finish every task with a summary of at most 10 lines: what changed, what
-  was tested, decisions I need to make.
+## Token rules (always)
+- Minimal diff. Smallest change that meets "Done when". No refactors, no
+  extra docs/README/summary files, no unrelated cleanup.
+- Read only files you need; check "Where things live" first. Do not re-read
+  files already read in this session.
+- Run only tests for touched files (`pnpm test <path>`). No full suite, no
+  full lint, unless asked. Never paste long logs.
+- Mirror the closest existing module. Do not invent new structure.
+- Stop when "Done when" is met. Reply in 5 lines max: changed, tested,
+  decisions needed.
+- Blocked on a business rule: ask one question. Otherwise decide, state the
+  assumption in one line, continue.
+- No commits unless asked. Never put real secrets in tracked files
+  (.env.example = placeholders only).
+- Tests: money/stock posting, permissions, validation rules. Plain CRUD
+  masters: a few only.
 
 ## Where things live (verify on first use, then correct this section)
-src/modules/<domain>/ with: auth, users (UsersService + UserManagementService),
-roles (permissions.ts = PERMISSIONS constant + seeded role sets), location,
-product, party, cashier, company, dashboard, files, storage, sequence, audit,
-comments (+ EntityAccessRegistry). Accounting lives in src/modules/accounting/:
-ledger-accounts, cash-receipts, cash-payments, cash-handovers, vouchers (VoucherPostingService,
-VoucherPrintService, data-scope.ts helper, voucher-view.ts balance redaction).
-Reports: src/modules/reports (salesman collections).
-Seeds: src/database/seed.ts + seed-roles.ts. Test harness: test/voucher-test-module.ts.
-Shared: SequenceService, AuditService, StorageService, amount-in-words, sum2.
+src/modules/<domain>/: auth, users, roles, location, product-group,
+accounts (LedgerAccount), party, cashier (= Staff), company, cash-receipt,
+cash-payment, cash-handover, dashboard, files, sequence, audit, comments.
+Shared: PERMISSIONS constant, VoucherPostingService, SequenceService,
+AuditService, DataScope helper, StorageService, amount-in-words, sum2.
+
+## Status (update after each step)
+Built: auth, locations, product groups, accounts, customers/suppliers,
+cashiers, company profile, cash receipt, cash payment, dashboard cash card,
+MEGA storage.
+In progress: Staff rename, Users/Roles + scoping, Cash Handover + salesman report.
+Planned: products, opening balances, stock engine, purchase invoice, stock
+transfer, sales invoice, allocation, bundling, returns, reports, migration.
 
 ## Conventions
-- Permissions: one PERMISSIONS constant, used by every @RequirePermission().
-  A new permission means: add to the constant, add to the seed. The seed
-  must be idempotent and upsert the admin role with ALL permissions. The JWT
-  strategy reloads user + role every request, so permission, scope and status
-  changes apply at once (only the frontend's cached /auth/me is stale).
-- Data scope: role.dataScope own|all. "own" users see only vouchers they
-  created or on their linked cashier (others 404) and post only for that
-  cashier into User.allowedCashAccountIds (else 403). Balances need
-  balances:view.
-- Codes: SequenceService (atomic findOneAndUpdate $inc, accepts a Mongo
-  session). Clients never send codes; codes are immutable. Prefixes:
-  BR/WH/ST/VAN (locations), PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CSH (cashier), CR (receipt), CP (payment), CH (handover).
-- Money: LedgerAccount.Balance = debits minus credits (customer owing us is
-  positive). LedgerEntry is insert-only. Every voucher posts through
-  VoucherPostingService inside ONE Mongo transaction: voucher number,
-  entries, balances, audit. Totals are always computed server-side. Never
-  hard-delete a voucher: Cancel with a reason posts reversing entries; Edit
-  reverses and reposts; a no-change edit is rejected.
-- Audit and comments: AuditService.record(entry, session) is written in the
-  same transaction as the change. The actor comes from the JWT, never the
-  request body. Audit and comments are insert-only. /activity merges both.
-- Accounts: scope=company (cash, bank, wallet, income, expense, other) and
+- Permissions: one PERMISSIONS constant for every @RequirePermission().
+  New permission = constant + seed. Seed is idempotent and upserts admin with
+  ALL permissions. Users re-login to get new permissions. Vouchers use
+  :read :create :edit :cancel (not :manage). Also balances:view,
+  users:manage, roles:manage, cash-handovers:approve, reports:salesman.
+- Roles: dataScope own|all. Scope own: list/get/pdf/activity/comments return
+  only vouchers where createdBy = me OR collector = my linked staff, else
+  404. On create, collector forced to my staff record; header account must
+  be in my allowedCashAccountIds, else 403. No balances:view = strip
+  balances from lookups and old-balance. Use the DataScope helper for every
+  voucher type.
+- People on vouchers: "Created By" = login, automatic, from JWT only, never
+  the body. "Collected By" (receipt) / "Paid By" (payment) = Staff member who
+  handled the money, chosen on the form. Staff = Cashier module internally
+  (cashierId, /cashiers, CSH- codes). Staff has staffType (cashier |
+  van_salesman | accountant | owner | other) and settlesWithOffice (true only
+  for van salesmen by default). Inactive staff stay visible on old vouchers,
+  not choosable on new ones. Linked login: Cashier.linkedUserId, unique.
+- Codes: SequenceService (atomic $inc, takes a Mongo session). Clients never
+  send codes; immutable. BR/WH/ST/VAN, PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
+  CSH, CR, CP, HO.
+- Money: Balance = debits - credits (customer owing us is positive).
+  LedgerEntry insert-only. Every voucher posts via VoucherPostingService in
+  ONE Mongo transaction (number, entries, balances, audit). Totals computed
+  server-side. No hard delete: Cancel with a reason posts reversals; Edit =
+  reverse + repost; a no-change edit is rejected.
+- Receipt: header account cash/wallet/bank (active); lines supplier, party,
+  expense, other; never cash/wallet/bank. Payment: same header rule; lines
+  supplier, customer, expense, other; overspending cash/wallet returns
+  warnings, needs acknowledgeWarnings (bank exempt). Lists filter by
+  paymentMethod (cash|bank) and date, status, account, staff, q.
+- Handover: only staff with settlesWithOffice. Receipts settlementStatus
+  unsettled|submitted|settled (server-set); submit locks receipts. Approver
+  != submitter unless company allowSelfApproval (default off). Approval posts
+  only receivedCash (debit receiving account, credit van account); shortage
+  stays in van balance; excess rejected; bank receipts only marked verified.
+- Audit/comments: AuditService.record(entry, session) in the same
+  transaction; insert-only; /activity merges both.
+- Accounts: scope=company (cash, bank, wallet, income, expense, other) vs
   scope=party (customer, supplier). Party ledger accounts are managed only
-  by the Parties module. Receipt/Payment header account: cash, wallet or
-  bank (active). Voucher line accounts: never cash, wallet or bank.
-- Locations: one self-referencing collection. Parent rules live only in the
-  ALLOWED_PARENT_TYPES map, exposed at GET /locations/rules. Ancestors and
-  depth are maintained by the backend. Max depth 6, no cycles.
-- Delete rule for masters: block if balance is not 0 or the record is used;
-  offer deactivate instead.
-- Storage: StorageService interface with a MEGA adapter (megajs). Files are
-  private and streamed through the backend; never expose a share link or
-  import the SDK outside the adapter.
-- Auth: JWT in httpOnly cookies; GET /auth/me returns user and permissions.
-- Errors: global exception filter, one response shape; class-validator DTOs
-  with a global ValidationPipe; config validated at startup.
-- Lookups: GET /<module>/lookup returns light { id, code, name, ... } for
-  dropdowns. Time zone for display is Asia/Dubai; store UTC.
+  by the Parties module.
+- Locations: one self-referencing collection; parent rules only in
+  ALLOWED_PARENT_TYPES (GET /locations/rules); ancestors/depth maintained
+  server-side; max depth 6; no cycles.
+- Master delete: block if balance != 0 or used; offer deactivate.
+- Storage: StorageService + MEGA adapter (megajs); files private, streamed
+  through the backend; no share links; no SDK import outside the adapter.
+- Auth: JWT in httpOnly cookies; /auth/me returns user, role, dataScope,
+  permissions, linked staff (with staffType), allowed cash accounts.
+- Errors: global filter, one shape; class-validator DTOs; startup config
+  validation. Display time Asia/Dubai; store UTC.
+- Lookups: GET /<module>/lookup returns light { id, code, name, ... }.
 
 ## Business context
-Dates in many package sizes. Bundling (components into a gift pack and back)
-is a core feature and needs its own stock-movement logic. Location tree:
-Branch > Warehouse / Store / Van (vans can nest). Branch is organisational;
-warehouse, store and van hold their own stock.
+Dates in many package sizes; bundling (components <-> gift pack) is core and
+needs its own stock logic. Locations: Branch > Warehouse / Store / Van (vans
+nest). Branch is organisational; warehouse, store, van hold stock. Van
+salesmen collect cash/bank receipts all day and hand cash to the office at
+night for approval.
 
 ## Open questions (ask, do not assume)
-Q15 extra tax types; Q17 stock on purchase invoice vs goods received;
-Q25 allocation mandatory vs on-account; Q27 when a cheque affects the bank
-balance; Q32 stock adjustment approval; Q33 transfer in-transit; Q35 to Q39
-bundling rules; Q44 history migration. VAT is stored per line only for now.
+Q13 stock levels; Q14 pricing; Q15 extra tax types; Q17 stock on purchase
+invoice vs goods received; Q25 allocation mandatory vs on-account; Q27
+cheque clearing; Q32 stock adjustment approval; Q33 transfer in-transit;
+Q35-Q39 bundling; Q44 history migration. VAT per line only for now.
+Van receipt print format (thermal 80mm vs PDF) undecided.
 
 ## Not built, do not build unless asked
 Journal Entry, Credit/Debit Note, Advance Allocation, Bank Reconciliation,

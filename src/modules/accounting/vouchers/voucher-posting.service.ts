@@ -24,6 +24,8 @@ import { CommentsService } from '../../comments/comments.service.js';
 import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { CashierService } from '../../cashier/cashier.service.js';
 import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
+import { StaffType } from '../../cashier/schemas/cashier.schema.js';
+import { SettlementStatus } from '../cash-receipts/schemas/cash-receipt.schema.js';
 import {
   type Actor,
   type UserSnapshot,
@@ -94,7 +96,7 @@ export interface VoucherListRow {
   /** The header (cash/wallet/bank) account; each voucher renames this key in its own rows. */
   header: { id: string; name: string | null };
   /** id is null on vouchers from before the cashier master; name is their old free text. */
-  cashier: { id: string | null; name: string | null };
+  cashier: { id: string | null; name: string | null; staffType: StaffType | null };
   paymentMethod: PaymentMethod;
   /** First line's account, plus how many other distinct accounts the voucher touches. */
   partiesSummary: { firstAccount: { id: string; name: string | null } | null; othersCount: number };
@@ -307,7 +309,11 @@ export class VoucherPostingService {
           voucherNo: voucher.voucherNo,
           date: voucher.voucherDate,
           header: { id: headerId, name: names.get(headerId) ?? null },
-          cashier: { id: voucher.cashierId?.toString() ?? null, name: voucher.cashierName ?? null },
+          cashier: {
+            id: voucher.cashierId?.toString() ?? null,
+            name: voucher.cashierName ?? null,
+            staffType: voucher.cashierStaffType ?? null,
+          },
           paymentMethod: voucher.paymentMethod ?? PaymentMethod.CASH,
           partiesSummary: {
             firstAccount: firstAccountId ? { id: firstAccountId, name: names.get(firstAccountId) ?? null } : null,
@@ -381,6 +387,7 @@ export class VoucherPostingService {
             [def.headerField]: new Types.ObjectId(input.headerAccountId),
             cashierId: cashier._id,
             cashierName: cashier.name,
+            cashierStaffType: cashier.staffType ?? StaffType.CASHIER,
             paymentMethod: paymentMethodFor(headerAccount.type),
             paymentReference: input.paymentReference ?? null,
             comments: input.comments,
@@ -389,6 +396,7 @@ export class VoucherPostingService {
             status: VoucherStatus.POSTED,
             createdBy: toUserSnapshot(actor),
             createdAt: now,
+            ...(def.tracksSettlement ? { settlementStatus: this.initialSettlement(cashier.settlesWithOffice) } : {}),
             ...input.extraFields,
           },
         ],
@@ -455,16 +463,21 @@ export class VoucherPostingService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
       this.assertNotCancelled(def, existing, 'edited');
+      this.assertNotOnHandover(def, existing, 'edited');
 
       if (input.cashierId === null) {
         throw new BadRequestException(`A ${def.label.toLowerCase()} must have a cashier`);
       }
       let nextCashierId = existing.cashierId?.toString() ?? null;
       let nextCashierName = existing.cashierName;
+      let nextCashierStaffType = existing.cashierStaffType ?? null;
       if (input.cashierId !== undefined && input.cashierId !== nextCashierId) {
         const cashier = await this.cashierService.findActiveForPosting(input.cashierId, session);
         nextCashierId = cashier._id.toString();
         nextCashierName = cashier.name;
+        nextCashierStaffType = cashier.staffType ?? StaffType.CASHIER;
+        // Not on a handover (checked above), so the new collector decides it afresh.
+        if (def.tracksSettlement) existing.set('settlementStatus', this.initialSettlement(cashier.settlesWithOffice));
       }
       if (!nextCashierId) {
         throw new BadRequestException(
@@ -511,6 +524,7 @@ export class VoucherPostingService {
       existing.voucherDate = after.voucherDate;
       existing.cashierId = new Types.ObjectId(nextCashierId);
       existing.cashierName = nextCashierName;
+      existing.cashierStaffType = nextCashierStaffType;
       existing.paymentMethod = paymentMethodFor(headerAccount.type);
       existing.paymentReference = after.paymentReference ?? null;
       if (input.comments !== undefined) existing.comments = input.comments;
@@ -572,11 +586,14 @@ export class VoucherPostingService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
       this.assertNotCancelled(def, existing, 'cancelled again');
+      this.assertNotOnHandover(def, existing, 'cancelled');
 
       await this.reverse(def, this.postingOf(def, existing), 'cancelled', session);
 
       const now = new Date();
       existing.status = VoucherStatus.CANCELLED;
+      // Cancelled receipts are never settled.
+      if (def.tracksSettlement) existing.set('settlementStatus', null);
       existing.cancelledBy = toUserSnapshot(actor);
       existing.cancelledAt = now;
       existing.cancelReason = reason;
@@ -607,6 +624,7 @@ export class VoucherPostingService {
     viewer?: ScopedUser,
   ): Promise<{ success: true }> {
     const existing = await this.findById(def, model, id, viewer);
+    this.assertNotOnHandover(def, existing, 'deleted');
 
     return runInTransaction(this.connection, async (session) => {
       if (existing.status !== VoucherStatus.CANCELLED) {
@@ -642,6 +660,19 @@ export class VoucherPostingService {
       totalTax: sum2(lines.map((line) => line.vat)),
       grandTotal: sum2(lines.map((line) => line.netAmount)),
     };
+  }
+
+  /**
+   * For workflows that post later than create (handover approval): posts the
+   * document's current header and lines inside the caller's transaction.
+   */
+  async postDocument(def: VoucherDefinition, voucher: VoucherDocument, cause: string, session: ClientSession) {
+    if (voucher.lines.length > 0) await this.post(def, this.postingOf(def, voucher), cause, session);
+  }
+
+  /** Undoes postDocument, inside the caller's transaction. */
+  async reverseDocument(def: VoucherDefinition, voucher: VoucherDocument, cause: string, session: ClientSession) {
+    if (voucher.lines.length > 0) await this.reverse(def, this.postingOf(def, voucher), cause, session);
   }
 
   /** Writes the voucher's ledger entries and moves the balances. */
@@ -907,6 +938,20 @@ export class VoucherPostingService {
   private assertValidId(def: VoucherDefinition, id: string): void {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException(`${def.label} id "${id}" is not a valid id`);
+    }
+  }
+
+  private initialSettlement(settlesWithOffice: boolean | undefined): SettlementStatus | null {
+    return settlesWithOffice ? SettlementStatus.UNSETTLED : null;
+  }
+
+  /** A receipt on a handover (submitted or settled) is locked until the handover is rejected or cancelled. */
+  private assertNotOnHandover(def: VoucherDefinition, voucher: VoucherDocument, action: string): void {
+    const status = def.tracksSettlement ? (voucher.get('settlementStatus') as SettlementStatus | null) : null;
+    if (status === SettlementStatus.SUBMITTED || status === SettlementStatus.SETTLED) {
+      throw new BadRequestException(
+        `${def.label} ${voucher.voucherNo} is ${status} on a cash handover and cannot be ${action}`,
+      );
     }
   }
 

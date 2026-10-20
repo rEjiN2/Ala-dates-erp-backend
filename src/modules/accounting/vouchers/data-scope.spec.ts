@@ -5,7 +5,7 @@ import { Types } from 'mongoose';
 import request from 'supertest';
 import { createVoucherHarness, makeUser, type VoucherHarness } from '../../../../test/voucher-test-module.js';
 import { LedgerAccountType, type LedgerAccountDocument } from '../ledger-accounts/schemas/ledger-account.schema.js';
-import type { CashierDocument } from '../../cashier/schemas/cashier.schema.js';
+import { type CashierDocument, StaffType } from '../../cashier/schemas/cashier.schema.js';
 import { User, type UserDocument } from '../../users/schemas/user.schema.js';
 import { DataScope, Permission, VAN_SALESMAN_PERMISSIONS } from '../../roles/permissions.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
@@ -100,6 +100,31 @@ describe('Data scope (own) on cash receipts', () => {
       .post('/cash-receipts')
       .send(body({ cashierId: salesmanCashier.id }));
     expect(same.status).toBe(201);
+  });
+
+  it('lets an accountant be Collected By on their own receipts, never marked unsettled', async () => {
+    const accountantUser = await scopedUser('Mona', [vanCash.id as string]);
+    const accountant = await h.cashiers.create(
+      { name: 'Mona', staffType: StaffType.ACCOUNTANT, linkedUserId: accountantUser.id },
+      office,
+    );
+    as(accountantUser);
+    const res = await request(server()).post('/cash-receipts').send(body());
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ cashierId: accountant.id, cashierName: 'Mona', cashierStaffType: 'accountant' });
+
+    const report = await h.collections.report({}, office);
+    expect(report.rows.map((row) => row.cashier.id)).not.toContain(accountant.id);
+  });
+
+  it('lets an office user choose any active staff member; a scoped user stays on their own', async () => {
+    const owner = await h.cashiers.create({ name: 'Owner', staffType: StaffType.OWNER }, office);
+    const receipt = await officeReceipt(owner);
+    expect(receipt.cashierStaffType).toBe(StaffType.OWNER);
+
+    as(salesman);
+    const res = await request(server()).post('/cash-receipts').send(body({ cashierId: owner.id }));
+    expect(res.status).toBe(403);
   });
 
   it('refuses another cashier or a cash account not assigned to the user (403), posting nothing', async () => {

@@ -47,6 +47,12 @@ export interface VoucherDefinition {
   scopeRule?: VoucherScopeRule;
   /** What the voucher's cashier is called in diffs and on the PDF; defaults to "Cashier". */
   cashierLabel?: string;
+  /**
+   * Receipts: track settlementStatus. Receipts of staff who settle with the
+   * office start unsettled; once submitted on a handover (or settled) they
+   * can't be edited, cancelled or deleted.
+   */
+  tracksSettlement?: boolean;
   pdf: {
     /** Title by payment method. */
     titles: { cash: string; bank: string };
@@ -57,5 +63,14 @@ export interface VoucherDefinition {
     signatures: readonly [string, string];
     /** More rows for the PDF's info table, from the voucher's own extra fields. */
     extraInfo?: (voucher: VoucherDocument) => { label: string; value: string }[];
+    /** Rows and totals to print instead of the posted lines (handovers print their receipts); undefined keeps the lines. */
+    body?: (voucher: VoucherDocument) =>
+      | {
+          lines: { counterparty: string; narration: string | null; amount: number; vat: number; netAmount: number }[];
+          grossTotal: number;
+          totalTax: number;
+          grandTotal: number;
+        }
+      | undefined;
   };
 }

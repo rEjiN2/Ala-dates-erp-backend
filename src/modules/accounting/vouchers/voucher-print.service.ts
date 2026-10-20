@@ -97,16 +97,18 @@ export class VoucherPrintService {
             extraInfo: def.pdf.extraInfo?.(voucher) ?? [],
             paymentMethod: voucher.paymentMethod ?? 'cash',
             paymentReference: voucher.paymentReference ?? null,
-            lines: voucher.lines.map((line) => ({
-              counterparty: nameOf(line.accountId.toString()),
-              narration: line.narration ?? null,
-              amount: line.amount,
-              vat: line.vat,
-              netAmount: line.netAmount,
-            })),
-            grossTotal: voucher.grossTotal,
-            totalTax: voucher.totalTax,
-            grandTotal: voucher.grandTotal,
+            ...(def.pdf.body?.(voucher) ?? {
+              lines: voucher.lines.map((line) => ({
+                counterparty: nameOf(line.accountId.toString()),
+                narration: line.narration ?? null,
+                amount: line.amount,
+                vat: line.vat,
+                netAmount: line.netAmount,
+              })),
+              grossTotal: voucher.grossTotal,
+              totalTax: voucher.totalTax,
+              grandTotal: voucher.grandTotal,
+            }),
             comments: voucher.comments ?? null,
             preparedBy: voucher.createdBy ? { name: voucher.createdBy.name, at: voucher.createdAt } : null,
             cancelled:

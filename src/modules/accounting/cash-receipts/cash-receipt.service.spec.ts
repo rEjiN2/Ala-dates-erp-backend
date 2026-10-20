@@ -866,7 +866,7 @@ describe('CashReceiptService (transactional)', () => {
         voucherNo: 'CR000001',
         date: new Date('2026-09-10'),
         cashAccount: { id: main.id, name: 'Main Cash' },
-        cashier: { id: mainCashier.id, name: 'Sachin' },
+        cashier: { id: mainCashier.id, name: 'Sachin', staffType: 'cashier' },
         paymentMethod: 'cash',
         // Ali, Omar, Ali: first account plus one other distinct account.
         partiesSummary: {
@@ -1280,7 +1280,7 @@ describe('CashReceiptService (transactional)', () => {
       const switched = await service.update(receipt.id, { cashierId: otherCashier.id }, omar);
       expect(switched.cashierName).toBe('Omar');
       const [latest] = await auditFor(receipt._id);
-      expect(latest.changes).toEqual([{ field: 'cashier', label: 'Cashier', from: 'Sachin', to: 'Omar' }]);
+      expect(latest.changes).toEqual([{ field: 'cashier', label: 'Collected By', from: 'Sachin', to: 'Omar' }]);
     });
 
     it('filters the list by cashier and shows it on each row', async () => {
@@ -1289,7 +1289,7 @@ describe('CashReceiptService (transactional)', () => {
       await createReceipt({ ...dto, cashierId: otherCashier.id }, sachin);
 
       const byOmar = await service.findAll({ cashierId: otherCashier.id });
-      expect(byOmar.items.map((row) => row.cashier)).toEqual([{ id: otherCashier.id, name: 'Omar' }]);
+      expect(byOmar.items.map((row) => row.cashier)).toEqual([{ id: otherCashier.id, name: 'Omar', staffType: 'cashier' }]);
       expect(byOmar.summary).toEqual({ count: 1, total: 10 });
       expect((await service.findAll({ cashierId: mainCashier.id, status: 'posted' })).items).toHaveLength(1);
     });
@@ -1345,7 +1345,7 @@ describe('CashReceiptService (transactional)', () => {
       ]);
 
       const rows = (await service.findAll({ sortBy: 'voucherNo', sortDir: 'asc' })).items;
-      expect(rows[0].cashier).toEqual({ id: null, name: 'Old Counter Ali' });
+      expect(rows[0].cashier).toEqual({ id: null, name: 'Old Counter Ali', staffType: null });
     });
   });
 
@@ -1656,6 +1656,8 @@ describe('CashReceiptService (transactional)', () => {
         'Settled invoice 7',
         'Cashier Signature',
         'Payer Signature',
+        'Collected By',
+        'Prepared by: ',
         'Printed by Omar on ',
         ' GST',
       ]) {

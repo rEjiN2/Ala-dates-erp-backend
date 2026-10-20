@@ -1,4 +1,5 @@
 import type { DataScope } from '../../roles/permissions.js';
+import type { StaffType } from '../../cashier/schemas/cashier.schema.js';
 
 export interface JwtAccessPayload {
   sub: string;
@@ -38,6 +39,14 @@ export interface AuthenticatedUser {
 export interface AuthProfile extends AuthenticatedUser {
   dataScope: DataScope;
   mustChangePassword: boolean;
-  linkedCashier: { id: string; code: string; name: string; status: string } | null;
+  /** The linked staff record (Cashier master). */
+  linkedCashier: {
+    id: string;
+    code: string;
+    name: string;
+    status: string;
+    staffType: StaffType;
+    settlesWithOffice: boolean;
+  } | null;
   allowedCashAccounts: { id: string; code: string; name: string; type: string }[];
 }
