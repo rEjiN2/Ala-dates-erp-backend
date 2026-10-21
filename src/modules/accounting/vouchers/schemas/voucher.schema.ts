@@ -23,6 +23,37 @@ export enum PaymentMethod {
   BANK = 'bank',
 }
 
+/** Where a cheque received on a receipt stands. Server-set only. */
+export enum ChequeStatus {
+  /** Still with the salesman who collected it (set by handover). */
+  WITH_SALESMAN = 'with_salesman',
+  /** On a submitted handover. */
+  SUBMITTED = 'submitted',
+  AT_OFFICE = 'at_office',
+  /** Taken to the bank; nothing posted yet. */
+  DEPOSITED = 'deposited',
+  /** Money arrived: posted from cheques in hand to the destination account. */
+  CLEARED = 'cleared',
+  /** Bounced: the receipt's posting was reversed, so the customer owes again. */
+  RETURNED = 'returned',
+}
+
+/**
+ * A bank receipt by a user who settles with the office: the money is already
+ * in the bank, but the office verifies it (with its slip) on a handover.
+ * Server-set only; null for everyone else.
+ */
+export enum BankHandoverStatus {
+  WITH_SALESMAN = 'with_salesman',
+  /** On a submitted handover: locked until it is approved, rejected or cancelled. */
+  SUBMITTED = 'submitted',
+  /** Approved on a handover. */
+  VERIFIED = 'verified',
+}
+
+/** A cheque receipt can be edited or cancelled only in these states; later ones must be undone first. */
+export const EDITABLE_CHEQUE_STATUSES: readonly ChequeStatus[] = [ChequeStatus.AT_OFFICE, ChequeStatus.WITH_SALESMAN];
+
 export function paymentMethodFor(accountType: LedgerAccountType): PaymentMethod {
   if (accountType === LedgerAccountType.BANK) return PaymentMethod.BANK;
   if (accountType === LedgerAccountType.CHEQUE) return PaymentMethod.CHEQUE;
@@ -93,9 +124,22 @@ export abstract class VoucherBase {
   @Prop({ type: String, trim: true, default: null })
   paymentReference: string | null;
 
-  /** Cheque vouchers only; null otherwise. */
+  /** Cheque vouchers only (one cheque per voucher); null otherwise. Post-dated allowed. */
   @Prop({ type: Date, default: null })
   chequeDate: Date | null;
+
+  @Prop({ type: String, trim: true, default: null })
+  chequeNumber: string | null;
+
+  /** The bank the cheque is drawn on. A number + bank pair is unique among non-cancelled vouchers. */
+  @Prop({ type: String, trim: true, default: null })
+  chequeBankName: string | null;
+
+  @Prop({ type: String, enum: [...Object.values(ChequeStatus), null], default: null, index: true })
+  chequeStatus: ChequeStatus | null;
+
+  @Prop({ type: String, enum: [...Object.values(BankHandoverStatus), null], default: null })
+  bankHandoverStatus: BankHandoverStatus | null;
 
   @Prop({ trim: true })
   comments?: string;

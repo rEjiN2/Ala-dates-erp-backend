@@ -886,6 +886,7 @@ describe('CashReceiptService (transactional)', () => {
         cashAccount: { id: main.id, name: 'Main Cash' },
         collectedBy: { id: sachin.id, name: 'Sachin' },
         paymentMethod: 'cash',
+        cheque: null,
         // Ali, Omar, Ali: first account plus one other distinct account.
         partiesSummary: {
           firstAccount: { id: ali.id, name: 'Ali Traders' },
@@ -1516,7 +1517,7 @@ describe('CashReceiptService (transactional)', () => {
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
       await expect(
-        pipe.transform({ ...body, paymentMethod: 'bank' }, { type: 'body', metatype: CreateCashReceiptDto }),
+        pipe.transform({ ...body, paymentMethod: 'card' }, { type: 'body', metatype: CreateCashReceiptDto }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 

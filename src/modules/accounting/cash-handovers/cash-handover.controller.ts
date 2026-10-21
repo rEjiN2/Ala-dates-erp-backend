@@ -1,4 +1,17 @@
-import { Body, Controller, Get, Header, Param, Post, Query, StreamableFile, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Param,
+  Post,
+  Query,
+  StreamableFile,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from '../../../common/guards/permissions.guard.js';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator.js';
@@ -61,6 +74,19 @@ export class CashHandoverController {
   @RequirePermission(Permission.CASH_HANDOVERS_CREATE)
   create(@Body() dto: CreateCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
     return this.cashHandoverService.create(dto, user);
+  }
+
+  /** multipart/form-data `file`: the bill of one expense (PDF or image). */
+  @Post(':id/expenses/:expenseId/attachment')
+  @RequirePermission(Permission.CASH_HANDOVERS_CREATE)
+  @UseInterceptors(FileInterceptor('file'))
+  attachExpenseBill(
+    @Param('id') id: string,
+    @Param('expenseId') expenseId: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.cashHandoverService.attachExpenseBill(id, expenseId, file, user);
   }
 
   @Post(':id/approve')

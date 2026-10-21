@@ -52,6 +52,7 @@ export interface SalesmanCollectionDetails {
     account: Ref;
     paymentMethod: PaymentMethod;
     paymentReference: string | null;
+    chequeNumber: string | null;
     amount: number;
   }[];
   handovers: {
@@ -155,6 +156,7 @@ export class SalesmanCollectionsService {
         },
         paymentMethod: receipt.paymentMethod ?? PaymentMethod.CASH,
         paymentReference: receipt.paymentReference ?? null,
+        chequeNumber: receipt.chequeNumber ?? null,
         amount: receipt.grandTotal,
       })),
       handovers: handovers.map((handover) => ({

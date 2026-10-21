@@ -16,6 +16,8 @@ import {
   CashHandover,
   CashHandoverSchema,
 } from '../src/modules/accounting/cash-handovers/schemas/cash-handover.schema.js';
+import { ChequeService } from '../src/modules/accounting/cheques/cheque.service.js';
+import { ChequeController } from '../src/modules/accounting/cheques/cheque.controller.js';
 import { SalesmanCollectionsService } from '../src/modules/reports/salesman-collections.service.js';
 import { ReportsController } from '../src/modules/reports/reports.controller.js';
 import { VoucherPostingService } from '../src/modules/accounting/vouchers/voucher-posting.service.js';
@@ -96,6 +98,7 @@ export async function createVoucherHarness(dbName: string) {
       CashReceiptController,
       CashPaymentController,
       CashHandoverController,
+      ChequeController,
       ReportsController,
       CommentsController,
       ActivityController,
@@ -105,6 +108,7 @@ export async function createVoucherHarness(dbName: string) {
       CashReceiptPrintService,
       CashPaymentService,
       CashHandoverService,
+      ChequeService,
       SalesmanCollectionsService,
       VoucherPostingService,
       VoucherPrintService,
@@ -211,6 +215,7 @@ export async function createVoucherHarness(dbName: string) {
     receiptPrints: moduleRef.get(CashReceiptPrintService),
     payments: moduleRef.get(CashPaymentService),
     handovers: moduleRef.get(CashHandoverService),
+    cheques: moduleRef.get(ChequeService),
     collections: moduleRef.get(SalesmanCollectionsService),
     posting: moduleRef.get(VoucherPostingService),
     audit: moduleRef.get(AuditService),

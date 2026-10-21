@@ -7,6 +7,10 @@ export enum FileOwnerType {
   PRODUCT = 'product',
   BUNDLE = 'bundle',
   COMPANY = 'company',
+  /** A cheque or bank-transfer slip on a cash receipt. */
+  CASH_RECEIPT = 'cash-receipt',
+  /** A bill for an expense paid out of collected cash, on a cash handover. */
+  CASH_HANDOVER = 'cash-handover',
   OTHER = 'other',
 }
 

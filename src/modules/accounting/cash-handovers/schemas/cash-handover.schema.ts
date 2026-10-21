@@ -39,6 +39,116 @@ export class HandoverLine {
 export const HandoverLineSchema = SchemaFactory.createForClass(HandoverLine);
 
 /**
+ * A cheque the user collected on a receipt, handed over as a document: it
+ * already sits in the company's cheques in hand (posted by the receipt), so
+ * nothing is posted for it; only its chequeStatus moves (with_salesman ->
+ * submitted -> at_office). Snapshot for the slip.
+ */
+@Schema({ _id: false })
+export class HandoverCheque {
+  /** The cash receipt the cheque was received on. */
+  @Prop({ type: Types.ObjectId, required: true })
+  receiptId: Types.ObjectId;
+
+  @Prop({ required: true })
+  voucherNo: string;
+
+  @Prop({ required: true })
+  chequeNumber: string;
+
+  @Prop({ type: String, default: null })
+  chequeBankName: string | null;
+
+  @Prop({ type: Date, default: null })
+  chequeDate: Date | null;
+
+  @Prop({ required: true })
+  amount: number;
+
+  /** The receipt's attachments when handed over (cheque photo). */
+  @Prop({ type: [Object], default: [] })
+  attachments: { fileRef: Types.ObjectId; title: string; mimeType: string }[];
+}
+
+export const HandoverChequeSchema = SchemaFactory.createForClass(HandoverCheque);
+
+/**
+ * A bank-transfer receipt the user collected, handed over for the office to
+ * verify against its slip. The money already sits in the bank (posted by the
+ * receipt), so nothing is posted; bankHandoverStatus moves
+ * with_salesman -> submitted -> verified.
+ */
+@Schema({ _id: false })
+export class HandoverBankReceipt {
+  @Prop({ type: Types.ObjectId, required: true })
+  receiptId: Types.ObjectId;
+
+  @Prop({ required: true })
+  voucherNo: string;
+
+  @Prop({ type: String, default: null })
+  bankAccountName: string | null;
+
+  @Prop({ type: String, default: null })
+  reference: string | null;
+
+  @Prop({ required: true })
+  amount: number;
+
+  @Prop({ type: [Object], default: [] })
+  attachments: { fileRef: Types.ObjectId; title: string; mimeType: string }[];
+}
+
+export const HandoverBankReceiptSchema = SchemaFactory.createForClass(HandoverBankReceipt);
+
+/** A bill photo or PDF, stored through /files. */
+@Schema({ _id: false })
+export class HandoverFile {
+  @Prop({ type: Types.ObjectId, ref: 'FileAttachment', required: true })
+  fileRef: Types.ObjectId;
+
+  @Prop({ required: true, trim: true })
+  title: string;
+
+  @Prop({ required: true })
+  mimeType: string;
+}
+
+export const HandoverFileSchema = SchemaFactory.createForClass(HandoverFile);
+
+/**
+ * Money the user spent out of what they collected (fuel, parking, ...).
+ * Reserved from the source on submit like an amount; approval posts it
+ * (debit the expense account, credit the source), so it leaves their pending.
+ */
+@Schema()
+export class HandoverExpense {
+  @Prop({ type: Types.ObjectId, ref: LedgerAccount.name, required: true })
+  expenseAccountId: Types.ObjectId;
+
+  @Prop({ required: true })
+  expenseAccountName: string;
+
+  /** One of the user's cash or wallet accounts it was paid from. */
+  @Prop({ type: Types.ObjectId, ref: LedgerAccount.name, required: true })
+  sourceAccountId: Types.ObjectId;
+
+  @Prop({ required: true })
+  sourceAccountName: string;
+
+  @Prop({ required: true })
+  amount: number;
+
+  @Prop({ type: String, trim: true, default: null })
+  description: string | null;
+
+  @Prop({ type: HandoverFileSchema, default: null })
+  attachment: HandoverFile | null;
+}
+
+export const HandoverExpenseSchema = SchemaFactory.createForClass(HandoverExpense);
+
+/**
  * A user hands money from their own cash, wallet and cheque accounts to the
  * office. Balance-based: what is pending is simply those accounts' balances;
  * nothing is flagged on receipts. Stored as a voucher (see VoucherBase) for
@@ -56,6 +166,21 @@ export const HandoverLineSchema = SchemaFactory.createForClass(HandoverLine);
 export class CashHandover extends VoucherBase {
   @Prop({ type: [HandoverLineSchema], default: [] })
   items: HandoverLine[];
+
+  /** Cheques handed over as documents; always received in full on approval. */
+  @Prop({ type: [HandoverChequeSchema], default: [] })
+  cheques: HandoverCheque[];
+
+  /** Bank-transfer receipts handed over for verification; always received in full. */
+  @Prop({ type: [HandoverBankReceiptSchema], default: [] })
+  bankReceipts: HandoverBankReceipt[];
+
+  /** Spent from the collected cash; posted on approval. */
+  @Prop({ type: [HandoverExpenseSchema], default: [] })
+  expenses: (HandoverExpense & { _id: Types.ObjectId })[];
+
+  @Prop({ required: true, default: 0 })
+  expensesTotal: number;
 
   @Prop({ required: true, default: 0 })
   submittedTotal: number;

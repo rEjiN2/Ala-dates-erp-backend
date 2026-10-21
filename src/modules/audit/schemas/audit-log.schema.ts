@@ -21,6 +21,12 @@ export enum AuditAction {
   PASSWORD_RESET = 'password-reset',
   /** A user changed their own password. */
   PASSWORD_CHANGED = 'password-changed',
+  /** Cheque lifecycle (entityType "cheque"). */
+  DEPOSITED = 'deposited',
+  CLEARED = 'cleared',
+  RETURNED = 'returned',
+  /** An administrator undid the last cheque step (deposit, clearance or return). */
+  UNDONE = 'undone',
 }
 
 /** One human-readable difference, e.g. { field: 'cashier', label: 'Cashier', from: 'Ali', to: 'Omar' }. */

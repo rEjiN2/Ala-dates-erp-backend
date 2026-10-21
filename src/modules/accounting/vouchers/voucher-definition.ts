@@ -34,6 +34,12 @@ export interface VoucherDefinition {
   headerLabel: string;
   /** Account types the header may use; defaults to cash, wallet and bank. */
   headerAccountTypes?: readonly LedgerAccountType[];
+  /**
+   * Header account types an "own"-scoped user may use without them being in
+   * their allowedCashAccountIds: company accounts no salesman holds (receipts:
+   * a bank transfer goes straight to the bank, a cheque into cheques in hand).
+   */
+  scopeExemptHeaderTypes?: readonly LedgerAccountType[];
   lineAccountTypes: readonly LedgerAccountType[];
   /** Completes "Line 2: X is a bank account. ..." when a line account has the wrong type. */
   lineTypeHint: string;

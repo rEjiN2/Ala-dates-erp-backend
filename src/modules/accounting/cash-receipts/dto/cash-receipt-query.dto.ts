@@ -1,5 +1,6 @@
-import { IsMongoId, IsOptional } from 'class-validator';
+import { IsEnum, IsMongoId, IsOptional } from 'class-validator';
 import { VoucherQueryDto } from '../../vouchers/dto/voucher.dto.js';
+import { ChequeStatus } from '../../vouchers/schemas/voucher.schema.js';
 
 export {
   VOUCHER_SORT_FIELDS as CASH_RECEIPT_SORT_FIELDS,
@@ -11,4 +12,8 @@ export class CashReceiptQueryDto extends VoucherQueryDto {
   @IsOptional()
   @IsMongoId()
   cashAccountId?: string;
+
+  @IsOptional()
+  @IsEnum(ChequeStatus)
+  chequeStatus?: ChequeStatus;
 }

@@ -24,6 +24,7 @@ export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
   headerField: 'cashAccountId',
   headerLabel: 'Received into',
   headerAccountTypes: [LedgerAccountType.CASH, LedgerAccountType.WALLET, LedgerAccountType.CHEQUE, LedgerAccountType.BANK],
+  scopeExemptHeaderTypes: [LedgerAccountType.BANK, LedgerAccountType.CHEQUE],
   lineAccountTypes: RECEIPT_LINE_ACCOUNT_TYPES,
   lineTypeHint:
     "Money can't be received from the company's own cash, wallet or bank accounts; choose a customer, supplier, income, expense or other account.",
@@ -37,6 +38,16 @@ export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
     documentTitle: 'Cash Receipt',
     counterpartyColumn: 'Received From',
     signatures: ['Cashier Signature', 'Payer Signature'],
+    extraInfo: (voucher) => {
+      if (!voucher.chequeNumber) return [];
+      const date = voucher.chequeDate ? voucher.chequeDate.toISOString().slice(0, 10) : '-';
+      return [
+        { label: 'Cheque No', value: voucher.chequeNumber },
+        { label: 'Cheque Bank', value: voucher.chequeBankName ?? '-' },
+        { label: 'Cheque Date', value: date },
+        { label: 'Cheque Status', value: (voucher.chequeStatus ?? '-').toUpperCase().replace('_', ' ') },
+      ];
+    },
   },
 };
 

@@ -42,7 +42,7 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   ALL permissions. Users re-login to get new permissions. Vouchers use
   :read :create :edit :cancel (not :manage). Also balances:view,
   users:manage, roles:manage, vouchers:select-collector, reports:salesman,
-  cash-handovers:read|create|approve|cancel.
+  cash-handovers:read|create|approve|cancel, cheques:read|deposit|clear|return.
 - Roles: dataScope own|all. Scope own: list/get/pdf/activity/comments return
   only vouchers where createdBy = me OR collectedById = me, else 404.
   Header account must be in my allowedCashAccountIds, else 403. No balances:view = strip
@@ -69,8 +69,27 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   warnings, needs acknowledgeWarnings (bank exempt). Lists filter by
   paymentMethod (cash|bank) and date, status, account, staff, q.
 - Accounts: type cheque (CHQ-) = cheques in hand, cash-like, not in the
-  dashboard Cash & Bank total. Receipt header cash|wallet|cheque|bank;
-  paymentMethod cash|cheque|bank; cheque needs paymentReference (+chequeDate).
+  dashboard Cash & Bank total; seed makes "Cheques in Hand" + company
+  default. Receipt paymentMethod cash|cheque|bank (explicit, must match the
+  header type). Cheque receipt: chequeNumber + chequeDate + chequeBankName,
+  number+bank unique among non-cancelled. chequeStatus at_office -> deposited
+  (no posting) -> cleared (Dr destination, Cr receipt header) | returned
+  (receipt reversed). Cheque receipt without cashAccountId posts to the
+  company default cheques in hand; scoped users may use bank/cheque headers
+  (scopeExemptHeaderTypes). Collector settlesWithOffice -> with_salesman;
+  handover chequeIds -> submitted, approve -> at_office (no posting), reject
+  or cancel -> with_salesman. Receipt attachments: POST
+  /cash-receipts/:id/attachments (:create), DELETE .../:attachmentId (:edit),
+  files ownerType cash-receipt, audited on the receipt. Handover pending is
+  per user (their vouchers' entries), same-account approval posts nothing.
+  Handover expenses[]: reserved on submit, approval posts source -> expense;
+  bill via POST /cash-handovers/:id/expenses/:expenseId/attachment.
+  Bank receipt by a collector who hands over (own-scoped role or
+  settlesWithOffice; same rule for cheque with_salesman): bankHandoverStatus
+  with_salesman -> submitted (receipt locked) -> verified on approval (no
+  posting); handover bankReceiptIds; cheques/bank snapshot attachments. Edit/cancel only at_office|with_salesman. Admin undo
+  reverses the last step. /cheques (src/modules/accounting/cheques), audit
+  and comments entityType "cheque".
 - Handover (collection `handovers`; old `cash_handovers` kept, unused):
   balance-based. Pending = balances of the user's allowedCashAccountIds
   (cash/wallet/cheque); no flags on receipts. Submit per source <= balance

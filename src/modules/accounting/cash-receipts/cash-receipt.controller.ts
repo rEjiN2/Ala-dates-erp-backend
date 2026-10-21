@@ -9,8 +9,11 @@ import {
   Post,
   Query,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from '../../../common/guards/permissions.guard.js';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator.js';
@@ -81,6 +84,28 @@ export class CashReceiptController {
   @RequirePermission(Permission.CASH_RECEIPTS_CANCEL)
   async cancel(@Param('id') id: string, @Body() dto: CancelCashReceiptDto, @CurrentUser() user: AuthenticatedUser) {
     return voucherView(await this.cashReceiptService.cancel(id, dto, user), user);
+  }
+
+  /** multipart/form-data `file`: a cheque photo or transfer slip (PDF or image). */
+  @Post(':id/attachments')
+  @RequirePermission(Permission.CASH_RECEIPTS_CREATE)
+  @UseInterceptors(FileInterceptor('file'))
+  async addAttachment(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return voucherView(await this.cashReceiptService.addAttachment(id, file, user), user);
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  @RequirePermission(Permission.CASH_RECEIPTS_EDIT)
+  async removeAttachment(
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return voucherView(await this.cashReceiptService.removeAttachment(id, attachmentId, user), user);
   }
 
   /** Hard delete (reverses the posting). Kept from before cancellation existed; needs the cancel permission. */

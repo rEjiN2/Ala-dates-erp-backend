@@ -307,7 +307,7 @@ export class LedgerAccountService {
 
     if (!types.includes(account.type)) {
       throw new BadRequestException(
-        `${account.code} (${account.name}) is a ${account.type} account. Choose a ${types.slice(0, -1).join(', ')} or ${types.at(-1)} account.`,
+        `${account.code} (${account.name}) is a ${account.type} account. Choose a ${types.length > 1 ? `${types.slice(0, -1).join(', ')} or ` : ''}${types.at(-1)} account.`,
       );
     }
     if (account.status !== LedgerAccountStatus.ACTIVE) {

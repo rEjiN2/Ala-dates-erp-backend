@@ -1,13 +1,21 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model, SortOrder } from 'mongoose';
-import { CashHandover, CashHandoverDocument, type HandoverLine } from './schemas/cash-handover.schema.js';
+import {
+  CashHandover,
+  CashHandoverDocument,
+  type HandoverBankReceipt,
+  type HandoverCheque,
+  type HandoverExpense,
+  type HandoverLine,
+} from './schemas/cash-handover.schema.js';
+import { CashReceipt, CashReceiptDocument } from '../cash-receipts/schemas/cash-receipt.schema.js';
+import { CashPayment } from '../cash-payments/schemas/cash-payment.schema.js';
+import { FilesService } from '../../files/files.service.js';
+import { FileOwnerType } from '../../files/schemas/file-attachment.schema.js';
+import { LedgerEntry } from '../vouchers/schemas/ledger-entry.schema.js';
+import { CHEQUE_ENTITY_TYPE } from '../cheques/cheque.service.js';
 import {
   ApproveCashHandoverDto,
   CancelCashHandoverDto,
@@ -20,7 +28,7 @@ import { CASH_HANDOVER_DEFINITION } from './cash-handover.definition.js';
 import { VoucherPostingService, type VoucherModel, type VoucherPage } from '../vouchers/voucher-posting.service.js';
 import { VoucherPrintService, type PrintedVoucher } from '../vouchers/voucher-print.service.js';
 import { isOwnScope, resolveCollectorId, withScope, type ScopedUser } from '../vouchers/data-scope.js';
-import { VoucherStatus } from '../vouchers/schemas/voucher.schema.js';
+import { BankHandoverStatus, ChequeStatus, PaymentMethod, VoucherStatus } from '../vouchers/schemas/voucher.schema.js';
 import { LedgerEntryKind } from '../vouchers/schemas/ledger-entry.schema.js';
 import { CASH_LIKE_ACCOUNT_TYPES, LedgerAccountService } from '../ledger-accounts/ledger-account.service.js';
 import { LedgerAccountUsageRegistry } from '../ledger-accounts/ledger-account-usage.registry.js';
@@ -65,10 +73,38 @@ export interface PendingAccount {
   available: number;
 }
 
+/** A cheque the user collected and still holds (with_salesman). */
+export interface PendingCheque {
+  /** The receipt's id. */
+  id: string;
+  voucherNo: string;
+  chequeNumber: string;
+  chequeBankName: string | null;
+  chequeDate: Date | null;
+  amount: number;
+}
+
 export interface PendingCash {
   user: Ref;
   accounts: PendingAccount[];
   totals: { balance: number; submitted: number; available: number };
+  /** Cheques they hold, not yet on a handover. */
+  cheques: PendingCheque[];
+  chequesTotal: number;
+  /** Bank-transfer receipts they collected, not yet on a handover. */
+  bankReceipts: PendingBankReceipt[];
+  bankReceiptsTotal: number;
+}
+
+/** A bank-transfer receipt the user collected, to be verified by the office. */
+export interface PendingBankReceipt {
+  /** The receipt's id. */
+  id: string;
+  voucherNo: string;
+  bankAccountName: string | null;
+  reference: string | null;
+  amount: number;
+  attachmentCount: number;
 }
 
 export interface CashHandoverListRow {
@@ -99,7 +135,14 @@ export class CashHandoverService {
 
   constructor(
     @InjectConnection() private readonly connection: Connection,
-    @InjectModel(CashHandover.name) private readonly handoverModel: Model<CashHandoverDocument>,
+    @InjectModel(CashHandover.name)
+    private readonly handoverModel: Model<CashHandoverDocument>,
+    @InjectModel(CashReceipt.name)
+    private readonly receiptModel: Model<CashReceiptDocument>,
+    @InjectModel(CashPayment.name)
+    private readonly paymentModel: Model<CashPayment>,
+    @InjectModel(LedgerEntry.name)
+    private readonly entryModel: Model<LedgerEntry>,
     private readonly posting: VoucherPostingService,
     private readonly printService: VoucherPrintService,
     private readonly ledgerAccountService: LedgerAccountService,
@@ -108,6 +151,7 @@ export class CashHandoverService {
     private readonly commentsService: CommentsService,
     private readonly sequenceService: SequenceService,
     private readonly auditService: AuditService,
+    private readonly filesService: FilesService,
     ledgerUsage: LedgerAccountUsageRegistry,
   ) {
     this.model = handoverModel as unknown as VoucherModel;
@@ -163,7 +207,10 @@ export class CashHandoverService {
         id: doc._id.toString(),
         voucherNo: doc.voucherNo,
         date: doc.voucherDate,
-        user: { id: doc.collectedById?.toString() ?? '', name: doc.collectedByName ?? null },
+        user: {
+          id: doc.collectedById?.toString() ?? '',
+          name: doc.collectedByName ?? null,
+        },
         status: doc.status,
         submittedTotal: doc.submittedTotal ?? 0,
         receivedTotal: doc.receivedTotal ?? null,
@@ -189,20 +236,49 @@ export class CashHandoverService {
     if (!user) {
       throw new NotFoundException(`User ${userId} not found`);
     }
-    const accounts = await this.holdings(user);
+    const [accounts, cheques, bankReceipts] = await Promise.all([
+      this.holdings(user),
+      this.heldCheques(user._id),
+      this.heldBankReceipts(user._id),
+    ]);
     const total = (key: 'balance' | 'submitted' | 'available') => sum2(accounts.map((account) => account[key]));
     return {
       user: { id: user.id as string, name: user.name },
       accounts,
-      totals: { balance: total('balance'), submitted: total('submitted'), available: total('available') },
+      totals: {
+        balance: total('balance'),
+        submitted: total('submitted'),
+        available: total('available'),
+      },
+      cheques: cheques.map((cheque) => ({
+        id: cheque.receiptId.toString(),
+        voucherNo: cheque.voucherNo,
+        chequeNumber: cheque.chequeNumber,
+        chequeBankName: cheque.chequeBankName,
+        chequeDate: cheque.chequeDate,
+        amount: cheque.amount,
+      })),
+      chequesTotal: sum2(cheques.map((cheque) => cheque.amount)),
+      bankReceipts: bankReceipts.map((receipt) => ({
+        id: receipt.receiptId.toString(),
+        voucherNo: receipt.voucherNo,
+        bankAccountName: receipt.bankAccountName,
+        reference: receipt.reference,
+        amount: receipt.amount,
+        attachmentCount: receipt.attachments.length,
+      })),
+      bankReceiptsTotal: sum2(bankReceipts.map((receipt) => receipt.amount)),
     };
   }
 
   /** Records the amounts; the money stays in the user's accounts until approval. */
   async create(dto: CreateCashHandoverDto, actor: Viewer): Promise<CashHandoverDocument> {
     const userId = resolveCollectorId(actor, dto.userId);
-    if (dto.lines.length === 0) {
-      throw new BadRequestException('A handover needs at least one amount');
+    const chequeIds = [...new Set(dto.chequeIds ?? [])];
+    const expenseInputs = dto.expenses ?? [];
+    const bankReceiptIds = [...new Set(dto.bankReceiptIds ?? [])];
+    if (dto.lines.length === 0 && chequeIds.length === 0 && expenseInputs.length === 0 && bankReceiptIds.length === 0) {
+      throw new BadRequestException('A handover needs at least one amount, cheque, bank receipt or expense');
     }
     const sourceIds = dto.lines.map((line) => line.sourceAccountId);
     if (new Set(sourceIds).size !== sourceIds.length) {
@@ -220,9 +296,12 @@ export class CashHandoverService {
           );
         }
         const amount = round2(line.amount);
-        if (amount > account.available) {
+        const spent = sum2(
+          expenseInputs.filter((e) => e.sourceAccountId === line.sourceAccountId).map((e) => e.amount),
+        );
+        if (round2(amount + spent) > account.available) {
           throw new BadRequestException(
-            `${account.code} (${account.name}) has ${account.available.toFixed(2)} available to hand over, not ${amount.toFixed(2)}`,
+            `${account.code} (${account.name}) has ${account.available.toFixed(2)} available to hand over, not ${round2(amount + spent).toFixed(2)}${spent ? ` (including ${spent.toFixed(2)} of expenses)` : ''}`,
           );
         }
         return {
@@ -234,6 +313,61 @@ export class CashHandoverService {
           receivedIntoAccountId: null,
           receivedIntoAccountName: null,
         };
+      });
+
+      const expenses: HandoverExpense[] = [];
+      for (const input of expenseInputs) {
+        const source = holdings.get(input.sourceAccountId);
+        if (!source || source.type === LedgerAccountType.CHEQUE) {
+          throw new BadRequestException(`An expense must be paid from one of ${user.name}'s cash or wallet accounts`);
+        }
+        // Paid from an account with no amount handed over: still within what is held.
+        if (!dto.lines.some((line) => line.sourceAccountId === input.sourceAccountId)) {
+          const spent = sum2(
+            expenseInputs.filter((e) => e.sourceAccountId === input.sourceAccountId).map((e) => e.amount),
+          );
+          if (spent > source.available) {
+            throw new BadRequestException(
+              `${source.code} (${source.name}) has ${source.available.toFixed(2)} available, less than ${spent.toFixed(2)} of expenses`,
+            );
+          }
+        }
+        const account = await this.ledgerAccountService.findActiveReceiptAccount(input.expenseAccountId, [
+          LedgerAccountType.EXPENSE,
+        ]);
+        expenses.push({
+          expenseAccountId: account._id,
+          expenseAccountName: account.name,
+          sourceAccountId: new Types.ObjectId(source.accountId),
+          sourceAccountName: source.name,
+          amount: round2(input.amount),
+          description: input.description ?? null,
+          attachment: null,
+        });
+      }
+
+      const held = new Map(
+        (await this.heldCheques(user._id, session)).map((cheque) => [cheque.receiptId.toString(), cheque]),
+      );
+      const cheques: HandoverCheque[] = chequeIds.map((chequeId) => {
+        const cheque = held.get(chequeId);
+        if (!cheque) {
+          throw new BadRequestException(`Receipt ${chequeId} has no cheque that ${user.name} still holds`);
+        }
+        return cheque;
+      });
+
+      const heldBank = new Map(
+        (await this.heldBankReceipts(user._id, session)).map((receipt) => [receipt.receiptId.toString(), receipt]),
+      );
+      const bankReceipts: HandoverBankReceipt[] = bankReceiptIds.map((receiptId) => {
+        const receipt = heldBank.get(receiptId);
+        if (!receipt) {
+          throw new BadRequestException(
+            `Receipt ${receiptId} is not a bank receipt that ${user.name} still has to hand over`,
+          );
+        }
+        return receipt;
       });
 
       const voucherNo = await this.sequenceService.nextCode(DEF.sequence, session);
@@ -248,7 +382,15 @@ export class CashHandoverService {
             comments: dto.notes,
             lines: [],
             items,
-            submittedTotal: sum2(items.map((item) => item.submittedAmount)),
+            cheques,
+            bankReceipts,
+            expenses,
+            expensesTotal: sum2(expenses.map((expense) => expense.amount)),
+            submittedTotal: sum2([
+              ...items.map((item) => item.submittedAmount),
+              ...cheques.map((cheque) => cheque.amount),
+              ...bankReceipts.map((receipt) => receipt.amount),
+            ]),
             status: VoucherStatus.SUBMITTED,
             createdBy: toUserSnapshot(actor),
             createdAt: now,
@@ -256,6 +398,15 @@ export class CashHandoverService {
         ],
         { session },
       );
+      await this.moveCheques(
+        created,
+        ChequeStatus.WITH_SALESMAN,
+        ChequeStatus.SUBMITTED,
+        'Handed over',
+        actor,
+        session,
+      );
+      await this.moveBankReceipts(created, BankHandoverStatus.WITH_SALESMAN, BankHandoverStatus.SUBMITTED, session);
       await this.record(created, AuditAction.CREATED, actor, now, session);
       return created;
     });
@@ -283,9 +434,9 @@ export class CashHandoverService {
         throw new BadRequestException(`Not on this handover: ${unknown.join(', ')}`);
       }
 
-      const balances = await this.ledgerAccountService.getBalances(
-        handover.items.map((item) => item.sourceAccountId.toString()),
-        session,
+      const user = await this.usersService.findByIdWithRole(handover.collectedById!.toString());
+      const held = new Map(
+        (user ? await this.holdings(user, session) : []).map((account) => [account.accountId, account.balance]),
       );
       let short = false;
       for (const item of handover.items) {
@@ -296,7 +447,10 @@ export class CashHandoverService {
             `${item.sourceAccountName}: received ${received.toFixed(2)} is more than the submitted ${item.submittedAmount.toFixed(2)}`,
           );
         }
-        const balance = round2(balances.get(item.sourceAccountId.toString()) ?? 0);
+        const spent = sum2(
+          (handover.expenses ?? []).filter((e) => e.sourceAccountId.equals(item.sourceAccountId)).map((e) => e.amount),
+        );
+        const balance = round2((held.get(item.sourceAccountId.toString()) ?? 0) - spent);
         if (received > balance) {
           throw new BadRequestException(
             `${item.sourceAccountName} holds only ${balance.toFixed(2)}, less than the ${received.toFixed(2)} received`,
@@ -306,15 +460,14 @@ export class CashHandoverService {
           line?.receivedIntoAccountId ??
           (item.sourceAccountType === LedgerAccountType.CHEQUE
             ? settings.defaultChequesInHandAccountId
-            : settings.defaultCashInHandAccountId
+            : item.sourceAccountType === LedgerAccountType.BANK
+              ? item.sourceAccountId
+              : settings.defaultCashInHandAccountId
           )?.toString();
         if (!intoId) {
           throw new BadRequestException(
             `${item.sourceAccountName}: choose a receivedIntoAccountId, or set the company's default ${item.sourceAccountType === LedgerAccountType.CHEQUE ? 'cheques' : 'cash'} in hand account`,
           );
-        }
-        if (intoId === item.sourceAccountId.toString()) {
-          throw new BadRequestException(`${item.sourceAccountName}: the receiving account must be a different account`);
         }
         const into = await this.ledgerAccountService.findActiveReceiptAccount(intoId, RECEIVE_INTO_TYPES);
         short ||= received < item.submittedAmount;
@@ -328,7 +481,11 @@ export class CashHandoverService {
       }
 
       const now = new Date();
-      const receivedTotal = sum2(handover.items.map((item) => item.receivedAmount ?? 0));
+      const receivedTotal = sum2([
+        ...handover.items.map((item) => item.receivedAmount ?? 0),
+        ...(handover.cheques ?? []).map((cheque) => cheque.amount),
+        ...(handover.bankReceipts ?? []).map((receipt) => receipt.amount),
+      ]);
       handover.markModified('items');
       handover.receivedTotal = receivedTotal;
       handover.grossTotal = receivedTotal;
@@ -339,11 +496,33 @@ export class CashHandoverService {
       handover.approvedAt = now;
       await handover.save({ session });
 
-      await this.posting.postTransfers(this.ref(handover), this.transfers(handover), LedgerEntryKind.POSTING, 'approved', session);
+      if (this.transfers(handover).length > 0) {
+        await this.posting.postTransfers(
+          this.ref(handover),
+          this.transfers(handover),
+          LedgerEntryKind.POSTING,
+          'approved',
+          session,
+        );
+      }
+      await this.moveCheques(
+        handover,
+        ChequeStatus.SUBMITTED,
+        ChequeStatus.AT_OFFICE,
+        'Received at the office',
+        actor,
+        session,
+      );
+      await this.moveBankReceipts(handover, BankHandoverStatus.SUBMITTED, BankHandoverStatus.VERIFIED, session);
       await this.record(handover, AuditAction.APPROVED, actor, now, session, {
         changes: [
           this.statusChange(VoucherStatus.SUBMITTED, VoucherStatus.APPROVED),
-          { field: 'receivedTotal', label: 'Received', from: null, to: receivedTotal.toFixed(2) },
+          {
+            field: 'receivedTotal',
+            label: 'Received',
+            from: null,
+            to: receivedTotal.toFixed(2),
+          },
         ],
         reason: handover.reason ?? undefined,
       });
@@ -367,6 +546,15 @@ export class CashHandoverService {
       handover.rejectedAt = now;
       handover.reason = reason;
       await handover.save({ session });
+      await this.moveCheques(
+        handover,
+        ChequeStatus.SUBMITTED,
+        ChequeStatus.WITH_SALESMAN,
+        'Handover rejected',
+        actor,
+        session,
+      );
+      await this.moveBankReceipts(handover, BankHandoverStatus.SUBMITTED, BankHandoverStatus.WITH_SALESMAN, session);
       await this.record(handover, AuditAction.REJECTED, actor, now, session, {
         changes: [this.statusChange(VoucherStatus.SUBMITTED, VoucherStatus.REJECTED)],
         reason,
@@ -393,11 +581,37 @@ export class CashHandoverService {
         if (!canCancelAny && !own) {
           throw new ForbiddenException('Only the submitter, or a user who may cancel handovers, can cancel it');
         }
+        await this.moveCheques(
+          handover,
+          ChequeStatus.SUBMITTED,
+          ChequeStatus.WITH_SALESMAN,
+          'Handover cancelled',
+          actor,
+          session,
+        );
+        await this.moveBankReceipts(handover, BankHandoverStatus.SUBMITTED, BankHandoverStatus.WITH_SALESMAN, session);
       } else if (from === VoucherStatus.APPROVED) {
         if (!canCancelAny) {
           throw new ForbiddenException('Cancelling an approved handover needs the cash-handovers:cancel permission');
         }
-        await this.posting.postTransfers(this.ref(handover), this.transfers(handover), LedgerEntryKind.REVERSAL, 'cancelled', session);
+        if (this.transfers(handover).length > 0) {
+          await this.posting.postTransfers(
+            this.ref(handover),
+            this.transfers(handover),
+            LedgerEntryKind.REVERSAL,
+            'cancelled',
+            session,
+          );
+        }
+        await this.moveCheques(
+          handover,
+          ChequeStatus.AT_OFFICE,
+          ChequeStatus.WITH_SALESMAN,
+          'Handover cancelled',
+          actor,
+          session,
+        );
+        await this.moveBankReceipts(handover, BankHandoverStatus.VERIFIED, BankHandoverStatus.WITH_SALESMAN, session);
       } else {
         throw new BadRequestException(`${DEF.label} ${handover.voucherNo} is ${from} and cannot be cancelled`);
       }
@@ -421,12 +635,18 @@ export class CashHandoverService {
     return this.printService.print(DEF, this.model, id, actor, await this.posting.scopeFilter(actor, DEF));
   }
 
-  /** The user's own cash, wallet and cheque accounts, with balance, already-submitted and available amounts. */
+  /**
+   * The user's cash, wallet and cheque accounts with what *they* hold in each,
+   * already-submitted and available amounts. The accounts may be shared
+   * masters (Cash in Hand, ...), so what they hold is not the balance but
+   * their own postings: entries of vouchers they collected or handed over,
+   * less handovers approved into the same account (nothing posted there).
+   */
   private async holdings(user: UserDocument, session?: ClientSession): Promise<PendingAccount[]> {
     const ids = (user.allowedCashAccountIds ?? []).map((accountId) => accountId.toString());
     const [summaries, balances, submitted] = await Promise.all([
       this.ledgerAccountService.getSummaries(ids, session),
-      this.ledgerAccountService.getBalances(ids, session),
+      this.heldBy(user._id, ids, session),
       this.submittedBySource(user._id, session),
     ]);
     return ids.flatMap((accountId) => {
@@ -448,26 +668,305 @@ export class CashHandoverService {
     });
   }
 
+  /** Cheques the user collected and still holds: on their receipts, with_salesman, not cancelled. */
+  private async heldCheques(userId: Types.ObjectId, session?: ClientSession): Promise<HandoverCheque[]> {
+    const receipts = await this.receiptModel
+      .find({
+        collectedById: userId,
+        paymentMethod: PaymentMethod.CHEQUE,
+        chequeStatus: ChequeStatus.WITH_SALESMAN,
+        status: { $ne: VoucherStatus.CANCELLED },
+      })
+      .sort({ chequeDate: 1, voucherNo: 1 })
+      .session(session ?? null)
+      .lean()
+      .exec();
+    return receipts.map((receipt) => ({
+      receiptId: receipt._id,
+      voucherNo: receipt.voucherNo,
+      chequeNumber: receipt.chequeNumber ?? '',
+      chequeBankName: receipt.chequeBankName ?? null,
+      chequeDate: receipt.chequeDate ?? null,
+      amount: receipt.grandTotal,
+      attachments: attachmentsOf(receipt),
+    }));
+  }
+
+  /** Bank-transfer receipts the user collected that the office has not yet verified on a handover. */
+  private async heldBankReceipts(userId: Types.ObjectId, session?: ClientSession): Promise<HandoverBankReceipt[]> {
+    const receipts = await this.receiptModel
+      .find({
+        collectedById: userId,
+        paymentMethod: PaymentMethod.BANK,
+        bankHandoverStatus: BankHandoverStatus.WITH_SALESMAN,
+        status: { $ne: VoucherStatus.CANCELLED },
+      })
+      .sort({ voucherDate: 1, voucherNo: 1 })
+      .session(session ?? null)
+      .lean()
+      .exec();
+    const names = await this.ledgerAccountService.getNames(
+      receipts.map((receipt) => receipt.cashAccountId.toString()),
+      session,
+    );
+    return receipts.map((receipt) => ({
+      receiptId: receipt._id,
+      voucherNo: receipt.voucherNo,
+      bankAccountName: names.get(receipt.cashAccountId.toString()) ?? null,
+      reference: receipt.paymentReference ?? null,
+      amount: receipt.grandTotal,
+      attachments: attachmentsOf(receipt),
+    }));
+  }
+
+  /** Moves the handover's bank receipts between handover states; every one must still be in `from`. */
+  private async moveBankReceipts(
+    handover: CashHandoverDocument,
+    from: BankHandoverStatus,
+    to: BankHandoverStatus,
+    session: ClientSession,
+  ): Promise<void> {
+    const receipts = handover.bankReceipts ?? [];
+    if (receipts.length === 0) return;
+    const result = await this.receiptModel
+      .updateMany(
+        { _id: { $in: receipts.map((receipt) => receipt.receiptId) }, bankHandoverStatus: from },
+        { $set: { bankHandoverStatus: to } },
+        { session },
+      )
+      .exec();
+    if (result.modifiedCount !== receipts.length) {
+      throw new BadRequestException(`A bank receipt on ${handover.voucherNo} is no longer ${from.replace('_', ' ')}`);
+    }
+  }
+
+  /**
+   * Moves the handover's cheques from one status to the next, each with a
+   * "cheque" audit entry. All must still be in `from`: a cheque deposited
+   * since blocks cancelling the handover until that is undone.
+   */
+  private async moveCheques(
+    handover: CashHandoverDocument,
+    from: ChequeStatus,
+    to: ChequeStatus,
+    detail: string,
+    actor: Actor,
+    session: ClientSession,
+  ): Promise<void> {
+    const cheques = handover.cheques ?? [];
+    if (cheques.length === 0) return;
+    const result = await this.receiptModel
+      .updateMany(
+        {
+          _id: { $in: cheques.map((cheque) => cheque.receiptId) },
+          chequeStatus: from,
+        },
+        { $set: { chequeStatus: to } },
+        { session },
+      )
+      .exec();
+    if (result.modifiedCount !== cheques.length) {
+      throw new BadRequestException(
+        `A cheque on ${handover.voucherNo} is no longer ${from.replace('_', ' ')}; undo its later step first`,
+      );
+    }
+    for (const cheque of cheques) {
+      await this.auditService.record(
+        {
+          entityType: CHEQUE_ENTITY_TYPE,
+          entityId: cheque.receiptId,
+          entityRef: `${cheque.chequeNumber} (${cheque.voucherNo})`,
+          action: AuditAction.UPDATED,
+          actor,
+          changes: [
+            { field: 'chequeStatus', label: 'Status', from, to },
+            {
+              field: 'detail',
+              label: 'Detail',
+              from: null,
+              to: `${detail} on ${handover.voucherNo}`,
+            },
+          ],
+        },
+        session,
+      );
+    }
+  }
+
+  /** Per account: the user's own net postings, less same-account approvals. */
+  private async heldBy(
+    userId: Types.ObjectId,
+    accountIds: string[],
+    session?: ClientSession,
+  ): Promise<Map<string, number>> {
+    const mine = { collectedById: userId };
+    const [receipts, payments, handovers] = await Promise.all([
+      this.receiptModel
+        .distinct('_id', mine)
+        .session(session ?? null)
+        .exec(),
+      this.paymentModel
+        .distinct('_id', mine)
+        .session(session ?? null)
+        .exec(),
+      this.handoverModel
+        .distinct('_id', mine)
+        .session(session ?? null)
+        .exec(),
+    ]);
+    const [posted, settledInPlace] = await Promise.all([
+      this.entryModel
+        .aggregate<{ _id: Types.ObjectId; net: number }>([
+          {
+            $match: {
+              accountId: {
+                $in: accountIds.map((id) => new Types.ObjectId(id)),
+              },
+              voucherId: { $in: [...receipts, ...payments, ...handovers] },
+            },
+          },
+          {
+            $group: {
+              _id: '$accountId',
+              net: { $sum: { $subtract: ['$debit', '$credit'] } },
+            },
+          },
+        ])
+        .session(session ?? null)
+        .exec(),
+      this.handoverModel
+        .aggregate<{ _id: Types.ObjectId; total: number }>([
+          { $match: { collectedById: userId, status: VoucherStatus.APPROVED } },
+          { $unwind: '$items' },
+          {
+            $match: {
+              $expr: {
+                $eq: ['$items.sourceAccountId', '$items.receivedIntoAccountId'],
+              },
+            },
+          },
+          {
+            $group: {
+              _id: '$items.sourceAccountId',
+              total: { $sum: '$items.receivedAmount' },
+            },
+          },
+        ])
+        .session(session ?? null)
+        .exec(),
+    ]);
+    const held = new Map(posted.map((row) => [row._id.toString(), row.net]));
+    for (const row of settledInPlace) {
+      held.set(row._id.toString(), (held.get(row._id.toString()) ?? 0) - row.total);
+    }
+    return held;
+  }
+
   /** Amounts on the user's submitted handovers, by source account. */
   private async submittedBySource(userId: Types.ObjectId, session?: ClientSession): Promise<Map<string, number>> {
     const rows = await this.handoverModel
       .aggregate<{ _id: Types.ObjectId; total: number }>([
         { $match: { collectedById: userId, status: VoucherStatus.SUBMITTED } },
-        { $unwind: '$items' },
-        { $group: { _id: '$items.sourceAccountId', total: { $sum: '$items.submittedAmount' } } },
+        // Amounts and expenses both reserve their source until approval.
+        {
+          $project: {
+            rows: {
+              $concatArrays: [
+                {
+                  $map: { input: '$items', in: { source: '$$this.sourceAccountId', amount: '$$this.submittedAmount' } },
+                },
+                {
+                  $map: {
+                    input: { $ifNull: ['$expenses', []] },
+                    in: { source: '$$this.sourceAccountId', amount: '$$this.amount' },
+                  },
+                },
+              ],
+            },
+          },
+        },
+        { $unwind: '$rows' },
+        { $group: { _id: '$rows.source', total: { $sum: '$rows.amount' } } },
       ])
       .session(session ?? null)
       .exec();
     return new Map(rows.map((row) => [row._id.toString(), row.total]));
   }
 
+  /**
+   * Received into another account (one received into its own source posts
+   * nothing), and each expense out of its source into the expense account.
+   */
   private transfers(handover: CashHandoverDocument) {
-    return handover.items.map((item) => ({
-      fromAccountId: item.sourceAccountId.toString(),
-      toAccountId: item.receivedIntoAccountId!.toString(),
-      amount: item.receivedAmount ?? 0,
-      narration: `Handover ${handover.voucherNo}`,
-    }));
+    return [
+      ...handover.items
+        .filter((item) => !item.receivedIntoAccountId?.equals(item.sourceAccountId))
+        .map((item) => ({
+          fromAccountId: item.sourceAccountId.toString(),
+          toAccountId: item.receivedIntoAccountId!.toString(),
+          amount: item.receivedAmount ?? 0,
+          narration: `Handover ${handover.voucherNo}`,
+        })),
+      ...(handover.expenses ?? []).map((expense) => ({
+        fromAccountId: expense.sourceAccountId.toString(),
+        toAccountId: expense.expenseAccountId.toString(),
+        amount: expense.amount,
+        narration: `Handover ${handover.voucherNo}: ${expense.description ?? expense.expenseAccountName}`,
+      })),
+    ];
+  }
+
+  /**
+   * Attaches (or replaces) the bill of one expense, while the handover is
+   * submitted, by whoever submitted it or whose money it is. The old file is
+   * removed after the commit; a failed attach removes the new one.
+   */
+  async attachExpenseBill(
+    id: string,
+    expenseId: string,
+    file: Express.Multer.File | undefined,
+    actor: Viewer,
+  ): Promise<CashHandoverDocument> {
+    const handover = await this.findById(id, actor);
+    this.assertStatus(handover, VoucherStatus.SUBMITTED, 'changed');
+    const own = handover.createdBy?.id.toString() === actor.id || handover.collectedById?.toString() === actor.id;
+    if (!own) {
+      throw new ForbiddenException('Only the submitter can attach bills to this handover');
+    }
+    if (!Types.ObjectId.isValid(expenseId) || !handover.expenses.some((e) => e._id.equals(expenseId))) {
+      throw new NotFoundException(`Expense ${expenseId} not found on ${handover.voucherNo}`);
+    }
+    const stored = await this.filesService.upload(
+      file,
+      { ownerType: FileOwnerType.CASH_HANDOVER, ownerId: id },
+      actor.id,
+    );
+    let replaced: string | null = null;
+    try {
+      const saved = await runInTransaction(this.connection, async (session) => {
+        const current = await this.load(id, null, session);
+        const expense = current.expenses.find((e) => e._id.equals(expenseId))!;
+        replaced = expense.attachment?.fileRef.toString() ?? null;
+        expense.attachment = {
+          fileRef: new Types.ObjectId(stored.id),
+          title: stored.originalName,
+          mimeType: stored.mimeType,
+        };
+        current.markModified('expenses');
+        await current.save({ session });
+        await this.record(current, AuditAction.UPDATED, actor, new Date(), session, {
+          changes: [
+            { field: 'expenses', label: `Bill for ${expense.expenseAccountName}`, from: null, to: stored.originalName },
+          ],
+        });
+        return current;
+      });
+      if (replaced) await this.filesService.remove(replaced).catch(() => undefined);
+      return saved;
+    } catch (error) {
+      await this.filesService.remove(stored.id).catch(() => undefined);
+      throw error;
+    }
   }
 
   private ref(handover: CashHandoverDocument) {
@@ -516,7 +1015,15 @@ export class CashHandoverService {
     extra: { changes?: AuditChange[]; reason?: string } = {},
   ) {
     return this.auditService.record(
-      { entityType: DEF.entityType, entityId: handover._id, entityRef: handover.voucherNo, action, actor, at, ...extra },
+      {
+        entityType: DEF.entityType,
+        entityId: handover._id,
+        entityRef: handover.voucherNo,
+        action,
+        actor,
+        at,
+        ...extra,
+      },
       session,
     );
   }
@@ -539,4 +1046,11 @@ function endOfDayIfDateOnly(value: string): Date {
     date.setUTCHours(23, 59, 59, 999);
   }
   return date;
+}
+
+/** A receipt's attachments as a handover snapshot (cheque photo, transfer slip). */
+function attachmentsOf(receipt: {
+  attachments?: { fileRef: Types.ObjectId; title: string; mimeType: string }[];
+}): { fileRef: Types.ObjectId; title: string; mimeType: string }[] {
+  return (receipt.attachments ?? []).map(({ fileRef, title, mimeType }) => ({ fileRef, title, mimeType }));
 }

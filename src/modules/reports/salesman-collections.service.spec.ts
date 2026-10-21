@@ -67,14 +67,14 @@ describe('Salesman collections report', () => {
     into: LedgerAccountDocument,
     amount: number,
     date: string,
-    paymentReference?: string,
+    chequeNumber?: string,
   ) =>
     h.receipts.create(
       {
         voucherDate: date,
         cashAccountId: into.id as string,
         collectedById: collector.id,
-        paymentReference,
+        ...(chequeNumber ? { chequeNumber, chequeBankName: 'ENBD', chequeDate: date } : {}),
         lines: [{ accountId: customer.id as string, amount }],
       },
       office,
@@ -184,7 +184,7 @@ describe('Salesman collections report', () => {
     await threeDays();
     await h.handovers.create({ voucherDate: '2026-10-04', lines: [{ sourceAccountId: van1Cash.id as string, amount: 100 }] }, van1);
     const details = await h.collections.details(van1.id, { dateFrom: '2026-10-01', dateTo: '2026-10-02' }, office);
-    expect(details.receipts.map((r) => [r.amount, r.paymentMethod, r.paymentReference])).toEqual([
+    expect(details.receipts.map((r) => [r.amount, r.paymentMethod, r.chequeNumber])).toEqual([
       [500, 'cash', null],
       [200, 'bank', null],
       [400, 'cash', null],

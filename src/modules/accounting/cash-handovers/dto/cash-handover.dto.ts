@@ -1,6 +1,5 @@
 import { Transform, Type } from 'class-transformer';
 import {
-  ArrayMinSize,
   IsArray,
   IsDateString,
   IsIn,
@@ -36,6 +35,27 @@ export class HandoverLineDto {
   amount: number;
 }
 
+/** Spent out of the collected cash; its bill is attached after submitting. */
+export class HandoverExpenseDto {
+  /** An active expense account. */
+  @IsMongoId()
+  expenseAccountId: string;
+
+  /** The user's cash or wallet account it was paid from. */
+  @IsMongoId()
+  sourceAccountId: string;
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  amount: number;
+
+  @IsOptional()
+  @Transform(trimToNull)
+  @IsString()
+  @MaxLength(200)
+  description?: string | null;
+}
+
 /** Submit. No number, totals or who/when: the server sets them. */
 export class CreateCashHandoverDto {
   /** Defaults to today. */
@@ -48,11 +68,29 @@ export class CreateCashHandoverDto {
   @IsMongoId()
   userId?: string;
 
+  /** Amounts from the user's own accounts; may be empty when cheques are handed over. */
   @IsArray()
-  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => HandoverLineDto)
   lines: HandoverLineDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => HandoverExpenseDto)
+  expenses?: HandoverExpenseDto[];
+
+  /** Bank-transfer receipts (with_salesman, collected by this user) handed over for verification. */
+  @IsOptional()
+  @IsArray()
+  @IsMongoId({ each: true })
+  bankReceiptIds?: string[];
+
+  /** Receipts whose cheques (with_salesman, collected by this user) are handed over. */
+  @IsOptional()
+  @IsArray()
+  @IsMongoId({ each: true })
+  chequeIds?: string[];
 
   @IsOptional()
   @IsString()

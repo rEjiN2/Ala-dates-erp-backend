@@ -11,6 +11,8 @@ export interface DiffableVoucher {
   collectedByName: string | null;
   paymentReference?: string | null;
   chequeDate?: Date | null;
+  chequeNumber?: string | null;
+  chequeBankName?: string | null;
   comments?: string | null;
   lines: readonly DiffableLine[];
 }
@@ -87,6 +89,14 @@ export function diffVoucher(
   const toChequeDate = after.chequeDate ? formatDate(after.chequeDate) : null;
   if (fromChequeDate !== toChequeDate) {
     changes.push({ field: 'chequeDate', label: 'Cheque date', from: fromChequeDate, to: toChequeDate });
+  }
+  for (const { key, label } of [
+    { key: 'chequeNumber', label: 'Cheque number' },
+    { key: 'chequeBankName', label: 'Cheque bank' },
+  ] as const) {
+    if (text(before[key]) !== text(after[key])) {
+      changes.push({ field: key, label, from: text(before[key]), to: text(after[key]) });
+    }
   }
 
   const fromComments = text(before.comments);

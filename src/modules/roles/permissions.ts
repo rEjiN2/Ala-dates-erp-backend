@@ -14,6 +14,13 @@ export const Permission = {
   CASH_PAYMENTS_CREATE: 'cash-payments:create',
   CASH_PAYMENTS_EDIT: 'cash-payments:edit',
   CASH_PAYMENTS_CANCEL: 'cash-payments:cancel',
+  /** The cheque register (GET /cheques) and a cheque's comments and activity. */
+  CHEQUES_READ: 'cheques:read',
+  CHEQUES_DEPOSIT: 'cheques:deposit',
+  /** Clear a cheque: posts it from cheques in hand into the destination account. */
+  CHEQUES_CLEAR: 'cheques:clear',
+  /** Return (bounce) a cheque: reverses its receipt, so the customer owes again. */
+  CHEQUES_RETURN: 'cheques:return',
   CASH_HANDOVERS_READ: 'cash-handovers:read',
   /** Submit a handover: your own, or another user's with vouchers:select-collector. */
   CASH_HANDOVERS_CREATE: 'cash-handovers:create',

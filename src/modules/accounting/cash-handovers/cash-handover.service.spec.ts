@@ -10,6 +10,7 @@ import {
   VAN_SALESMAN_PERMISSIONS,
 } from '../../roles/permissions.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
+import { PaymentMethod } from '../vouchers/schemas/voucher.schema.js';
 import { round2 } from '../../../common/utils/money.util.js';
 
 const { CASH, CHEQUE, BANK, PARTY } = LedgerAccountType;
@@ -58,12 +59,12 @@ describe('Cash handover (balance-based)', () => {
     await h.reset();
   });
 
-  const receive = (into: LedgerAccountDocument, amount: number, paymentReference?: string) =>
+  const receive = (into: LedgerAccountDocument, amount: number, chequeNumber?: string) =>
     h.receipts.create(
       {
         voucherDate: '2026-10-01',
         cashAccountId: into.id as string,
-        paymentReference,
+        ...(chequeNumber ? { chequeNumber, chequeBankName: 'ENBD', chequeDate: '2026-10-01' } : {}),
         lines: [{ accountId: customer.id as string, amount }],
       },
       van,
@@ -96,9 +97,11 @@ describe('Cash handover (balance-based)', () => {
   }
 
   it('cheque receipts need the cheque number and land in a cheque account', async () => {
-    await expect(receive(vanCheques, 300)).rejects.toThrow(/cheque number/);
+    await expect(receive(vanCheques, 300)).rejects.toThrow(/A cheque needs chequeNumber, chequeDate, chequeBankName/);
     const receipt = await receive(vanCheques, 300, 'CHQ 1001');
     expect(receipt.paymentMethod).toBe('cheque');
+    // A van salesman's cheque waits for his handover even without settlesWithOffice.
+    expect(receipt.chequeStatus).toBe('with_salesman');
     expect(await h.balanceOf(vanCheques)).toBe(300);
   });
 
@@ -221,6 +224,128 @@ describe('Cash handover (balance-based)', () => {
       (entry) => (entry as unknown as { action: string }).action,
     );
     expect(actions).toEqual(['created', 'approved', 'printed']);
+  });
+
+  it('a cheque without an account goes to cheques in hand, is handed over as a document, then is at the office', async () => {
+    const salesman = await h.persistUser(
+      { ...makeUser('Van 2', [...VAN_SALESMAN_PERMISSIONS]), dataScope: DataScope.OWN, allowedCashAccountIds: [vanCash.id as string] },
+      { settlesWithOffice: true },
+    );
+    const receipt = await h.receipts.create(
+      {
+        voucherDate: '2026-10-01',
+        paymentMethod: PaymentMethod.CHEQUE,
+        chequeNumber: 'CHQ 2001',
+        chequeBankName: 'ENBD',
+        chequeDate: '2026-10-20',
+        lines: [{ accountId: customer.id as string, amount: 400 }],
+      },
+      salesman,
+    );
+    expect(receipt.cashAccountId.toString()).toBe(officeCheques.id);
+    expect(receipt.chequeStatus).toBe('with_salesman');
+    expect(await h.balanceOf(customer)).toBe(-400);
+    expect(await h.balanceOf(officeCheques)).toBe(400);
+
+    const held = await h.handovers.pending({}, salesman);
+    expect([held.cheques.map((c) => c.chequeNumber), held.chequesTotal]).toEqual([['CHQ 2001'], 400]);
+    const handover = await h.handovers.create({ lines: [], chequeIds: [id(receipt)] }, salesman);
+    expect(handover.submittedTotal).toBe(400);
+    expect(((await h.models.receipt.findById(receipt._id).lean().exec()) as { chequeStatus?: string } | null)?.chequeStatus).toBe('submitted');
+    expect((await h.handovers.pending({}, salesman)).cheques).toEqual([]);
+    await expect(h.handovers.create({ lines: [], chequeIds: [id(receipt)] }, salesman)).rejects.toThrow(/still holds/);
+
+    await h.handovers.approve(id(handover), {}, accountant);
+    expect(((await h.models.receipt.findById(receipt._id).lean().exec()) as { chequeStatus?: string } | null)?.chequeStatus).toBe('at_office');
+    // Approving a cheque posts nothing: it was already in cheques in hand.
+    expect(await h.balanceOf(officeCheques)).toBe(400);
+
+    await h.handovers.cancel(id(handover), { reason: 'Wrong van' }, admin);
+    expect(((await h.models.receipt.findById(receipt._id).lean().exec()) as { chequeStatus?: string } | null)?.chequeStatus).toBe('with_salesman');
+    await assertReconciled();
+  });
+
+  it('a shared Cash in Hand: pending is only his own collections, and approving into it posts nothing', async () => {
+    const salesman = await h.persistUser(
+      { ...makeUser('Van 3', [...VAN_SALESMAN_PERMISSIONS]), dataScope: DataScope.OWN, allowedCashAccountIds: [officeCash.id as string] },
+      { settlesWithOffice: true },
+    );
+    const into = (actor: AuthenticatedUser, amount: number) =>
+      h.receipts.create(
+        { voucherDate: '2026-10-01', cashAccountId: officeCash.id as string, lines: [{ accountId: customer.id as string, amount }] },
+        actor,
+      );
+    await into(salesman, 2650);
+    await into(accountant, 1000);
+    expect(await h.balanceOf(officeCash)).toBe(3650);
+    expect((await h.handovers.pending({}, salesman)).totals.available).toBe(2650);
+
+    const handover = await h.handovers.create({ lines: [{ sourceAccountId: officeCash.id as string, amount: 2650 }] }, salesman);
+    // The company default cash in hand is the same account: received in place.
+    await h.handovers.approve(id(handover), {}, accountant);
+    expect(await h.balanceOf(officeCash)).toBe(3650);
+    expect((await h.handovers.pending({}, salesman)).totals).toEqual({ balance: 0, submitted: 0, available: 0 });
+
+    await h.handovers.cancel(id(handover), { reason: 'Recount' }, admin);
+    expect((await h.handovers.pending({}, salesman)).totals.available).toBe(2650);
+    await assertReconciled();
+  });
+
+  it('expenses paid from collected cash are reserved on submit and posted on approval', async () => {
+    const fuel = await h.makeAccount('EXP-0001', LedgerAccountType.EXPENSE, 0, 'Fuel');
+    await receive(vanCash, 1000);
+    const expense = { expenseAccountId: fuel.id as string, sourceAccountId: vanCash.id as string, amount: 100, description: 'Diesel' };
+    await expect(
+      h.handovers.create({ lines: [{ sourceAccountId: vanCash.id as string, amount: 950 }], expenses: [expense] }, van),
+    ).rejects.toThrow(/including 100.00 of expenses/);
+
+    const handover = await h.handovers.create(
+      { lines: [{ sourceAccountId: vanCash.id as string, amount: 900 }], expenses: [expense] },
+      van,
+    );
+    expect([handover.submittedTotal, handover.expensesTotal]).toEqual([900, 100]);
+    expect((await pending()).totals.available).toBe(0);
+
+    await h.handovers.approve(id(handover), {}, accountant);
+    expect(await h.balanceOf(fuel)).toBe(100);
+    expect(await h.balanceOf(officeCash)).toBe(900);
+    expect(await h.balanceOf(vanCash)).toBe(0);
+
+    await h.handovers.cancel(id(handover), { reason: 'Recount' }, admin);
+    expect(await h.balanceOf(fuel)).toBe(0);
+    expect(await h.balanceOf(vanCash)).toBe(1000);
+    await assertReconciled();
+  });
+
+  it("a salesman's bank receipt goes straight to the bank and is verified on a handover", async () => {
+    const adcb = (await h.models.account.findOne({ code: 'BNK-0001' }).exec())!;
+    const salesman = await h.persistUser(
+      { ...makeUser('Van 4', [...VAN_SALESMAN_PERMISSIONS]), dataScope: DataScope.OWN, allowedCashAccountIds: [vanCash.id as string] },
+      { settlesWithOffice: true },
+    );
+    const receipt = await h.receipts.create(
+      { voucherDate: '2026-10-01', cashAccountId: adcb.id as string, lines: [{ accountId: customer.id as string, amount: 750 }] },
+      salesman,
+    );
+    expect(receipt.bankHandoverStatus).toBe('with_salesman');
+    expect(await h.balanceOf(adcb)).toBe(750);
+    const status = async () =>
+      ((await h.models.receipt.findById(receipt._id).lean().exec()) as { bankHandoverStatus?: string } | null)
+        ?.bankHandoverStatus;
+
+    const held = await h.handovers.pending({}, salesman);
+    expect([held.bankReceipts.map((r) => r.voucherNo), held.bankReceiptsTotal]).toEqual([[receipt.voucherNo], 750]);
+    const handover = await h.handovers.create({ lines: [], bankReceiptIds: [id(receipt)] }, salesman);
+    expect(handover.submittedTotal).toBe(750);
+    expect(await status()).toBe('submitted');
+    await expect(h.receipts.cancel(id(receipt), { reason: 'Oops' }, admin)).rejects.toThrow(/submitted handover/);
+
+    await h.handovers.approve(id(handover), {}, accountant);
+    expect(await status()).toBe('verified');
+    expect(await h.balanceOf(adcb)).toBe(750);
+    await h.handovers.cancel(id(handover), { reason: 'Slip unclear' }, admin);
+    expect(await status()).toBe('with_salesman');
+    await assertReconciled();
   });
 
   it('HTTP: a salesman reads his pending and cannot approve', async () => {

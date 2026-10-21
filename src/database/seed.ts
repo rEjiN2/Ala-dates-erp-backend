@@ -16,6 +16,7 @@ import { backfillUserStatus, ensureDefaultRoles } from './seed-roles.js';
 import { CompanyService } from '../modules/company/company.service.js';
 
 const CASH_ACCOUNT_NAMES = ['Main Cash Counter', 'Branch Petty Cash'];
+const CHEQUES_IN_HAND_NAME = 'Cheques in Hand';
 
 async function seed(): Promise<void> {
   const logger = new Logger('Seed');
@@ -53,6 +54,20 @@ async function seed(): Promise<void> {
     // an edited profile is left as it is.
     const company = await app.get(CompanyService).ensure();
     logger.log(`Company profile ready: ${company.legalName}`);
+
+    // One company cheques-in-hand account, the default for cheques received
+    // at the office; an existing default is left as it is.
+    const cheques =
+      (await ledgerAccountModel
+        .findOne({ type: LedgerAccountType.CHEQUE, name: CHEQUES_IN_HAND_NAME })
+        .collation({ locale: 'en', strength: 2 })
+        .exec()) ??
+      (await ledgerAccountService.create({ name: CHEQUES_IN_HAND_NAME, type: LedgerAccountType.CHEQUE }));
+    if (!company.defaultChequesInHandAccountId) {
+      company.defaultChequesInHandAccountId = cheques._id;
+      await company.save();
+    }
+    logger.log(`Ledger account ready: ${cheques.code} (${cheques.name})`);
 
     // Splits legacy permissions (cash-receipts:manage, ...) in every role, then
     // upserts admin (every permission, scope all, protected), Accountant and

@@ -1,8 +1,11 @@
-import { BadRequestException, HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model, QueryFilter, SortOrder } from 'mongoose';
 import {
+  BankHandoverStatus,
+  ChequeStatus,
+  EDITABLE_CHEQUE_STATUSES,
   PaymentMethod,
   VoucherDocument,
   VoucherLine,
@@ -31,7 +34,7 @@ import {
   userRefOf,
 } from '../../../common/schemas/user-snapshot.schema.js';
 import { round2, sum2 } from '../../../common/utils/money.util.js';
-import { hasPermission } from '../../roles/permissions.js';
+import { DataScope, hasPermission } from '../../roles/permissions.js';
 import {
   type ScopedUser,
   assertScopedHeaderAccount,
@@ -59,7 +62,11 @@ export interface VoucherCreateInput {
   /** Collected By / Paid By; defaults to the actor. Anyone else needs vouchers:select-collector. */
   collectedById?: string;
   paymentReference?: string | null;
+  /** Receipts: must match the header account's type when given. */
+  paymentMethod?: PaymentMethod;
   chequeDate?: string | null;
+  chequeNumber?: string | null;
+  chequeBankName?: string | null;
   comments?: string;
   lines: VoucherLineInput[];
   acknowledgeWarnings?: boolean;
@@ -72,7 +79,10 @@ export interface VoucherUpdateInput {
   headerAccountId?: string;
   collectedById?: string | null;
   paymentReference?: string | null;
+  paymentMethod?: PaymentMethod;
   chequeDate?: string | null;
+  chequeNumber?: string | null;
+  chequeBankName?: string | null;
   comments?: string;
   lines?: VoucherLineInput[];
   changeNote?: string;
@@ -84,6 +94,8 @@ export interface VoucherUpdateInput {
 
 export interface VoucherListQuery extends Omit<VoucherQueryDto, never> {
   headerAccountId?: string;
+  /** Receipts only. */
+  chequeStatus?: ChequeStatus;
 }
 
 type UserRef = { id: string; name: string } | null;
@@ -97,6 +109,8 @@ export interface VoucherListRow {
   /** Collected By / Paid By. id is null on vouchers whose old cashier had no login; name is the old name. */
   collectedBy: { id: string | null; name: string | null };
   paymentMethod: PaymentMethod;
+  /** Cheque vouchers only. */
+  cheque: { number: string | null; bankName: string | null; date: Date | null; status: ChequeStatus | null } | null;
   /** First line's account, plus how many other distinct accounts the voucher touches. */
   partiesSummary: { firstAccount: { id: string; name: string | null } | null; othersCount: number };
   grandTotal: number;
@@ -269,7 +283,21 @@ export class VoucherPostingService {
             $group: {
               _id: null,
               count: { $sum: 1 },
-              total: { $sum: { $cond: [{ $eq: ['$status', VoucherStatus.CANCELLED] }, 0, '$grandTotal'] } },
+              // Cancelled vouchers and returned cheques brought no money in.
+              total: {
+                $sum: {
+                  $cond: [
+                    {
+                      $or: [
+                        { $eq: ['$status', VoucherStatus.CANCELLED] },
+                        { $eq: ['$chequeStatus', ChequeStatus.RETURNED] },
+                      ],
+                    },
+                    0,
+                    '$grandTotal',
+                  ],
+                },
+              },
             },
           },
         ])
@@ -305,6 +333,15 @@ export class VoucherPostingService {
             name: voucher.collectedByName ?? null,
           },
           paymentMethod: voucher.paymentMethod ?? PaymentMethod.CASH,
+          cheque:
+            voucher.paymentMethod === PaymentMethod.CHEQUE
+              ? {
+                  number: voucher.chequeNumber ?? null,
+                  bankName: voucher.chequeBankName ?? null,
+                  date: voucher.chequeDate ?? null,
+                  status: voucher.chequeStatus ?? null,
+                }
+              : null,
           partiesSummary: {
             firstAccount: firstAccountId ? { id: firstAccountId, name: names.get(firstAccountId) ?? null } : null,
             othersCount: Math.max(distinctAccounts - 1, 0),
@@ -349,21 +386,22 @@ export class VoucherPostingService {
     actor: Actor & ScopedUser,
   ): Promise<VoucherDocument> {
     const collectorId = resolveCollectorId(actor, input.collectedById);
-    if (isOwnScope(actor)) {
-      assertScopedHeaderAccount(actor, input.headerAccountId, def.label);
-    }
     const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(
       input.headerAccountId,
       def.headerAccountTypes,
     );
-    const paymentMethod = paymentMethodFor(headerAccount.type);
-    const chequeDate = this.chequeDateFor(paymentMethod, input.paymentReference, input.chequeDate);
+    if (isOwnScope(actor) && !def.scopeExemptHeaderTypes?.includes(headerAccount.type)) {
+      assertScopedHeaderAccount(actor, input.headerAccountId, def.label);
+    }
+    const paymentMethod = this.methodFor(headerAccount, input.paymentMethod);
+    const cheque = this.chequeFieldsFor(paymentMethod, input);
     const pricedLines = this.priceLines(input.lines);
     this.assertHeaderNotOnLines(def, input.headerAccountId, pricedLines);
 
     return runInTransaction(this.connection, async (session) => {
       await this.assertLineAccountTypes(def, pricedLines, session);
       const collector = await this.usersService.findEligibleCollector(collectorId, def.createPermission, session);
+      await this.assertChequeUnique(model, cheque, null, session);
       const watch = await this.watchBalances(def, [input.headerAccountId], session);
       const lines = await this.snapshotLines(pricedLines, session);
       // Issued on the transaction's session: if anything below aborts, the
@@ -381,7 +419,11 @@ export class VoucherPostingService {
             collectedByName: collector.name,
             paymentMethod,
             paymentReference: input.paymentReference ?? null,
-            chequeDate,
+            ...cheque,
+            chequeStatus: cheque.chequeNumber ? this.newChequeStatus(collector) : null,
+            bankHandoverStatus: this.isReceiptBank(def, paymentMethod) && handsOver(collector)
+              ? BankHandoverStatus.WITH_SALESMAN
+              : null,
             comments: input.comments,
             lines,
             ...this.totalsOf(pricedLines),
@@ -431,6 +473,7 @@ export class VoucherPostingService {
   ): Promise<VoucherDocument> {
     const current = await this.findById(def, model, id, actor);
     this.assertNotCancelled(def, current, 'edited');
+    this.assertChequeEditable(def, current, 'edited');
 
     const currentHeaderId = this.headerOf(def, current).toString();
     const nextHeaderId = input.headerAccountId ?? currentHeaderId;
@@ -442,11 +485,11 @@ export class VoucherPostingService {
     if (collectorChanged) {
       resolveCollectorId(actor, input.collectedById);
     }
-    if (isOwnScope(actor) && nextHeaderId !== currentHeaderId) {
+    const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(nextHeaderId, def.headerAccountTypes);
+    if (isOwnScope(actor) && nextHeaderId !== currentHeaderId && !def.scopeExemptHeaderTypes?.includes(headerAccount.type)) {
       assertScopedHeaderAccount(actor, nextHeaderId, def.label);
     }
-    const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(nextHeaderId, def.headerAccountTypes);
-    const paymentMethod = paymentMethodFor(headerAccount.type);
+    const paymentMethod = this.methodFor(headerAccount, input.paymentMethod);
     const pricedLines = input.lines ? this.priceLines(input.lines) : null;
 
     return runInTransaction(this.connection, async (session) => {
@@ -457,6 +500,7 @@ export class VoucherPostingService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
       this.assertNotCancelled(def, existing, 'edited');
+      this.assertChequeEditable(def, existing, 'edited');
 
       if (input.collectedById === null) {
         throw new BadRequestException(`A ${def.label.toLowerCase()} must have a ${def.collectorLabel.toLowerCase()} user`);
@@ -488,11 +532,15 @@ export class VoucherPostingService {
         comments: input.comments !== undefined ? input.comments : existing.comments,
         lines: pricedLines ?? before.lines,
       };
-      after.chequeDate = this.chequeDateFor(
-        paymentMethod,
-        after.paymentReference,
-        input.chequeDate !== undefined ? input.chequeDate : existing.chequeDate,
-      );
+      const keep = <K extends 'chequeDate' | 'chequeNumber' | 'chequeBankName'>(key: K) =>
+        input[key] !== undefined ? input[key] : existing[key];
+      const cheque = this.chequeFieldsFor(paymentMethod, {
+        chequeDate: keep('chequeDate'),
+        chequeNumber: keep('chequeNumber'),
+        chequeBankName: keep('chequeBankName'),
+      });
+      await this.assertChequeUnique(model, cheque, existing._id, session);
+      Object.assign(after, cheque);
       this.assertHeaderNotOnLines(def, after.headerAccountId, after.lines);
       // Only lines sent with this edit are checked: lines already on an older
       // voucher are kept as they were posted.
@@ -525,7 +573,19 @@ export class VoucherPostingService {
       existing.collectedByName = nextCollectorName;
       existing.paymentMethod = paymentMethod;
       existing.paymentReference = after.paymentReference ?? null;
-      existing.chequeDate = after.chequeDate ?? null;
+      existing.set(cheque);
+      // A cheque keeps its status; one that became a cheque on this edit starts where a new one would.
+      existing.chequeStatus = cheque.chequeNumber
+        ? (existing.chequeStatus ??
+          this.newChequeStatus(await this.usersService.findByIdWithRole(nextCollectorId)))
+        : null;
+      // A bank receipt keeps its handover state; one that became bank on this edit starts where a new one would.
+      existing.bankHandoverStatus = this.isReceiptBank(def, paymentMethod)
+        ? (existing.bankHandoverStatus ??
+          (handsOver(await this.usersService.findByIdWithRole(nextCollectorId))
+            ? BankHandoverStatus.WITH_SALESMAN
+            : null))
+        : null;
       if (input.comments !== undefined) existing.comments = input.comments;
       existing.set(def.headerField, new Types.ObjectId(nextHeaderId));
       existing.lines = nextLines;
@@ -586,6 +646,7 @@ export class VoucherPostingService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
       this.assertNotCancelled(def, existing, 'cancelled again');
+      this.assertChequeEditable(def, existing, 'cancelled');
 
       const headerBefore = await this.cashLikeBalance(def, this.headerOf(def, existing).toString(), session);
       await this.reverse(def, this.postingOf(def, existing), 'cancelled', session);
@@ -623,6 +684,7 @@ export class VoucherPostingService {
     viewer?: ScopedUser,
   ): Promise<{ success: true }> {
     const existing = await this.findById(def, model, id, viewer);
+    this.assertChequeEditable(def, existing, 'deleted');
 
     return runInTransaction(this.connection, async (session) => {
       if (existing.status !== VoucherStatus.CANCELLED) {
@@ -660,6 +722,16 @@ export class VoucherPostingService {
       totalTax: sum2(lines.map((line) => line.vat)),
       grandTotal: sum2(lines.map((line) => line.netAmount)),
     };
+  }
+
+  /** Re-posts a voucher's header and lines inside the caller's transaction (undoing a returned cheque). */
+  async postDocument(def: VoucherDefinition, voucher: VoucherDocument, cause: string, session: ClientSession) {
+    await this.post(def, this.postingOf(def, voucher), cause, session);
+  }
+
+  /** Reverses a voucher's posting inside the caller's transaction (a returned cheque). */
+  async reverseDocument(def: VoucherDefinition, voucher: VoucherDocument, cause: string, session: ClientSession) {
+    await this.reverse(def, this.postingOf(def, voucher), cause, session);
   }
 
   /** Writes the voucher's ledger entries and moves the balances. */
@@ -902,6 +974,7 @@ export class VoucherPostingService {
       filter.status = VoucherStatus.CANCELLED;
     }
 
+    if (query.chequeStatus) filter.chequeStatus = query.chequeStatus;
     if (query.headerAccountId) filter[def.headerField] = new Types.ObjectId(query.headerAccountId);
     if (query.accountId) filter['lines.accountId'] = new Types.ObjectId(query.accountId);
     if (query.collectedBy) filter.collectedById = new Types.ObjectId(query.collectedBy);
@@ -959,6 +1032,8 @@ export class VoucherPostingService {
       collectedByName: voucher.collectedByName,
       paymentReference: voucher.paymentReference,
       chequeDate: voucher.chequeDate ?? null,
+      chequeNumber: voucher.chequeNumber ?? null,
+      chequeBankName: voucher.chequeBankName ?? null,
       comments: voucher.comments,
       lines: voucher.lines.map((line) => ({
         accountId: line.accountId.toString(),
@@ -976,19 +1051,82 @@ export class VoucherPostingService {
     }
   }
 
-  /** Cheque vouchers need the cheque number (paymentReference); the cheque date is kept only on them. */
-  private chequeDateFor(
+  /** The voucher's payment method, from its header account; a requested one must agree (cash -> cash/wallet, cheque -> cheque, bank -> bank). */
+  private methodFor(account: { code: string; name: string; type: LedgerAccountType }, requested?: PaymentMethod): PaymentMethod {
+    const method = paymentMethodFor(account.type);
+    if (requested && requested !== method) {
+      throw new BadRequestException(
+        `${account.code} (${account.name}) is a ${account.type} account, so the payment method is ${method}, not ${requested}`,
+      );
+    }
+    return method;
+  }
+
+  /** Receipts by bank transfer: verified on a handover when the collector settles with the office. */
+  private isReceiptBank(def: VoucherDefinition, method: PaymentMethod): boolean {
+    return def.direction === VoucherDirection.RECEIPT && method === PaymentMethod.BANK;
+  }
+
+  /** A salesman who settles with the office holds the cheque until a handover is approved; anyone else's is at the office. */
+  private newChequeStatus(collector: Collector | null): ChequeStatus {
+    return handsOver(collector) ? ChequeStatus.WITH_SALESMAN : ChequeStatus.AT_OFFICE;
+  }
+
+  /** Cheque vouchers need the cheque number, date and bank; other vouchers keep none of them. */
+  private chequeFieldsFor(
     method: PaymentMethod,
-    paymentReference: string | null | undefined,
-    chequeDate: string | Date | null | undefined,
-  ): Date | null {
+    input: { chequeNumber?: string | null; chequeBankName?: string | null; chequeDate?: string | Date | null },
+  ): { chequeNumber: string | null; chequeBankName: string | null; chequeDate: Date | null } {
     if (method !== PaymentMethod.CHEQUE) {
-      return null;
+      return { chequeNumber: null, chequeBankName: null, chequeDate: null };
     }
-    if (!paymentReference) {
-      throw new BadRequestException('A cheque needs its cheque number in paymentReference');
+    const missing = (['chequeNumber', 'chequeDate', 'chequeBankName'] as const).filter((key) => !input[key]);
+    if (missing.length > 0) {
+      throw new BadRequestException(`A cheque needs ${missing.join(', ')}`);
     }
-    return chequeDate ? new Date(chequeDate) : null;
+    return {
+      chequeNumber: String(input.chequeNumber).trim(),
+      chequeBankName: String(input.chequeBankName).trim(),
+      chequeDate: new Date(input.chequeDate!),
+    };
+  }
+
+  /** The same cheque (number + bank, bank case-insensitive) can't be on two non-cancelled vouchers. */
+  private async assertChequeUnique(
+    model: VoucherModel,
+    cheque: { chequeNumber: string | null; chequeBankName: string | null },
+    exceptId: Types.ObjectId | null,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!cheque.chequeNumber || !cheque.chequeBankName) return;
+    const clash = await model
+      .findOne({
+        chequeNumber: cheque.chequeNumber,
+        chequeBankName: new RegExp(`^${escapeRegExp(cheque.chequeBankName)}$`, 'i'),
+        status: { $ne: VoucherStatus.CANCELLED },
+        ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+      })
+      .session(session)
+      .exec();
+    if (clash) {
+      throw new ConflictException(
+        `Cheque ${cheque.chequeNumber} (${cheque.chequeBankName}) is already on ${clash.voucherNo}`,
+      );
+    }
+  }
+
+  /** Past the office (deposited, cleared, returned, ...) a cheque voucher is locked until that step is undone. */
+  private assertChequeEditable(def: VoucherDefinition, voucher: VoucherDocument, action: string): void {
+    if (voucher.bankHandoverStatus === BankHandoverStatus.SUBMITTED) {
+      throw new BadRequestException(
+        `${def.label} ${voucher.voucherNo} is on a submitted handover; it can be ${action} once that is approved, rejected or cancelled`,
+      );
+    }
+    if (voucher.chequeStatus && !EDITABLE_CHEQUE_STATUSES.includes(voucher.chequeStatus)) {
+      throw new BadRequestException(
+        `${def.label} ${voucher.voucherNo}: its cheque is ${voucher.chequeStatus}; undo that before it can be ${action}`,
+      );
+    }
   }
 
   /** Receipts: the received-into account's balance, when it is a cash, wallet or cheque account. */
@@ -1039,4 +1177,18 @@ export class VoucherPostingService {
     }
     return date;
   }
+}
+
+type Collector = { settlesWithOffice?: boolean; role?: unknown };
+
+/**
+ * Whether what this collector receives goes onto a handover before the office
+ * has it: van salesmen (an "own"-scoped role) always, anyone else when their
+ * user is marked settlesWithOffice. Cash is tracked by their postings; this
+ * decides the cheque and bank-transfer receipts.
+ */
+function handsOver(collector: Collector | null | undefined): boolean {
+  return Boolean(
+    collector?.settlesWithOffice || (collector?.role as { dataScope?: DataScope } | null)?.dataScope === DataScope.OWN,
+  );
 }

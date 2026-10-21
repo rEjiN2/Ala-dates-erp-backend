@@ -65,10 +65,24 @@ export class VoucherFieldsDto {
   @MaxLength(100)
   paymentReference?: string | null;
 
-  /** Cheque vouchers only: the date on the cheque. */
+  /** Cheque vouchers only (required there): the date on the cheque; post-dated allowed. */
   @IsOptional()
   @IsDateString()
   chequeDate?: string | null;
+
+  /** Cheque vouchers only (required there). */
+  @IsOptional()
+  @Transform(trimToNull)
+  @IsString()
+  @MaxLength(50)
+  chequeNumber?: string | null;
+
+  /** Cheque vouchers only (required there): the bank the cheque is drawn on. */
+  @IsOptional()
+  @Transform(trimToNull)
+  @IsString()
+  @MaxLength(100)
+  chequeBankName?: string | null;
 
   /**
    * The user who handled the money (Collected By / Paid By). Defaults to the
