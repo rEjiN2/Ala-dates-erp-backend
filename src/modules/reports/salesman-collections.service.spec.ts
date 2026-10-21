@@ -1,28 +1,25 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getModelToken } from '@nestjs/mongoose';
-import { Types, type Model } from 'mongoose';
+import type { Model } from 'mongoose';
 import request from 'supertest';
 import { createVoucherHarness, makeUser, type VoucherHarness } from '../../../test/voucher-test-module.js';
 import { LedgerAccountType, type LedgerAccountDocument } from '../accounting/ledger-accounts/schemas/ledger-account.schema.js';
-import { type CashierDocument, StaffType } from '../cashier/schemas/cashier.schema.js';
-import { User, type UserDocument } from '../users/schemas/user.schema.js';
 import { Location, type LocationDocument, LocationType } from '../location/schemas/location.schema.js';
 import { ReportsController } from './reports.controller.js';
 import { REQUIRE_PERMISSION_KEY } from '../../common/decorators/require-permission.decorator.js';
-import { ACCOUNTANT_PERMISSIONS, DataScope, Permission } from '../roles/permissions.js';
+import { ACCOUNTANT_PERMISSIONS, DataScope, Permission, VAN_SALESMAN_PERMISSIONS } from '../roles/permissions.js';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 
-const { CASH, BANK, PARTY } = LedgerAccountType;
+const { CASH, CHEQUE, BANK, PARTY } = LedgerAccountType;
 
 describe('Salesman collections report', () => {
   let h: VoucherHarness;
-  let userModel: Model<UserDocument>;
   let locationModel: Model<LocationDocument>;
-  const office = makeUser('Office');
-  const approver = makeUser('Approver');
-  let van1: CashierDocument;
-  let van2: CashierDocument;
+  let office: AuthenticatedUser;
+  let van1: AuthenticatedUser;
+  let van2: AuthenticatedUser;
   let van1Cash: LedgerAccountDocument;
+  let van1Cheques: LedgerAccountDocument;
   let van2Cash: LedgerAccountDocument;
   let officeCash: LedgerAccountDocument;
   let bank: LedgerAccountDocument;
@@ -30,7 +27,6 @@ describe('Salesman collections report', () => {
 
   beforeAll(async () => {
     h = await createVoucherHarness('salesman_collections');
-    userModel = h.moduleRef.get(getModelToken(User.name));
     locationModel = h.moduleRef.get(getModelToken(Location.name));
   }, 120_000);
 
@@ -39,191 +35,178 @@ describe('Salesman collections report', () => {
   });
 
   beforeEach(async () => {
-    van1 = await h.cashiers.create({ name: 'Van 1', staffType: StaffType.VAN_SALESMAN }, office);
-    van2 = await h.cashiers.create({ name: 'Van 2', staffType: StaffType.VAN_SALESMAN }, office);
     van1Cash = await h.makeAccount('CASH-0001', CASH, 0, 'Van 1 Cash');
+    van1Cheques = await h.makeAccount('CHQ-0001', CHEQUE, 0, 'Van 1 Cheques');
     van2Cash = await h.makeAccount('CASH-0002', CASH, 0, 'Van 2 Cash');
     officeCash = await h.makeAccount('CASH-0003', CASH, 0, 'Office Cash');
     bank = await h.makeAccount('BNK-0001', BANK, 0, 'ADCB');
     customer = await h.makeAccount('CUS-0001', PARTY, 0, 'Ali Traders');
+    // Van 1 is an own-scoped salesman who may also read the report.
+    van1 = await h.persistUser({
+      ...makeUser('Van 1', [...VAN_SALESMAN_PERMISSIONS, Permission.REPORTS_SALESMAN]),
+      dataScope: DataScope.OWN,
+      allowedCashAccountIds: [van1Cash.id as string, van1Cheques.id as string],
+    });
+    van2 = await h.persistUser({
+      ...makeUser('Van 2', [...VAN_SALESMAN_PERMISSIONS]),
+      allowedCashAccountIds: [van2Cash.id as string],
+    });
+    office = await h.persistUser(makeUser('Office', [...ACCOUNTANT_PERMISSIONS]));
+    await h.company.ensure();
+    await h.models.company.updateOne({}, { defaultCashInHandAccountId: officeCash._id }).exec();
   });
 
   afterEach(async () => {
     h.harness.tokenUser = makeUser('Sachin');
     await h.reset();
-    await userModel.deleteMany({}).exec();
     await locationModel.deleteMany({}).exec();
   });
 
-  const receipt = (cashier: CashierDocument, into: LedgerAccountDocument, amount: number, date: string) =>
+  const receipt = (
+    collector: AuthenticatedUser,
+    into: LedgerAccountDocument,
+    amount: number,
+    date: string,
+    paymentReference?: string,
+  ) =>
     h.receipts.create(
       {
         voucherDate: date,
         cashAccountId: into.id as string,
-        cashierId: cashier.id as string,
+        collectedById: collector.id,
+        paymentReference,
         lines: [{ accountId: customer.id as string, amount }],
       },
       office,
     );
 
-  const submit = (cashier: CashierDocument, from: LedgerAccountDocument, receiptIds: string[], date: string) =>
-    h.handovers.create(
-      { voucherDate: date, staffId: cashier.id as string, sourceAccountId: from.id as string, receiptIds, countedCash: 0 },
-      office,
-    );
-
-  /** Approves, then backdates the approval (and the receipts' settledAt) to `at`. */
-  async function approveOn(id: string, receivedCash: number, at: string, varianceReason?: string) {
-    await h.handovers.approve(
-      id,
-      { receivedCash, receivedIntoAccountId: officeCash.id as string, varianceReason },
-      approver,
-    );
-    const when = new Date(at);
-    await h.models.handover.updateOne({ _id: id }, { approvedAt: when }).exec();
-    await h.models.receipt.updateMany({ handoverId: new Types.ObjectId(id) }, { settledAt: when }).exec();
-  }
-
   const report = (query: Record<string, string> = {}) => h.collections.report(query, office);
-  const rowOf = async (cashier: CashierDocument, query: Record<string, string> = {}) =>
-    (await report(query)).rows.find((row) => row.cashier.id === cashier.id);
+  const rowOf = async (staff: AuthenticatedUser, query: Record<string, string> = {}) =>
+    (await report(query)).rows.find((row) => row.staff.id === staff.id);
 
-  /**
-   * Van 1: day 1 cash 500 + bank 200, handed over and approved that day with
-   * 480 received (20 short); day 2 cash 400 + 100, the 400 submitted; day 3
-   * cash 250. Van 2: 80 on day 2.
-   */
+  /** Van 1: day 1 cash 500 + bank 200, day 2 cash 400 + cheque 100, day 3 cash 250. Van 2: 80 on day 2. */
   async function threeDays() {
-    const r1 = await receipt(van1, van1Cash, 500, '2026-10-01');
-    const r2 = await receipt(van1, bank, 200, '2026-10-01');
-    const h1 = await submit(van1, van1Cash, [r1.id, r2.id] as string[], '2026-10-01');
-    await approveOn(h1.id as string, 480, '2026-10-01T15:00:00Z', 'Short at count');
-    const r3 = await receipt(van1, van1Cash, 400, '2026-10-02');
-    await receipt(van1, van1Cash, 100, '2026-10-02');
-    const h2 = await submit(van1, van1Cash, [r3.id as string], '2026-10-02');
+    await receipt(van1, van1Cash, 500, '2026-10-01');
+    await receipt(van1, bank, 200, '2026-10-01');
+    await receipt(van1, van1Cash, 400, '2026-10-02');
+    await receipt(van1, van1Cheques, 100, '2026-10-02', 'CHQ 77');
     const r5 = await receipt(van1, van1Cash, 250, '2026-10-03');
     await receipt(van2, van2Cash, 80, '2026-10-02');
-    return { h1, h2, r5 };
+    return { r5 };
   }
 
-  it('tracks unsettled cash through submit and approval, day by day', async () => {
-    const { h2 } = await threeDays();
-
+  it('splits receipts by how the money came in, day by day', async () => {
+    await threeDays();
     expect(await rowOf(van1)).toMatchObject({
-      unsettledOpening: 0,
-      collectedCash: 1250,
+      receipts: 5,
+      collectedCash: 1150,
+      collectedCheque: 100,
       collectedBank: 200,
-      pendingApproval: 400,
-      settled: 480,
-      openShortage: 20,
-      unsettledClosing: 750,
-      receiptCount: 5,
-      handoverCount: 2,
+      total: 1450,
+      withSalesman: 1250,
     });
-
-    const day = (d: string) => rowOf(van1, { dateFrom: d, dateTo: d });
-    expect(await day('2026-10-01')).toMatchObject({
-      unsettledOpening: 0,
-      collectedCash: 500,
-      collectedBank: 200,
-      pendingApproval: 0,
-      settled: 480,
-      openShortage: 20,
-      unsettledClosing: 0,
+    expect(await rowOf(van1, { dateFrom: '2026-10-02', dateTo: '2026-10-02' })).toMatchObject({
+      receipts: 2,
+      collectedCash: 400,
+      collectedCheque: 100,
+      collectedBank: 0,
+      total: 500,
     });
-    expect(await day('2026-10-02')).toMatchObject({ unsettledOpening: 0, collectedCash: 500, pendingApproval: 400, settled: 0, unsettledClosing: 500 });
-    expect(await day('2026-10-03')).toMatchObject({ unsettledOpening: 500, collectedCash: 250, unsettledClosing: 750 });
-
-    await approveOn(h2.id as string, 400, '2026-10-03T10:00:00Z');
-    expect(await day('2026-10-03')).toMatchObject({ unsettledOpening: 500, pendingApproval: 0, settled: 400, unsettledClosing: 350 });
-
     const all = await report({ dateFrom: '2026-10-02', dateTo: '2026-10-03' });
-    expect(all.rows.map((row) => row.cashier.name)).toEqual(['Van 1', 'Van 2']);
-    expect(all.totals).toMatchObject({ collectedCash: 830, settled: 400, unsettledClosing: 430 });
+    expect(all.rows.map((row) => row.staff.name)).toEqual(['Van 1', 'Van 2']);
+    expect(all.totals).toMatchObject({ receipts: 4, collectedCash: 730, collectedCheque: 100, total: 830 });
   });
 
-  it('matches the ledger: unsettled cash plus open shortage is what the van account holds', async () => {
+  it('shows handed over (approved in range), pending approval and what is still with the salesman', async () => {
     await threeDays();
+    const first = await h.handovers.create(
+      {
+        lines: [
+          { sourceAccountId: van1Cash.id as string, amount: 900 },
+          { sourceAccountId: van1Cheques.id as string, amount: 100 },
+        ],
+      },
+      van1,
+    );
+    expect(await rowOf(van1)).toMatchObject({ handedOver: 0, pendingApproval: 1000, withSalesman: 1250 });
+
+    await h.handovers.approve(
+      first._id.toString(),
+      {
+        lines: [
+          { sourceAccountId: van1Cash.id as string, receivedAmount: 880 },
+          { sourceAccountId: van1Cheques.id as string, receivedIntoAccountId: bank.id as string },
+        ],
+        reason: 'Short 20',
+      },
+      office,
+    );
     const row = (await rowOf(van1))!;
-    expect(row.unsettledClosing + row.openShortage).toBe(await h.balanceOf(van1Cash));
-    for (const account of await h.models.account.find().lean().exec()) {
-      const entries = (await h.models.entry.find({ accountId: account._id }).lean().exec()) as unknown as {
-        debit: number;
-        credit: number;
-      }[];
-      const net = Math.round(entries.reduce((sum, entry) => sum + entry.debit - entry.credit, 0) * 100) / 100;
-      expect([account.code, account.balance]).toEqual([account.code, net]);
-    }
+    expect(row).toMatchObject({ handedOver: 980, pendingApproval: 0, withSalesman: 270 });
+    expect(row.withSalesman).toBe((await h.balanceOf(van1Cash)) + (await h.balanceOf(van1Cheques)));
+    // Approved today, so nothing handed over in an old range; the holding is still shown.
+    expect(await rowOf(van1, { dateFrom: '2020-01-01', dateTo: '2020-01-02' })).toMatchObject({
+      receipts: 0,
+      handedOver: 0,
+      withSalesman: 270,
+    });
   });
 
-  it('updates when a receipt is cancelled, a handover rejected or an approved one cancelled', async () => {
-    const { h1, h2, r5 } = await threeDays();
+  it('totals match the receipts list for the same filters; numbers are never null', async () => {
+    const { r5 } = await threeDays();
     await h.receipts.cancel(r5.id as string, { reason: 'Duplicate' }, office);
-    expect(await rowOf(van1)).toMatchObject({ collectedCash: 1000, receiptCount: 4, unsettledClosing: 500 });
-
-    await h.handovers.reject(h2.id as string, { reason: 'Recount' }, approver);
-    expect(await rowOf(van1)).toMatchObject({ pendingApproval: 0, handoverCount: 1, unsettledClosing: 500 });
-
-    await h.handovers.cancel(h1.id as string, { reason: 'Approved by mistake' }, office);
-    expect(await rowOf(van1)).toMatchObject({ settled: 0, openShortage: 0, unsettledClosing: 1000, handoverCount: 0 });
+    for (const [user, dateFrom, dateTo] of [
+      [van1, '2026-10-01', '2026-10-03'],
+      [van1, '2026-10-02', '2026-10-02'],
+      [van2, '2026-10-01', '2026-10-03'],
+    ] as const) {
+      const row = (await rowOf(user, { userId: user.id, dateFrom, dateTo }))!;
+      const list = await h.receipts.findAll({ dateFrom, dateTo, collectedBy: user.id, status: 'posted' }, office);
+      expect([row.receipts, row.total]).toEqual([list.summary.count, list.summary.total]);
+    }
+    const { staff: _staff, ...idle } = (await report({ userId: office.id })).rows[0];
+    expect(Object.values(idle)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
-  it('leaves out staff who do not settle with the office', async () => {
-    const accountant = await h.cashiers.create({ name: 'Accounts', staffType: StaffType.ACCOUNTANT }, office);
-    await receipt(accountant, officeCash, 700, '2026-10-01');
-    await receipt(van1, van1Cash, 100, '2026-10-01');
-
-    const all = await report();
-    expect(all.rows.map((row) => row.cashier.name)).toEqual(['Van 1']);
-    expect(all.totals.collectedCash).toBe(100);
-    expect((await report({ staffId: accountant.id as string })).rows).toEqual([]);
-    await expect(h.collections.details(accountant.id as string, {}, office)).rejects.toThrow(/not found/);
-  });
-
-  it('filters by staff and location, and validates the range', async () => {
+  it('filters by user and location, and validates the range', async () => {
     await threeDays();
-    expect((await report({ staffId: van2.id as string })).rows.map((row) => row.cashier.name)).toEqual(['Van 2']);
-    expect((await report({ cashierId: van2.id as string })).rows.map((row) => row.cashier.name)).toEqual(['Van 2']);
+    expect((await report({ userId: van2.id })).rows.map((row) => row.staff.name)).toEqual(['Van 2']);
 
     const route = await locationModel.create({ code: 'VAN-0001', name: 'Van 2 Route', type: LocationType.VAN });
-    await h.cashiers.update(van2.id as string, { locationId: route.id as string }, office);
+    await h.models.user.updateOne({ _id: van2.id }, { locationId: route._id }).exec();
     expect((await report({ locationId: route.id as string })).rows).toMatchObject([
-      { cashier: { name: 'Van 2', location: { name: 'Van 2 Route' } } },
+      { staff: { id: van2.id, name: 'Van 2', status: 'active', location: { id: route.id, name: 'Van 2 Route' } } },
     ]);
     await expect(report({ dateFrom: '2026-10-05', dateTo: '2026-10-01' })).rejects.toThrow(/dateFrom/);
   });
 
-  it('details list the receipts (with settlement) and handovers behind a row', async () => {
+  it('details list the receipts and handovers behind a row, always as arrays', async () => {
     await threeDays();
-    const details = await h.collections.details(van1.id as string, { dateFrom: '2026-10-01', dateTo: '2026-10-02' }, office);
-    expect(details.receipts.map((r) => [r.amount, r.paymentMethod, r.settlementStatus, r.handover?.voucherNo ?? null])).toEqual([
-      [500, 'cash', 'settled', 'CH-0001'],
-      [200, 'bank', 'settled', 'CH-0001'],
-      [400, 'cash', 'submitted', 'CH-0002'],
-      [100, 'cash', 'unsettled', null],
+    await h.handovers.create({ voucherDate: '2026-10-04', lines: [{ sourceAccountId: van1Cash.id as string, amount: 100 }] }, van1);
+    const details = await h.collections.details(van1.id, { dateFrom: '2026-10-01', dateTo: '2026-10-02' }, office);
+    expect(details.receipts.map((r) => [r.amount, r.paymentMethod, r.paymentReference])).toEqual([
+      [500, 'cash', null],
+      [200, 'bank', null],
+      [400, 'cash', null],
+      [100, 'cheque', 'CHQ 77'],
     ]);
-    expect(details.handovers).toMatchObject([
-      { voucherNo: 'CH-0001', status: 'approved', expectedCash: 500, bankTotal: 200, receivedCash: 480, shortage: 20, receivedInto: { name: 'Office Cash' } },
-      { voucherNo: 'CH-0002', status: 'submitted', expectedCash: 400, receivedCash: null, shortage: 0 },
+    expect(details.handovers).toEqual([]);
+    expect((await h.collections.details(van1.id, {}, office)).handovers).toMatchObject([
+      { voucherNo: 'HO-0001', status: 'submitted', submittedTotal: 100, receivedTotal: null },
     ]);
+    expect(await h.collections.details(office.id, {}, office)).toMatchObject({ receipts: [], handovers: [] });
   });
 
   describe('access', () => {
-    async function scopedSalesman(): Promise<AuthenticatedUser> {
-      const user = await userModel.create({ email: 'r@ala.ae', passwordHash: 'x', name: 'Rashid', role: new Types.ObjectId() });
-      await h.cashiers.update(van1.id as string, { linkedUserId: user.id as string }, office);
-      return { ...makeUser('Rashid', [Permission.REPORTS_SALESMAN]), id: user.id as string, dataScope: DataScope.OWN };
-    }
-
-    it('gives a scoped user only their own row, and 404 on another staff member', async () => {
+    it('gives a scoped user only their own row, and 404 on another user', async () => {
       await threeDays();
-      h.harness.tokenUser = await scopedSalesman();
+      h.harness.tokenUser = van1;
       const server = h.app.getHttpServer();
 
       const res = await request(server).get('/reports/salesman-collections');
       expect(res.status).toBe(200);
-      expect(res.body.rows.map((row: { cashier: { name: string } }) => row.cashier.name)).toEqual(['Van 1']);
-      expect((await request(server).get('/reports/salesman-collections').query({ staffId: van2.id })).body.rows).toEqual([]);
+      expect(res.body.rows.map((row: { staff: { name: string } }) => row.staff.name)).toEqual(['Van 1']);
+      expect((await request(server).get('/reports/salesman-collections').query({ userId: van2.id })).body.rows).toEqual([]);
       expect((await request(server).get(`/reports/salesman-collections/${van1.id}`)).status).toBe(200);
       expect((await request(server).get(`/reports/salesman-collections/${van2.id}`)).status).toBe(404);
     });

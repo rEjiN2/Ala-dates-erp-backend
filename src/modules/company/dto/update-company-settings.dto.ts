@@ -93,4 +93,14 @@ export class UpdateCompanySettingsDto {
   @IsOptional()
   @IsBoolean()
   allowSelfApproval?: boolean;
+
+  /** Active cash or wallet account; the default "received into" for cash handed over. */
+  @IsOptional()
+  @IsMongoId()
+  defaultCashInHandAccountId?: string | null;
+
+  /** Active cheque account; the default "received into" for cheques handed over. */
+  @IsOptional()
+  @IsMongoId()
+  defaultChequesInHandAccountId?: string | null;
 }

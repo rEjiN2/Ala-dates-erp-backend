@@ -69,6 +69,14 @@ export class CompanySettings {
   @Prop({ type: Boolean, default: false })
   allowSelfApproval: boolean;
 
+  /** Cash handovers: where cash and wallet money is received by default (a cash or wallet account). */
+  @Prop({ type: Types.ObjectId, ref: 'LedgerAccount', default: null })
+  defaultCashInHandAccountId: Types.ObjectId | null;
+
+  /** Cash handovers: where cheques are received by default (a cheque account). */
+  @Prop({ type: Types.ObjectId, ref: 'LedgerAccount', default: null })
+  defaultChequesInHandAccountId: Types.ObjectId | null;
+
   @Prop({ type: UserSnapshotSchema, default: null })
   updatedBy: UserSnapshot | null;
 

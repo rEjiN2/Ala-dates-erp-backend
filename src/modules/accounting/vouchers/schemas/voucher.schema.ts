@@ -3,7 +3,6 @@ import { HydratedDocument, Types } from 'mongoose';
 import type { Schema as MongooseSchema } from 'mongoose';
 import { LedgerAccount, LedgerAccountType } from '../../ledger-accounts/schemas/ledger-account.schema.js';
 import { UserSnapshot, UserSnapshotSchema } from '../../../../common/schemas/user-snapshot.schema.js';
-import { StaffType } from '../../../cashier/schemas/cashier.schema.js';
 
 /** Receipts and payments are posted or cancelled; handovers go submitted, then approved or rejected (or cancelled). */
 export enum VoucherStatus {
@@ -16,15 +15,18 @@ export enum VoucherStatus {
 
 /**
  * How the money moved, derived from the header account's type: bank
- * accounts give "bank", cash and wallet accounts give "cash".
+ * accounts give "bank", cheque accounts "cheque", cash and wallet "cash".
  */
 export enum PaymentMethod {
   CASH = 'cash',
+  CHEQUE = 'cheque',
   BANK = 'bank',
 }
 
 export function paymentMethodFor(accountType: LedgerAccountType): PaymentMethod {
-  return accountType === LedgerAccountType.BANK ? PaymentMethod.BANK : PaymentMethod.CASH;
+  if (accountType === LedgerAccountType.BANK) return PaymentMethod.BANK;
+  if (accountType === LedgerAccountType.CHEQUE) return PaymentMethod.CHEQUE;
+  return PaymentMethod.CASH;
 }
 
 @Schema({ _id: false })
@@ -71,28 +73,29 @@ export abstract class VoucherBase {
   voucherDate: Date;
 
   /**
-   * The cashier master record. null only on receipts entered before the
-   * cashier master existed; those keep their free-text cashier in cashierName,
-   * and must be given a cashier before they can be edited.
+   * The user who handled the money: "Collected By" on receipts, "Paid By" on
+   * payments. null only on vouchers whose old
+   * cashier had no linked login; those keep the old name in collectedByName
+   * and must be given a user before they can be edited.
    */
-  @Prop({ type: Types.ObjectId, ref: 'Cashier', default: null, index: true })
-  cashierId: Types.ObjectId | null;
+  @Prop({ type: Types.ObjectId, ref: 'User', default: null, index: true })
+  collectedById: Types.ObjectId | null;
 
-  /** Cashier's name when it was set on this voucher. Historical snapshot, not refreshed on rename. */
+  /** That user's name when it was set on this voucher. Historical snapshot, not refreshed on rename. */
   @Prop({ type: String, trim: true, default: null })
-  cashierName: string | null;
-
-  /** Cashier's staff type when it was set on this voucher (snapshot, like cashierName). null on older vouchers. */
-  @Prop({ type: String, enum: [...Object.values(StaffType), null], default: null })
-  cashierStaffType: StaffType | null;
+  collectedByName: string | null;
 
   /** Set by the server from the header account's type. Vouchers from before bank support read as "cash". */
   @Prop({ type: String, enum: PaymentMethod, default: PaymentMethod.CASH })
   paymentMethod: PaymentMethod;
 
-  /** Cheque number, transfer reference, etc. */
+  /** Cheque number, transfer reference, etc. Required on cheque vouchers. */
   @Prop({ type: String, trim: true, default: null })
   paymentReference: string | null;
+
+  /** Cheque vouchers only; null otherwise. */
+  @Prop({ type: Date, default: null })
+  chequeDate: Date | null;
 
   @Prop({ trim: true })
   comments?: string;

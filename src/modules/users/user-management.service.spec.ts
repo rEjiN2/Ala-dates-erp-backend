@@ -15,12 +15,12 @@ import bcrypt from 'bcryptjs';
 import request from 'supertest';
 import { mongooseTestRoot } from '../../../test/mongo-test-db.js';
 import { UserManagementService } from './user-management.service.js';
-import { UsersService } from './users.service.js';
+import { CollectorPurpose, UsersService } from './users.service.js';
+import { UserUsageRegistry } from './user-usage.registry.js';
 import { UsersController } from './users.controller.js';
 import { CreateUserDto } from './dto/user.dto.js';
 import { User, UserDocument, UserSchema, UserStatus } from './schemas/user.schema.js';
 import { Role, RoleDocument, RoleSchema } from '../roles/schemas/role.schema.js';
-import { Cashier, CashierDocument, CashierSchema } from '../cashier/schemas/cashier.schema.js';
 import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
 import { LedgerAccountUsageRegistry } from '../accounting/ledger-accounts/ledger-account-usage.registry.js';
 import {
@@ -50,7 +50,6 @@ describe('Users (UserManagementService)', () => {
   let service: UserManagementService;
   let userModel: Model<UserDocument>;
   let roleModel: Model<RoleDocument>;
-  let cashierModel: Model<CashierDocument>;
   let accountModel: Model<LedgerAccountDocument>;
   let auditModel: Model<AuditLogDocument>;
   let adminRole: RoleDocument;
@@ -67,7 +66,6 @@ describe('Users (UserManagementService)', () => {
         MongooseModule.forFeature([
           { name: User.name, schema: UserSchema },
           { name: Role.name, schema: RoleSchema },
-          { name: Cashier.name, schema: CashierSchema },
           { name: LedgerAccount.name, schema: LedgerAccountSchema },
           { name: Location.name, schema: LocationSchema },
           { name: Counter.name, schema: CounterSchema },
@@ -78,6 +76,7 @@ describe('Users (UserManagementService)', () => {
       providers: [
         UserManagementService,
         UsersService,
+        UserUsageRegistry,
         LedgerAccountService,
         LedgerAccountUsageRegistry,
         LocationService,
@@ -100,10 +99,9 @@ describe('Users (UserManagementService)', () => {
     service = moduleRef.get(UserManagementService);
     userModel = moduleRef.get(getModelToken(User.name));
     roleModel = moduleRef.get(getModelToken(Role.name));
-    cashierModel = moduleRef.get(getModelToken(Cashier.name));
     accountModel = moduleRef.get(getModelToken(LedgerAccount.name));
     auditModel = moduleRef.get(getModelToken(AuditLog.name));
-    await Promise.all([userModel.init(), roleModel.init(), cashierModel.init(), auditModel.init()]);
+    await Promise.all([userModel.init(), roleModel.init(), auditModel.init()]);
   }, 120_000);
 
   afterAll(async () => {
@@ -137,7 +135,6 @@ describe('Users (UserManagementService)', () => {
     await Promise.all([
       userModel.deleteMany({}).exec(),
       roleModel.deleteMany({}).exec(),
-      cashierModel.deleteMany({}).exec(),
       accountModel.deleteMany({}).exec(),
       auditModel.collection.deleteMany({}),
     ]);
@@ -168,7 +165,7 @@ describe('Users (UserManagementService)', () => {
         mustChangePassword: true,
         role: { name: 'Van Salesman', dataScope: 'own' },
         allowedCashAccounts: [{ id: cash.id, code: 'CASH-0001', type: 'cash' }],
-        linkedCashier: null,
+        settlesWithOffice: false,
       });
       const stored = await userModel.findById(user.id).select('+passwordHash').exec();
       expect(stored!.passwordHash).not.toBe('van-pass-1');
@@ -190,7 +187,7 @@ describe('Users (UserManagementService)', () => {
       const bank = await account('BNK-0001', LedgerAccountType.BANK);
       const closed = await account('CASH-0009', LedgerAccountType.CASH, LedgerAccountStatus.INACTIVE);
       await expect(newUser({ email: 'b@ala.ae', allowedCashAccountIds: [bank.id as string] })).rejects.toThrow(
-        /Only cash and wallet accounts/,
+        /Only cash, wallet and cheque accounts/,
       );
       await expect(newUser({ email: 'c@ala.ae', allowedCashAccountIds: [closed.id as string] })).rejects.toThrow(
         /inactive/,
@@ -262,14 +259,84 @@ describe('Users (UserManagementService)', () => {
       await expect(service.remove(fresh.id, rootActor)).resolves.toEqual({ success: true });
       expect(await userModel.exists({ _id: fresh.id }).exec()).toBeNull();
 
-      const linked = await newUser({ email: 'linked@ala.ae' });
-      await cashierModel.create({ code: 'CSH-0001', name: 'Van 1', linkedUserId: new Types.ObjectId(linked.id) });
-      expect((await service.findOne(linked.id)).linkedCashier).toMatchObject({ code: 'CSH-0001', name: 'Van 1' });
-      await expect(service.remove(linked.id, rootActor)).rejects.toThrow(/linked to cashier CSH-0001/);
+      const collector = await newUser({ email: 'collector@ala.ae' });
+      moduleRef
+        .get(UserUsageRegistry)
+        .register('cash receipts', async (userId) => userId.toString() === collector.id);
+      await expect(service.remove(collector.id, rootActor)).rejects.toThrow(/they are on cash receipts/);
 
       const active = await newUser({ email: 'active@ala.ae' });
       await service.resetPassword(active.id, { password: 'another-1' }, { id: active.id, name: 'Rashid' });
       await expect(service.remove(active.id, rootActor)).rejects.toThrow(/recorded activity/);
+    });
+  });
+
+  describe('settles with office and location', () => {
+    it('defaults to not settling, audits the flag and checks the location', async () => {
+      const user = await newUser();
+      expect(user).toMatchObject({ settlesWithOffice: false, location: null });
+      const updated = await service.update(user.id, { settlesWithOffice: true }, rootActor);
+      expect(updated.settlesWithOffice).toBe(true);
+      const [, edit] = await auditModel.find({ entityId: new Types.ObjectId(user.id) }).sort({ at: 1, _id: 1 }).lean();
+      expect(edit.changes).toEqual([{ field: 'settlesWithOffice', label: 'Settles with office', from: 'No', to: 'Yes' }]);
+      await expect(
+        service.update(user.id, { locationId: new Types.ObjectId().toString() }, rootActor),
+      ).rejects.toThrow(/Location .* not found/);
+      expect((await service.profile(user.id)).settlesWithOffice).toBe(true);
+    });
+  });
+
+  describe('collectors (UsersService)', () => {
+    it('lists active users whose role may create the voucher; only yourself without select-collector', async () => {
+      const users = moduleRef.get(UsersService);
+      const accountantRole = await roleModel.create({
+        name: 'Accountant',
+        permissions: [
+          Permission.CASH_RECEIPTS_CREATE,
+          Permission.CASH_PAYMENTS_CREATE,
+          Permission.VOUCHERS_SELECT_COLLECTOR,
+        ],
+        dataScope: DataScope.ALL,
+      });
+      const accountant = await userModel.create({
+        email: 'acc@ala.ae',
+        passwordHash: 'x',
+        name: 'Amal',
+        role: accountantRole._id,
+      });
+      const van = await userModel.create({
+        email: 'van@ala.ae',
+        passwordHash: 'x',
+        name: 'Bilal',
+        role: salesRole._id,
+        settlesWithOffice: true,
+      });
+      await userModel.create({
+        email: 'old@ala.ae',
+        passwordHash: 'x',
+        name: 'Cyrus',
+        role: salesRole._id,
+        status: UserStatus.INACTIVE,
+      });
+      const asAccountant = { id: accountant.id as string, permissions: accountantRole.permissions };
+      const asVan = { id: van.id as string, permissions: [...VAN_SALESMAN_PERMISSIONS] };
+      const amal = { id: accountant.id, name: 'Amal' };
+      const bilal = { id: van.id, name: 'Bilal' };
+
+      expect(await users.collectorLookup(CollectorPurpose.RECEIPT, asAccountant)).toEqual([amal, bilal]);
+      expect(await users.collectorLookup(CollectorPurpose.PAYMENT, asAccountant)).toEqual([amal]);
+      expect(await users.collectorLookup(CollectorPurpose.RECEIPT, asVan)).toEqual([bilal]);
+      expect(await users.collectorLookup(CollectorPurpose.PAYMENT, asVan)).toEqual([]);
+
+      await expect(users.findEligibleCollector(van.id, Permission.CASH_PAYMENTS_CREATE)).rejects.toThrow(/lacks cash-payments:create/);
+      const old = await userModel.findOne({ email: 'old@ala.ae' }).exec();
+      await expect(users.findEligibleCollector(old!.id, Permission.CASH_RECEIPTS_CREATE)).rejects.toThrow(/inactive/);
+      await expect(users.findEligibleCollector(van.id, Permission.CASH_RECEIPTS_CREATE)).resolves.toMatchObject({ name: 'Bilal' });
+
+      tokenUser = { ...tokenUser, id: van.id as string, permissions: [...VAN_SALESMAN_PERMISSIONS] };
+      const lookup = await request(app.getHttpServer()).get('/users/lookup').query({ for: 'receipt' });
+      expect(lookup.body).toEqual([bilal]);
+      expect((await request(app.getHttpServer()).get('/users/lookup').query({ for: 'nope' })).status).toBe(400);
     });
   });
 

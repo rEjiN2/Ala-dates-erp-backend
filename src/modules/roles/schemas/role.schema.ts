@@ -21,7 +21,7 @@ export class Role {
   @Prop({ trim: true })
   description?: string;
 
-  /** "own": the role's users see only vouchers they created or that are on their linked cashier. */
+  /** "own": the role's users see only vouchers they created or collected (collectedById). */
   @Prop({ type: String, enum: DataScope, required: true, default: DataScope.ALL })
   dataScope: DataScope;
 

@@ -13,10 +13,8 @@ export enum VoucherDirection {
 
 /** Which vouchers an "own"-scoped user sees. */
 export enum VoucherScopeRule {
-  /** Ones they created, or on their linked cashier. */
-  CREATOR_OR_CASHIER = 'creator-or-cashier',
-  /** Only ones on their linked cashier (cashierId), whoever entered them. */
-  CASHIER = 'cashier',
+  /** Ones they created, or collected by them. */
+  CREATOR_OR_COLLECTOR = 'creator-or-collector',
 }
 
 /**
@@ -34,6 +32,8 @@ export interface VoucherDefinition {
   headerField: string;
   /** e.g. "Received into" / "Paid from"; used in diffs, messages and the PDF. */
   headerLabel: string;
+  /** Account types the header may use; defaults to cash, wallet and bank. */
+  headerAccountTypes?: readonly LedgerAccountType[];
   lineAccountTypes: readonly LedgerAccountType[];
   /** Completes "Line 2: X is a bank account. ..." when a line account has the wrong type. */
   lineTypeHint: string;
@@ -43,19 +43,18 @@ export interface VoucherDefinition {
   usageSource: string;
   /** Needed to read the voucher, its comments and its activity. */
   readPermission: Permission;
-  /** Defaults to CREATOR_OR_CASHIER. */
+  /** The collector's role must hold this to be put on the voucher (Collected By / Paid By). */
+  createPermission: Permission;
+  /** Defaults to CREATOR_OR_COLLECTOR. */
   scopeRule?: VoucherScopeRule;
-  /** What the voucher's cashier is called in diffs and on the PDF; defaults to "Cashier". */
-  cashierLabel?: string;
-  /**
-   * Receipts: track settlementStatus. Receipts of staff who settle with the
-   * office start unsettled; once submitted on a handover (or settled) they
-   * can't be edited, cancelled or deleted.
-   */
-  tracksSettlement?: boolean;
+  /** What the voucher's collector is called in diffs and on the PDF, e.g. "Collected By". */
+  collectorLabel: string;
   pdf: {
     /** Title by payment method. */
-    titles: { cash: string; bank: string };
+    /** Title by payment method; cheque falls back to the cash title. */
+    titles: { cash: string; bank: string; cheque?: string };
+    /** Header row value when the voucher has no single header account (handovers); defaults to headerField's name. */
+    headerAccountName?: (voucher: VoucherDocument) => string;
     /** PDF metadata title prefix, e.g. "Cash Receipt". */
     documentTitle: string;
     /** Column heading for the line account, e.g. "Received From" / "Paid To". */
@@ -63,7 +62,7 @@ export interface VoucherDefinition {
     signatures: readonly [string, string];
     /** More rows for the PDF's info table, from the voucher's own extra fields. */
     extraInfo?: (voucher: VoucherDocument) => { label: string; value: string }[];
-    /** Rows and totals to print instead of the posted lines (handovers print their receipts); undefined keeps the lines. */
+    /** Rows and totals to print instead of the posted lines; undefined keeps the lines. */
     body?: (voucher: VoucherDocument) =>
       | {
           lines: { counterparty: string; narration: string | null; amount: number; vat: number; netAmount: number }[];

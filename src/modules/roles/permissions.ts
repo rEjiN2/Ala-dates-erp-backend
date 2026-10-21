@@ -15,20 +15,22 @@ export const Permission = {
   CASH_PAYMENTS_EDIT: 'cash-payments:edit',
   CASH_PAYMENTS_CANCEL: 'cash-payments:cancel',
   CASH_HANDOVERS_READ: 'cash-handovers:read',
+  /** Submit a handover: your own, or another user's with vouchers:select-collector. */
   CASH_HANDOVERS_CREATE: 'cash-handovers:create',
-  /** Approve or reject a submitted handover (posts the received cash). */
+  /** Approve or reject a submitted handover (posts the received amounts). Never your own. */
   CASH_HANDOVERS_APPROVE: 'cash-handovers:approve',
-  /** Cancel any handover, including approved ones; a submitter may cancel their own submitted one without it. */
+  /** Cancel any handover, approved ones included (reverses); a submitter may cancel their own submitted one without it. */
   CASH_HANDOVERS_CANCEL: 'cash-handovers:cancel',
-  CASHIERS_MANAGE: 'cashiers:manage',
   COMPANY_MANAGE: 'company:manage',
   LOCATIONS_MANAGE: 'locations:manage',
   PARTIES_MANAGE: 'parties:manage',
   PRODUCT_GROUPS_MANAGE: 'product-groups:manage',
-  /** The salesman collections report (cash collected vs handed over, per cashier). */
+  /** The salesman collections report (cash collected vs handed over, per user who settles with the office). */
   REPORTS_SALESMAN: 'reports:salesman',
   ROLES_MANAGE: 'roles:manage',
   USERS_MANAGE: 'users:manage',
+  /** Record a voucher as collected (receipt) or paid (payment) by another user; without it, always yourself. */
+  VOUCHERS_SELECT_COLLECTOR: 'vouchers:select-collector',
   /** Read every ledger balance (incl. each party/supplier) in one call. */
   DASHBOARD_VIEW: 'dashboard:view',
 } as const;
@@ -54,8 +56,10 @@ export const LEGACY_PERMISSION_REPLACEMENTS: Readonly<Record<string, readonly Pe
     Permission.CASH_PAYMENTS_EDIT,
     Permission.CASH_PAYMENTS_CANCEL,
   ],
-  // Handovers are no longer edited (submit, then approve/reject/cancel): just removed.
+  // Handovers are never edited (submit, then approve/reject/cancel).
   'cash-handovers:edit': [],
+  // The Cashier (Staff) master was removed: collectors are users now.
+  'cashiers:manage': [],
 };
 
 /** Which records a role's users see: only their own ("own") or everyone's ("all"). */

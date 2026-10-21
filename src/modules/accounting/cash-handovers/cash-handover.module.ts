@@ -5,22 +5,20 @@ import { CashHandoverService } from './cash-handover.service.js';
 import { CashHandoverController } from './cash-handover.controller.js';
 import { VouchersModule } from '../vouchers/vouchers.module.js';
 import { LedgerAccountModule } from '../ledger-accounts/ledger-account.module.js';
-import { CashierModule } from '../../cashier/cashier.module.js';
-import { CashReceipt, CashReceiptSchema } from '../cash-receipts/schemas/cash-receipt.schema.js';
+import { UsersModule } from '../../users/users.module.js';
 import { CompanyModule } from '../../company/company.module.js';
+import { CommentsModule } from '../../comments/comments.module.js';
 import { SequenceModule } from '../../sequence/sequence.module.js';
 import { AuditModule } from '../../audit/audit.module.js';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([
-      { name: CashHandover.name, schema: CashHandoverSchema },
-      { name: CashReceipt.name, schema: CashReceiptSchema },
-    ]),
+    MongooseModule.forFeature([{ name: CashHandover.name, schema: CashHandoverSchema }]),
     VouchersModule,
     LedgerAccountModule,
-    CashierModule,
+    UsersModule,
     CompanyModule,
+    CommentsModule,
     SequenceModule,
     AuditModule,
   ],

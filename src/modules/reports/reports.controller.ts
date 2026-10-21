@@ -8,7 +8,7 @@ import { Permission } from '../roles/permissions.js';
 import { SalesmanCollectionsService } from './salesman-collections.service.js';
 import { SalesmanCollectionDetailsQueryDto, SalesmanCollectionsQueryDto } from './dto/salesman-collections.dto.js';
 
-/** reports:salesman; "own"-scoped users see only their own cashier. */
+/** reports:salesman; "own"-scoped users see only their own row. */
 @Controller('reports')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ReportsController {
@@ -20,14 +20,14 @@ export class ReportsController {
     return this.salesmanCollections.report(query, user);
   }
 
-  /** The receipts and handovers behind one cashier's row. */
-  @Get('salesman-collections/:cashierId')
+  /** The receipts and handovers behind one user's row. */
+  @Get('salesman-collections/:staffId')
   @RequirePermission(Permission.REPORTS_SALESMAN)
   salesmanCollectionDetails(
-    @Param('cashierId') cashierId: string,
+    @Param('staffId') staffId: string,
     @Query() query: SalesmanCollectionDetailsQueryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.salesmanCollections.details(cashierId, query, user);
+    return this.salesmanCollections.details(staffId, query, user);
   }
 }

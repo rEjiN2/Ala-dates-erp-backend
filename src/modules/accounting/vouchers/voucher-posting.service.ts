@@ -13,7 +13,7 @@ import { LedgerEntry, LedgerEntryDocument, LedgerEntryKind } from './schemas/led
 import { VoucherDirection, type VoucherDefinition } from './voucher-definition.js';
 import { diffVoucher, type DiffableVoucher } from './voucher-diff.js';
 import { CANCEL_REASON_MIN_LENGTH, type VoucherQueryDto } from './dto/voucher.dto.js';
-import { LedgerAccountService } from '../ledger-accounts/ledger-account.service.js';
+import { CASH_LIKE_ACCOUNT_TYPES, LedgerAccountService } from '../ledger-accounts/ledger-account.service.js';
 import { LedgerAccountUsageRegistry } from '../ledger-accounts/ledger-account-usage.registry.js';
 import { LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
 import { SequenceService } from '../../sequence/sequence.service.js';
@@ -22,10 +22,8 @@ import { AuditService } from '../../audit/audit.service.js';
 import { AuditAction, type AuditChange } from '../../audit/schemas/audit-log.schema.js';
 import { CommentsService } from '../../comments/comments.service.js';
 import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
-import { CashierService } from '../../cashier/cashier.service.js';
-import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
-import { StaffType } from '../../cashier/schemas/cashier.schema.js';
-import { SettlementStatus } from '../cash-receipts/schemas/cash-receipt.schema.js';
+import { UsersService } from '../../users/users.service.js';
+import { UserUsageRegistry } from '../../users/user-usage.registry.js';
 import {
   type Actor,
   type UserSnapshot,
@@ -35,11 +33,10 @@ import {
 import { round2, sum2 } from '../../../common/utils/money.util.js';
 import { hasPermission } from '../../roles/permissions.js';
 import {
-  type LinkedCashier,
   type ScopedUser,
   assertScopedHeaderAccount,
   isOwnScope,
-  resolveScopedCashier,
+  resolveCollectorId,
   voucherScopeFilter,
   withScope,
 } from './data-scope.js';
@@ -59,9 +56,10 @@ export interface VoucherLineInput {
 export interface VoucherCreateInput {
   voucherDate: string;
   headerAccountId: string;
-  /** Required unless the user is "own"-scoped: their linked cashier is then used. */
-  cashierId?: string;
+  /** Collected By / Paid By; defaults to the actor. Anyone else needs vouchers:select-collector. */
+  collectedById?: string;
   paymentReference?: string | null;
+  chequeDate?: string | null;
   comments?: string;
   lines: VoucherLineInput[];
   acknowledgeWarnings?: boolean;
@@ -72,8 +70,9 @@ export interface VoucherCreateInput {
 export interface VoucherUpdateInput {
   voucherDate?: string;
   headerAccountId?: string;
-  cashierId?: string | null;
+  collectedById?: string | null;
   paymentReference?: string | null;
+  chequeDate?: string | null;
   comments?: string;
   lines?: VoucherLineInput[];
   changeNote?: string;
@@ -95,8 +94,8 @@ export interface VoucherListRow {
   date: Date;
   /** The header (cash/wallet/bank) account; each voucher renames this key in its own rows. */
   header: { id: string; name: string | null };
-  /** id is null on vouchers from before the cashier master; name is their old free text. */
-  cashier: { id: string | null; name: string | null; staffType: StaffType | null };
+  /** Collected By / Paid By. id is null on vouchers whose old cashier had no login; name is the old name. */
+  collectedBy: { id: string | null; name: string | null };
   paymentMethod: PaymentMethod;
   /** First line's account, plus how many other distinct accounts the voucher touches. */
   partiesSummary: { firstAccount: { id: string; name: string | null } | null; othersCount: number };
@@ -192,9 +191,9 @@ export class VoucherPostingService {
     private readonly sequenceService: SequenceService,
     private readonly auditService: AuditService,
     private readonly commentsService: CommentsService,
-    private readonly cashierService: CashierService,
+    private readonly usersService: UsersService,
     private readonly ledgerUsage: LedgerAccountUsageRegistry,
-    private readonly cashierUsage: CashierUsageRegistry,
+    private readonly userUsage: UserUsageRegistry,
     private readonly entityAccess: EntityAccessRegistry,
   ) {
     // An account with ledger history can't be deleted, even if the voucher that
@@ -209,7 +208,7 @@ export class VoucherPostingService {
     );
   }
 
-  /** Hooks a voucher type into usage checks (accounts, cashiers) and comments/activity. Call once, from its service. */
+  /** Hooks a voucher type into usage checks (accounts, users) and comments/activity. Call once, from its service. */
   registerVoucherType(def: VoucherDefinition, model: VoucherModel): void {
     this.ledgerUsage.register(def.usageSource, async (accountId, session) =>
       Boolean(
@@ -219,10 +218,10 @@ export class VoucherPostingService {
           .exec(),
       ),
     );
-    this.cashierUsage.register(def.usageSource, async (cashierId, session) =>
+    this.userUsage.register(def.usageSource, async (userId, session) =>
       Boolean(
         await model
-          .exists({ cashierId })
+          .exists({ collectedById: userId })
           .session(session ?? null)
           .exec(),
       ),
@@ -238,15 +237,7 @@ export class VoucherPostingService {
 
   /** Mongo filter limiting `user` to the vouchers they may see; null when they see all. */
   async scopeFilter(user: ScopedUser | undefined, def?: VoucherDefinition): Promise<Record<string, unknown> | null> {
-    if (!isOwnScope(user)) {
-      return null;
-    }
-    return voucherScopeFilter(user, await this.linkedCashierOf(user), def?.scopeRule);
-  }
-
-  private async linkedCashierOf(user: ScopedUser): Promise<LinkedCashier | null> {
-    const cashier = await this.cashierService.findByLinkedUser(user.id);
-    return cashier ? { id: cashier.id as string, code: cashier.code, name: cashier.name } : null;
+    return voucherScopeFilter(user, def?.scopeRule);
   }
 
   async list(
@@ -309,10 +300,9 @@ export class VoucherPostingService {
           voucherNo: voucher.voucherNo,
           date: voucher.voucherDate,
           header: { id: headerId, name: names.get(headerId) ?? null },
-          cashier: {
-            id: voucher.cashierId?.toString() ?? null,
-            name: voucher.cashierName ?? null,
-            staffType: voucher.cashierStaffType ?? null,
+          collectedBy: {
+            id: voucher.collectedById?.toString() ?? null,
+            name: voucher.collectedByName ?? null,
           },
           paymentMethod: voucher.paymentMethod ?? PaymentMethod.CASH,
           partiesSummary: {
@@ -348,8 +338,9 @@ export class VoucherPostingService {
 
   /**
    * `actor` is the authenticated user; nothing in the input can set who
-   * created the voucher. An "own"-scoped actor posts only for their linked
-   * cashier and into one of their allowed cash accounts (403 otherwise).
+   * created the voucher. Collected By defaults to the actor; another user
+   * needs vouchers:select-collector (403) and must be eligible (400). An
+   * "own"-scoped actor posts only into one of their allowed cash accounts (403).
    */
   async create(
     def: VoucherDefinition,
@@ -357,21 +348,22 @@ export class VoucherPostingService {
     input: VoucherCreateInput,
     actor: Actor & ScopedUser,
   ): Promise<VoucherDocument> {
-    let cashierId = input.cashierId;
+    const collectorId = resolveCollectorId(actor, input.collectedById);
     if (isOwnScope(actor)) {
-      cashierId = resolveScopedCashier(await this.linkedCashierOf(actor), input.cashierId, def.label);
       assertScopedHeaderAccount(actor, input.headerAccountId, def.label);
     }
-    if (!cashierId) {
-      throw new BadRequestException('cashierId is required');
-    }
-    const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(input.headerAccountId);
+    const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(
+      input.headerAccountId,
+      def.headerAccountTypes,
+    );
+    const paymentMethod = paymentMethodFor(headerAccount.type);
+    const chequeDate = this.chequeDateFor(paymentMethod, input.paymentReference, input.chequeDate);
     const pricedLines = this.priceLines(input.lines);
     this.assertHeaderNotOnLines(def, input.headerAccountId, pricedLines);
 
     return runInTransaction(this.connection, async (session) => {
       await this.assertLineAccountTypes(def, pricedLines, session);
-      const cashier = await this.cashierService.findActiveForPosting(cashierId, session);
+      const collector = await this.usersService.findEligibleCollector(collectorId, def.createPermission, session);
       const watch = await this.watchBalances(def, [input.headerAccountId], session);
       const lines = await this.snapshotLines(pricedLines, session);
       // Issued on the transaction's session: if anything below aborts, the
@@ -385,18 +377,17 @@ export class VoucherPostingService {
             voucherNo,
             voucherDate: new Date(input.voucherDate),
             [def.headerField]: new Types.ObjectId(input.headerAccountId),
-            cashierId: cashier._id,
-            cashierName: cashier.name,
-            cashierStaffType: cashier.staffType ?? StaffType.CASHIER,
-            paymentMethod: paymentMethodFor(headerAccount.type),
+            collectedById: collector._id,
+            collectedByName: collector.name,
+            paymentMethod,
             paymentReference: input.paymentReference ?? null,
+            chequeDate,
             comments: input.comments,
             lines,
             ...this.totalsOf(pricedLines),
             status: VoucherStatus.POSTED,
             createdBy: toUserSnapshot(actor),
             createdAt: now,
-            ...(def.tracksSettlement ? { settlementStatus: this.initialSettlement(cashier.settlesWithOffice) } : {}),
             ...input.extraFields,
           },
         ],
@@ -427,9 +418,9 @@ export class VoucherPostingService {
    * nothing visible; the transaction then aborts, so neither updatedAt, the
    * ledger nor the audit log moves.
    *
-   * Cashier: keeping the voucher's current cashier is allowed even if it has
-   * since been deactivated; switching to another needs an active one. A
-   * voucher from before the cashier master must be given one to be saved.
+   * Collector: keeping the voucher's current one is allowed even if they have
+   * since been deactivated; switching follows the create rules. A voucher
+   * whose old cashier had no login must be given one to be saved.
    */
   async update(
     def: VoucherDefinition,
@@ -443,16 +434,19 @@ export class VoucherPostingService {
 
     const currentHeaderId = this.headerOf(def, current).toString();
     const nextHeaderId = input.headerAccountId ?? currentHeaderId;
-    if (isOwnScope(actor)) {
-      // Keeping what the voucher already has is fine; changing it follows the create rules.
-      if (input.cashierId && input.cashierId !== current.cashierId?.toString()) {
-        resolveScopedCashier(await this.linkedCashierOf(actor), input.cashierId, def.label);
-      }
-      if (nextHeaderId !== currentHeaderId) {
-        assertScopedHeaderAccount(actor, nextHeaderId, def.label);
-      }
+    // Keeping what the voucher already has is fine; changing it follows the create rules.
+    const collectorChanged =
+      input.collectedById !== undefined &&
+      input.collectedById !== null &&
+      input.collectedById !== current.collectedById?.toString();
+    if (collectorChanged) {
+      resolveCollectorId(actor, input.collectedById);
     }
-    const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(nextHeaderId);
+    if (isOwnScope(actor) && nextHeaderId !== currentHeaderId) {
+      assertScopedHeaderAccount(actor, nextHeaderId, def.label);
+    }
+    const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(nextHeaderId, def.headerAccountTypes);
+    const paymentMethod = paymentMethodFor(headerAccount.type);
     const pricedLines = input.lines ? this.priceLines(input.lines) : null;
 
     return runInTransaction(this.connection, async (session) => {
@@ -463,25 +457,24 @@ export class VoucherPostingService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
       this.assertNotCancelled(def, existing, 'edited');
-      this.assertNotOnHandover(def, existing, 'edited');
 
-      if (input.cashierId === null) {
-        throw new BadRequestException(`A ${def.label.toLowerCase()} must have a cashier`);
+      if (input.collectedById === null) {
+        throw new BadRequestException(`A ${def.label.toLowerCase()} must have a ${def.collectorLabel.toLowerCase()} user`);
       }
-      let nextCashierId = existing.cashierId?.toString() ?? null;
-      let nextCashierName = existing.cashierName;
-      let nextCashierStaffType = existing.cashierStaffType ?? null;
-      if (input.cashierId !== undefined && input.cashierId !== nextCashierId) {
-        const cashier = await this.cashierService.findActiveForPosting(input.cashierId, session);
-        nextCashierId = cashier._id.toString();
-        nextCashierName = cashier.name;
-        nextCashierStaffType = cashier.staffType ?? StaffType.CASHIER;
-        // Not on a handover (checked above), so the new collector decides it afresh.
-        if (def.tracksSettlement) existing.set('settlementStatus', this.initialSettlement(cashier.settlesWithOffice));
+      let nextCollectorId = existing.collectedById?.toString() ?? null;
+      let nextCollectorName = existing.collectedByName;
+      if (input.collectedById !== undefined && input.collectedById !== nextCollectorId) {
+        const collector = await this.usersService.findEligibleCollector(
+          input.collectedById,
+          def.createPermission,
+          session,
+        );
+        nextCollectorId = collector._id.toString();
+        nextCollectorName = collector.name;
       }
-      if (!nextCashierId) {
+      if (!nextCollectorId) {
         throw new BadRequestException(
-          `${def.label} ${existing.voucherNo} was entered before cashiers were set up: choose a cashier (cashierId) to save changes`,
+          `${def.label} ${existing.voucherNo} has no ${def.collectorLabel} user: choose one (collectedById) to save changes`,
         );
       }
 
@@ -489,12 +482,17 @@ export class VoucherPostingService {
       const after: DiffableVoucher = {
         voucherDate: input.voucherDate !== undefined ? new Date(input.voucherDate) : existing.voucherDate,
         headerAccountId: nextHeaderId,
-        cashierId: nextCashierId,
-        cashierName: nextCashierName,
+        collectedById: nextCollectorId,
+        collectedByName: nextCollectorName,
         paymentReference: input.paymentReference !== undefined ? input.paymentReference : existing.paymentReference,
         comments: input.comments !== undefined ? input.comments : existing.comments,
         lines: pricedLines ?? before.lines,
       };
+      after.chequeDate = this.chequeDateFor(
+        paymentMethod,
+        after.paymentReference,
+        input.chequeDate !== undefined ? input.chequeDate : existing.chequeDate,
+      );
       this.assertHeaderNotOnLines(def, after.headerAccountId, after.lines);
       // Only lines sent with this edit are checked: lines already on an older
       // voucher are kept as they were posted.
@@ -506,7 +504,7 @@ export class VoucherPostingService {
         session,
       );
       const changes = [
-        ...diffVoucher(before, after, names, def.headerLabel, def.cashierLabel),
+        ...diffVoucher(before, after, names, def.headerLabel, def.collectorLabel),
         ...(input.extraChanges ?? []),
       ];
       if (changes.length === 0) {
@@ -516,17 +514,18 @@ export class VoucherPostingService {
       const watch = await this.watchBalances(def, [currentHeaderId, nextHeaderId], session);
       // Unwind the original posting first, so a replacement line's oldBalance
       // snapshot reflects the balance as if this voucher had never been posted.
+      const headerBefore = await this.cashLikeBalance(def, currentHeaderId, session);
       await this.reverse(def, this.postingOf(def, existing), 'updated', session);
 
       const nextLines = pricedLines ? await this.snapshotLines(pricedLines, session) : existing.lines;
       const now = new Date();
 
       existing.voucherDate = after.voucherDate;
-      existing.cashierId = new Types.ObjectId(nextCashierId);
-      existing.cashierName = nextCashierName;
-      existing.cashierStaffType = nextCashierStaffType;
-      existing.paymentMethod = paymentMethodFor(headerAccount.type);
+      existing.collectedById = new Types.ObjectId(nextCollectorId);
+      existing.collectedByName = nextCollectorName;
+      existing.paymentMethod = paymentMethod;
       existing.paymentReference = after.paymentReference ?? null;
+      existing.chequeDate = after.chequeDate ?? null;
       if (input.comments !== undefined) existing.comments = input.comments;
       existing.set(def.headerField, new Types.ObjectId(nextHeaderId));
       existing.lines = nextLines;
@@ -542,6 +541,7 @@ export class VoucherPostingService {
       await existing.save({ session });
       await this.post(def, this.postingOf(def, existing), 'updated', session);
       await this.assertWarningsAcknowledged(def, watch, input.acknowledgeWarnings, session);
+      await this.assertNotHandedOver(def, headerBefore, existing.voucherNo, 'edited', session);
 
       await this.auditService.record(
         {
@@ -586,14 +586,13 @@ export class VoucherPostingService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
       this.assertNotCancelled(def, existing, 'cancelled again');
-      this.assertNotOnHandover(def, existing, 'cancelled');
 
+      const headerBefore = await this.cashLikeBalance(def, this.headerOf(def, existing).toString(), session);
       await this.reverse(def, this.postingOf(def, existing), 'cancelled', session);
+      await this.assertNotHandedOver(def, headerBefore, existing.voucherNo, 'cancelled', session);
 
       const now = new Date();
       existing.status = VoucherStatus.CANCELLED;
-      // Cancelled receipts are never settled.
-      if (def.tracksSettlement) existing.set('settlementStatus', null);
       existing.cancelledBy = toUserSnapshot(actor);
       existing.cancelledAt = now;
       existing.cancelReason = reason;
@@ -624,11 +623,12 @@ export class VoucherPostingService {
     viewer?: ScopedUser,
   ): Promise<{ success: true }> {
     const existing = await this.findById(def, model, id, viewer);
-    this.assertNotOnHandover(def, existing, 'deleted');
 
     return runInTransaction(this.connection, async (session) => {
       if (existing.status !== VoucherStatus.CANCELLED) {
+        const headerBefore = await this.cashLikeBalance(def, this.headerOf(def, existing).toString(), session);
         await this.reverse(def, this.postingOf(def, existing), 'deleted', session);
+        await this.assertNotHandedOver(def, headerBefore, existing.voucherNo, 'deleted', session);
       }
       await model.deleteOne({ _id: existing._id }, { session }).exec();
       return { success: true as const };
@@ -660,19 +660,6 @@ export class VoucherPostingService {
       totalTax: sum2(lines.map((line) => line.vat)),
       grandTotal: sum2(lines.map((line) => line.netAmount)),
     };
-  }
-
-  /**
-   * For workflows that post later than create (handover approval): posts the
-   * document's current header and lines inside the caller's transaction.
-   */
-  async postDocument(def: VoucherDefinition, voucher: VoucherDocument, cause: string, session: ClientSession) {
-    if (voucher.lines.length > 0) await this.post(def, this.postingOf(def, voucher), cause, session);
-  }
-
-  /** Undoes postDocument, inside the caller's transaction. */
-  async reverseDocument(def: VoucherDefinition, voucher: VoucherDocument, cause: string, session: ClientSession) {
-    if (voucher.lines.length > 0) await this.reverse(def, this.postingOf(def, voucher), cause, session);
   }
 
   /** Writes the voucher's ledger entries and moves the balances. */
@@ -728,6 +715,53 @@ export class VoucherPostingService {
       })),
     ].filter((row) => row.debit > 0 || row.credit > 0);
 
+    await this.insertEntries(rows, session);
+  }
+
+  /**
+   * Moves money between accounts for a workflow that is not a header against
+   * lines (cash handover approval): each transfer debits `to` and credits
+   * `from`; a reversal swaps them. Runs inside the caller's transaction.
+   */
+  async postTransfers(
+    voucher: { entityType: string; id: Types.ObjectId; voucherNo: string; voucherDate: Date },
+    transfers: readonly { fromAccountId: string; toAccountId: string; amount: number; narration?: string | null }[],
+    kind: LedgerEntryKind,
+    cause: string,
+    session: ClientSession,
+  ): Promise<void> {
+    const postedAt = new Date();
+    const common = {
+      voucherType: voucher.entityType,
+      voucherId: voucher.id,
+      voucherNo: voucher.voucherNo,
+      voucherDate: voucher.voucherDate,
+      kind,
+      cause,
+      postedAt,
+    };
+    const forward = kind === LedgerEntryKind.POSTING;
+    const rows = transfers
+      .filter((transfer) => transfer.amount > 0)
+      .flatMap((transfer) => {
+        const amount = round2(transfer.amount);
+        const narration = transfer.narration ?? voucher.voucherNo;
+        const debitId = forward ? transfer.toAccountId : transfer.fromAccountId;
+        const creditId = forward ? transfer.fromAccountId : transfer.toAccountId;
+        return [
+          { ...common, accountId: new Types.ObjectId(debitId), narration, debit: amount, credit: 0 },
+          { ...common, accountId: new Types.ObjectId(creditId), narration, debit: 0, credit: amount },
+        ];
+      });
+    await this.insertEntries(rows, session);
+  }
+
+  /** Inserts ledger entries and moves each account's balance by its debits minus credits. */
+  private async insertEntries(
+    rows: readonly { accountId: Types.ObjectId; debit: number; credit: number }[],
+    session: ClientSession,
+  ): Promise<void> {
+    if (rows.length === 0) return;
     await this.entryModel.insertMany(rows, { session });
 
     const deltas = new Map<string, number>();
@@ -870,12 +904,12 @@ export class VoucherPostingService {
 
     if (query.headerAccountId) filter[def.headerField] = new Types.ObjectId(query.headerAccountId);
     if (query.accountId) filter['lines.accountId'] = new Types.ObjectId(query.accountId);
-    if (query.cashierId) filter.cashierId = new Types.ObjectId(query.cashierId);
-    if (query.paymentMethod === PaymentMethod.BANK) {
-      filter.paymentMethod = PaymentMethod.BANK;
+    if (query.collectedBy) filter.collectedById = new Types.ObjectId(query.collectedBy);
+    if (query.paymentMethod === PaymentMethod.BANK || query.paymentMethod === PaymentMethod.CHEQUE) {
+      filter.paymentMethod = query.paymentMethod;
     } else if (query.paymentMethod === PaymentMethod.CASH) {
       // Vouchers from before bank support have no method and count as cash.
-      filter.paymentMethod = { $ne: PaymentMethod.BANK };
+      filter.paymentMethod = { $nin: [PaymentMethod.BANK, PaymentMethod.CHEQUE] };
     }
     if (query.createdBy) filter['createdBy.id'] = new Types.ObjectId(query.createdBy);
 
@@ -921,9 +955,10 @@ export class VoucherPostingService {
     return {
       voucherDate: voucher.voucherDate,
       headerAccountId: this.headerOf(def, voucher).toString(),
-      cashierId: voucher.cashierId?.toString() ?? null,
-      cashierName: voucher.cashierName,
+      collectedById: voucher.collectedById?.toString() ?? null,
+      collectedByName: voucher.collectedByName,
       paymentReference: voucher.paymentReference,
+      chequeDate: voucher.chequeDate ?? null,
       comments: voucher.comments,
       lines: voucher.lines.map((line) => ({
         accountId: line.accountId.toString(),
@@ -941,16 +976,51 @@ export class VoucherPostingService {
     }
   }
 
-  private initialSettlement(settlesWithOffice: boolean | undefined): SettlementStatus | null {
-    return settlesWithOffice ? SettlementStatus.UNSETTLED : null;
+  /** Cheque vouchers need the cheque number (paymentReference); the cheque date is kept only on them. */
+  private chequeDateFor(
+    method: PaymentMethod,
+    paymentReference: string | null | undefined,
+    chequeDate: string | Date | null | undefined,
+  ): Date | null {
+    if (method !== PaymentMethod.CHEQUE) {
+      return null;
+    }
+    if (!paymentReference) {
+      throw new BadRequestException('A cheque needs its cheque number in paymentReference');
+    }
+    return chequeDate ? new Date(chequeDate) : null;
   }
 
-  /** A receipt on a handover (submitted or settled) is locked until the handover is rejected or cancelled. */
-  private assertNotOnHandover(def: VoucherDefinition, voucher: VoucherDocument, action: string): void {
-    const status = def.tracksSettlement ? (voucher.get('settlementStatus') as SettlementStatus | null) : null;
-    if (status === SettlementStatus.SUBMITTED || status === SettlementStatus.SETTLED) {
+  /** Receipts: the received-into account's balance, when it is a cash, wallet or cheque account. */
+  private async cashLikeBalance(
+    def: VoucherDefinition,
+    accountId: string,
+    session: ClientSession,
+  ): Promise<{ id: string; code: string; name: string; balance: number } | null> {
+    if (def.direction !== VoucherDirection.RECEIPT) return null;
+    const account = (await this.ledgerAccountService.getSummaries([accountId], session)).get(accountId);
+    if (!account || !CASH_LIKE_ACCOUNT_TYPES.includes(account.type)) return null;
+    const balance = round2((await this.ledgerAccountService.getBalances([accountId], session)).get(accountId) ?? 0);
+    return { id: accountId, code: account.code, name: account.name, balance };
+  }
+
+  /**
+   * Receipts: an edit, cancel or delete may not take the received-into cash,
+   * wallet or cheque account from zero or more to below zero: that money was
+   * already handed over.
+   */
+  private async assertNotHandedOver(
+    def: VoucherDefinition,
+    before: { id: string; code: string; name: string; balance: number } | null,
+    voucherNo: string,
+    action: string,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!before || before.balance < 0) return;
+    const after = await this.cashLikeBalance(def, before.id, session);
+    if (after && after.balance < 0) {
       throw new BadRequestException(
-        `${def.label} ${voucher.voucherNo} is ${status} on a cash handover and cannot be ${action}`,
+        `${def.label} ${voucherNo} cannot be ${action}: its money was already handed over (${before.code} ${before.name} would go below zero to ${after.balance.toFixed(2)})`,
       );
     }
   }

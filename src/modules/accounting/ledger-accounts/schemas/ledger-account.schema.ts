@@ -5,6 +5,8 @@ export enum LedgerAccountType {
   CASH = 'cash',
   BANK = 'bank',
   WALLET = 'wallet',
+  /** Cheques in hand: cash-like until cleared into a bank (Q27). */
+  CHEQUE = 'cheque',
   PARTY = 'party',
   SUPPLIER = 'supplier',
   INCOME = 'income',
@@ -27,7 +29,7 @@ export const SYSTEM_MANAGED_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
 ];
 
 /**
- * Company accounts are the business's own (cash, bank, wallet, income,
+ * Company accounts are the business's own (cash, bank, wallet, cheque, income,
  * expense, other); party accounts belong to customers and suppliers and are
  * managed from the Parties module. Lists and pickers never mix the two
  * unless asked to.
@@ -42,6 +44,7 @@ export const SCOPE_ACCOUNT_TYPES: Readonly<Record<LedgerAccountScope, readonly L
     LedgerAccountType.CASH,
     LedgerAccountType.BANK,
     LedgerAccountType.WALLET,
+    LedgerAccountType.CHEQUE,
     LedgerAccountType.INCOME,
     LedgerAccountType.EXPENSE,
     LedgerAccountType.OTHER,

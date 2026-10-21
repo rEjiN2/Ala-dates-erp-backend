@@ -12,8 +12,8 @@ const names = new Map([
 const base: DiffableCashReceipt = {
   voucherDate: new Date('2026-09-21'),
   cashAccountId: 'cash1',
-  cashierId: 'cashier-sachin',
-  cashierName: 'Sachin',
+  collectedById: 'user-sachin',
+  collectedByName: 'Sachin',
   comments: 'Weekly collection',
   lines: [
     { accountId: 'ali', amount: 100, vat: 5, narration: 'Inv 1' },
@@ -29,8 +29,8 @@ describe('diffCashReceipt', () => {
     // Reordered lines, blank vs missing text and float noise are not changes.
     expect(
       diff({
-        // Same cashier, renamed in the master since: not a change on this receipt.
-        cashierName: 'Sachin K',
+        // Same user, renamed since: not a change on this receipt.
+        collectedByName: 'Sachin K',
         lines: [
           { accountId: 'omar', amount: 50.000000001, vat: 0, narration: '' },
           {
@@ -50,8 +50,8 @@ describe('diffCashReceipt', () => {
       diff({
         voucherDate: new Date('2026-09-22'),
         cashAccountId: 'cash2',
-        cashierId: 'cashier-omar',
-        cashierName: 'Omar',
+        collectedById: 'user-omar',
+        collectedByName: 'Omar',
         comments: '',
       }),
     ).toEqual([
@@ -67,7 +67,7 @@ describe('diffCashReceipt', () => {
         from: 'Main Cash',
         to: 'Van Cash',
       },
-      { field: 'cashier', label: 'Cashier', from: 'Sachin', to: 'Omar' },
+      { field: 'collectedBy', label: 'Collected By', from: 'Sachin', to: 'Omar' },
       {
         field: 'comments',
         label: 'Comments',

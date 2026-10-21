@@ -21,7 +21,6 @@ import { FilesModule } from './modules/files/files.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { CommentsModule } from './modules/comments/comments.module.js';
-import { CashierModule } from './modules/cashier/cashier.module.js';
 import { CompanyModule } from './modules/company/company.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
 
@@ -67,7 +66,6 @@ import { ReportsModule } from './modules/reports/reports.module.js';
     DashboardModule,
     AuditModule,
     CommentsModule,
-    CashierModule,
     CompanyModule,
     ReportsModule,
   ],

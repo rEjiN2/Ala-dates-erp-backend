@@ -11,15 +11,14 @@ import {
   CancelCashHandoverDto,
   CashHandoverQueryDto,
   CreateCashHandoverDto,
+  PendingQueryDto,
   RejectCashHandoverDto,
-  UnsettledReceiptsQueryDto,
 } from './dto/cash-handover.dto.js';
-import { voucherView } from '../vouchers/voucher-view.js';
 
 /**
  * Every route needs a cash-handovers permission; the actor always comes from
- * the token. "own"-scoped users only ever see their own staff record's
- * handovers (others are 404). Line balances need balances:view.
+ * the token. "own"-scoped users only ever see their own handovers (others are
+ * 404) and never approve or reject.
  */
 @Controller('cash-handovers')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -32,20 +31,20 @@ export class CashHandoverController {
     return this.cashHandoverService.findAll(query, user);
   }
 
-  /** Receipts a new handover can include. Declared before :id. */
-  @Get('unsettled')
-  @RequirePermission(Permission.CASH_HANDOVERS_CREATE)
-  unsettled(@Query() query: UnsettledReceiptsQueryDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.cashHandoverService.unsettled(query, user);
+  /** The user's cash, wallet and cheque balances: what they hold and may still hand over. */
+  @Get('pending')
+  @RequirePermission(Permission.CASH_HANDOVERS_READ)
+  pending(@Query() query: PendingQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashHandoverService.pending(query, user);
   }
 
   @Get(':id')
   @RequirePermission(Permission.CASH_HANDOVERS_READ)
-  async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashHandoverService.findById(id, user), user);
+  findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashHandoverService.findById(id, user);
   }
 
-  /** CASH HANDOVER SLIP as an A4 PDF, shown inline. Every call is a print: it is audited, and later copies are DUPLICATEs. */
+  /** CASH HANDOVER SLIP as an A4 PDF, shown inline. Every call is a print: it is audited. */
   @Get(':id/pdf')
   @RequirePermission(Permission.CASH_HANDOVERS_READ)
   @Header('Cache-Control', 'private, no-store')
@@ -58,29 +57,28 @@ export class CashHandoverController {
     });
   }
 
-  /** Submit. */
   @Post()
   @RequirePermission(Permission.CASH_HANDOVERS_CREATE)
-  async create(@Body() dto: CreateCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashHandoverService.create(dto, user), user);
+  create(@Body() dto: CreateCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashHandoverService.create(dto, user);
   }
 
   @Post(':id/approve')
   @RequirePermission(Permission.CASH_HANDOVERS_APPROVE)
-  async approve(@Param('id') id: string, @Body() dto: ApproveCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashHandoverService.approve(id, dto, user), user);
+  approve(@Param('id') id: string, @Body() dto: ApproveCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashHandoverService.approve(id, dto, user);
   }
 
   @Post(':id/reject')
   @RequirePermission(Permission.CASH_HANDOVERS_APPROVE)
-  async reject(@Param('id') id: string, @Body() dto: RejectCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashHandoverService.reject(id, dto, user), user);
+  reject(@Param('id') id: string, @Body() dto: RejectCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashHandoverService.reject(id, dto, user);
   }
 
-  /** The service decides: the submitter may cancel their submitted handover; anything else needs cash-handovers:cancel. */
+  /** Submitted: the submitter (needs only :create) or cash-handovers:cancel. Approved: cash-handovers:cancel. */
   @Post(':id/cancel')
-  @RequirePermission(Permission.CASH_HANDOVERS_READ)
-  async cancel(@Param('id') id: string, @Body() dto: CancelCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashHandoverService.cancel(id, dto, user), user);
+  @RequirePermission(Permission.CASH_HANDOVERS_CREATE)
+  cancel(@Param('id') id: string, @Body() dto: CancelCashHandoverDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.cashHandoverService.cancel(id, dto, user);
   }
 }

@@ -2,15 +2,11 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Model, PipelineStage } from 'mongoose';
-import {
-  CashReceipt,
-  CashReceiptDocument,
-  SettlementStatus,
-} from '../accounting/cash-receipts/schemas/cash-receipt.schema.js';
+import { CashReceipt, CashReceiptDocument } from '../accounting/cash-receipts/schemas/cash-receipt.schema.js';
 import { CashHandover, CashHandoverDocument } from '../accounting/cash-handovers/schemas/cash-handover.schema.js';
 import { PaymentMethod, VoucherStatus } from '../accounting/vouchers/schemas/voucher.schema.js';
-import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
-import { Cashier, CashierDocument, StaffType } from '../cashier/schemas/cashier.schema.js';
+import { CASH_LIKE_ACCOUNT_TYPES, LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
+import { User, UserDocument, UserStatus, isUserActive } from '../users/schemas/user.schema.js';
 import { Location, LocationDocument } from '../location/schemas/location.schema.js';
 import { isOwnScope, type ScopedUser } from '../accounting/vouchers/data-scope.js';
 import { round2, sum2 } from '../../common/utils/money.util.js';
@@ -19,28 +15,26 @@ import type { SalesmanCollectionDetailsQueryDto, SalesmanCollectionsQueryDto } f
 type Ref = { id: string; name: string | null };
 
 export interface SalesmanCollectionRow {
-  cashier: { id: string; code: string; name: string; status: string; staffType: StaffType; location: Ref | null };
-  /** Cash receipts dated before dateFrom and not settled by then. */
-  unsettledOpening: number;
-  /** Receipts into cash or wallet accounts in the range. */
+  staff: { id: string; name: string; status: UserStatus; location: Ref | null };
+  /** Receipts in the range (cancelled excluded). */
+  receipts: number;
+  /** Into cash or wallet accounts. */
   collectedCash: number;
-  /** Receipts into bank accounts in the range: verified on handover, never unsettled cash. */
+  /** Into cheque accounts. */
+  collectedCheque: number;
+  /** Into bank accounts. */
   collectedBank: number;
-  /** Expected cash on submitted handovers (dated up to dateTo) awaiting approval. */
+  /** Cash + cheque + bank: matches the receipts list total for the same dates and collector. */
+  total: number;
+  /** Received on handovers approved in the range. */
+  handedOver: number;
+  /** Submitted on handovers awaiting approval now. */
   pendingApproval: number;
-  /** Cash received on handovers approved in the range. */
-  settled: number;
-  /** Expected minus received on handovers approved up to dateTo: still in the source (van) account. */
-  openShortage: number;
-  /** Cash receipts dated up to dateTo and not settled by then (pending approval included). */
-  unsettledClosing: number;
-  /** Receipts in the range, cash and bank. */
-  receiptCount: number;
-  /** Submitted or approved handovers dated in the range. */
-  handoverCount: number;
+  /** Current balance of the user's own cash, wallet and cheque accounts. */
+  withSalesman: number;
 }
 
-type Totals = Omit<SalesmanCollectionRow, 'cashier'>;
+type Totals = Omit<SalesmanCollectionRow, 'staff'>;
 
 export interface SalesmanCollectionsReport {
   dateFrom: string | null;
@@ -57,21 +51,16 @@ export interface SalesmanCollectionDetails {
     date: Date;
     account: Ref;
     paymentMethod: PaymentMethod;
+    paymentReference: string | null;
     amount: number;
-    settlementStatus: SettlementStatus | null;
-    handover: { id: string; voucherNo: string | null } | null;
   }[];
   handovers: {
     id: string;
     voucherNo: string;
     date: Date;
     status: VoucherStatus;
-    sourceAccount: Ref;
-    receivedInto: Ref | null;
-    expectedCash: number;
-    bankTotal: number;
-    receivedCash: number | null;
-    shortage: number;
+    submittedTotal: number;
+    receivedTotal: number | null;
     approvedAt: Date | null;
   }[];
 }
@@ -82,45 +71,39 @@ interface Range {
 }
 
 const ZERO_TOTALS: Totals = {
-  unsettledOpening: 0,
+  receipts: 0,
   collectedCash: 0,
+  collectedCheque: 0,
   collectedBank: 0,
+  total: 0,
+  handedOver: 0,
   pendingApproval: 0,
-  settled: 0,
-  openShortage: 0,
-  unsettledClosing: 0,
-  receiptCount: 0,
-  handoverCount: 0,
+  withSalesman: 0,
 };
 
-/** Handover statuses that count: rejected and cancelled ones changed nothing. */
-const LIVE_HANDOVER = [VoucherStatus.SUBMITTED, VoucherStatus.APPROVED];
-
 /**
- * Cash collected by staff who settle with the office, and how it was
- * settled through handovers. Read straight from the receipts and handovers,
- * so a cancel, reject or approval shows at once. A receipt counts as
- * unsettled at a moment if it was not yet settled then (settledAt). Only
- * cash and wallet receipts are unsettled cash; bank ones are listed.
+ * Per user: receipts they collected in the range (cancelled excluded), split
+ * by how the money came in, what they handed over (approved in the range),
+ * what awaits approval now and what they hold now (their own cash, wallet and
+ * cheque balances). Every number defaults to 0.
  *
- * "own"-scoped users see only their linked staff's row. Only staff with
- * settlesWithOffice appear (current flag); a details request for anyone else is 404.
+ * "own"-scoped users see only their own row; a details request for anyone else is 404.
  */
 @Injectable()
 export class SalesmanCollectionsService {
   constructor(
     @InjectModel(CashReceipt.name) private readonly receiptModel: Model<CashReceiptDocument>,
     @InjectModel(CashHandover.name) private readonly handoverModel: Model<CashHandoverDocument>,
-    @InjectModel(Cashier.name) private readonly cashierModel: Model<CashierDocument>,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     private readonly ledgerAccountService: LedgerAccountService,
   ) {}
 
   async report(query: SalesmanCollectionsQueryDto, viewer: ScopedUser): Promise<SalesmanCollectionsReport> {
     const range = this.rangeOf(query);
-    const staffId = query.staffId ?? query.cashierId;
-    const cashierIds = await this.allowedCashierIds({ cashierId: staffId, locationId: query.locationId }, viewer);
-    const rows = await this.rows(range, cashierIds, staffId ? [staffId] : []);
+    const staffId = query.userId ?? query.staffId;
+    const staffIds = await this.allowedStaffIds({ staffId, locationId: query.locationId }, viewer);
+    const rows = await this.rows(range, staffIds, staffId ? [staffId] : []);
     return {
       dateFrom: query.dateFrom ?? null,
       dateTo: query.dateTo ?? null,
@@ -129,54 +112,36 @@ export class SalesmanCollectionsService {
     };
   }
 
-  /** The receipts and handovers behind one row, in the range. Another staff member's row is 404 for a scoped user. */
+  /** The receipts and handovers behind one row, in the range. Another user's row is 404 for a scoped user. */
   async details(
-    cashierId: string,
+    staffId: string,
     query: SalesmanCollectionDetailsQueryDto,
     viewer: ScopedUser,
   ): Promise<SalesmanCollectionDetails> {
-    if (!Types.ObjectId.isValid(cashierId)) {
-      throw new BadRequestException(`Staff id "${cashierId}" is not a valid id`);
+    if (!Types.ObjectId.isValid(staffId)) {
+      throw new BadRequestException(`Staff id "${staffId}" is not a valid id`);
     }
-    const allowed = await this.allowedCashierIds({ cashierId }, viewer);
-    if (
-      allowed?.length === 0 ||
-      !(await this.cashierModel.exists({ _id: cashierId, settlesWithOffice: true }).exec())
-    ) {
-      throw new NotFoundException(`Staff ${cashierId} not found`);
+    const allowed = await this.allowedStaffIds({ staffId }, viewer);
+    if (allowed?.length === 0 || !(await this.userModel.exists({ _id: staffId }).exec())) {
+      throw new NotFoundException(`Staff ${staffId} not found`);
     }
     const range = this.rangeOf(query);
-    const [row] = await this.rows(range, [cashierId], [cashierId]);
-    const id = new Types.ObjectId(cashierId);
+    const [row] = await this.rows(range, [staffId], [staffId]);
+    const id = new Types.ObjectId(staffId);
     const inRange = this.dateFilter(range.from, range.to);
-
     const [receipts, handovers] = await Promise.all([
       this.receiptModel
-        .find({ cashierId: id, status: { $ne: VoucherStatus.CANCELLED }, settlementStatus: { $ne: null }, ...inRange })
+        .find({ collectedById: id, status: { $ne: VoucherStatus.CANCELLED }, ...inRange })
         .sort({ voucherDate: 1, voucherNo: 1 })
         .lean()
         .exec(),
       this.handoverModel
-        .find({ cashierId: id, ...inRange })
+        .find({ collectedById: id, ...inRange })
         .sort({ voucherDate: 1, voucherNo: 1 })
         .lean()
         .exec(),
     ]);
-    const handoverIds = receipts.flatMap((receipt) => (receipt.handoverId ? [receipt.handoverId] : []));
-    const handoverNos = new Map(
-      (await this.handoverModel.find({ _id: { $in: handoverIds } }).select('voucherNo').lean().exec()).map((doc) => [
-        doc._id.toString(),
-        doc.voucherNo,
-      ]),
-    );
-    const names = await this.ledgerAccountService.getNames([
-      ...receipts.map((receipt) => receipt.cashAccountId.toString()),
-      ...handovers.map((handover) => handover.fromAccountId.toString()),
-    ]);
-    const ref = (accountId: Types.ObjectId): Ref => ({
-      id: accountId.toString(),
-      name: names.get(accountId.toString()) ?? null,
-    });
+    const names = await this.ledgerAccountService.getNames(receipts.map((receipt) => receipt.cashAccountId.toString()));
 
     return {
       row,
@@ -184,197 +149,179 @@ export class SalesmanCollectionsService {
         id: receipt._id.toString(),
         voucherNo: receipt.voucherNo,
         date: receipt.voucherDate,
-        account: ref(receipt.cashAccountId),
+        account: {
+          id: receipt.cashAccountId.toString(),
+          name: names.get(receipt.cashAccountId.toString()) ?? null,
+        },
         paymentMethod: receipt.paymentMethod ?? PaymentMethod.CASH,
+        paymentReference: receipt.paymentReference ?? null,
         amount: receipt.grandTotal,
-        settlementStatus: receipt.settlementStatus ?? null,
-        handover: receipt.handoverId
-          ? { id: receipt.handoverId.toString(), voucherNo: handoverNos.get(receipt.handoverId.toString()) ?? null }
-          : null,
       })),
       handovers: handovers.map((handover) => ({
         id: handover._id.toString(),
         voucherNo: handover.voucherNo,
         date: handover.voucherDate,
         status: handover.status,
-        sourceAccount: ref(handover.fromAccountId),
-        receivedInto: handover.receivedIntoAccountId
-          ? { id: handover.receivedIntoAccountId.toString(), name: handover.receivedIntoAccountName ?? null }
-          : null,
-        expectedCash: handover.expectedCash ?? 0,
-        bankTotal: handover.bankTotal ?? 0,
-        receivedCash: handover.receivedCash ?? null,
-        shortage:
-          handover.status === VoucherStatus.APPROVED
-            ? round2((handover.expectedCash ?? 0) - (handover.receivedCash ?? 0))
-            : 0,
+        submittedTotal: handover.submittedTotal ?? 0,
+        receivedTotal: handover.receivedTotal ?? null,
         approvedAt: handover.approvedAt ?? null,
       })),
     };
   }
 
   /**
-   * One row per settling staff member with receipts or handovers up to the
-   * end of the range (cashierIds null: anyone). A row that is all zeros is
-   * left out unless it was asked for by id.
+   * One row per user with receipts or handovers, or holding money in their own
+   * accounts (staffIds null: anyone). An all-zero row is left out unless asked for by id.
    */
   private async rows(
     range: Range,
-    cashierIds: string[] | null,
+    staffIds: string[] | null,
     alwaysInclude: string[],
   ): Promise<SalesmanCollectionRow[]> {
-    if (cashierIds?.length === 0) {
+    if (staffIds?.length === 0) {
       return [];
     }
-    const cashierMatch = cashierIds ? { $in: cashierIds.map((id) => new Types.ObjectId(id)) } : { $ne: null };
-    const and = (...conditions: unknown[]) => ({ $and: conditions });
+    const staffMatch = staffIds ? { $in: staffIds.map((id) => new Types.ObjectId(id)) } : { $ne: null };
     const sumIf = (condition: unknown, value: unknown = '$grandTotal') => ({ $sum: { $cond: [condition, value, 0] } });
-    const during = and(
-      range.from ? { $gte: ['$voucherDate', range.from] } : true,
-      range.to ? { $lte: ['$voucherDate', range.to] } : true,
-    );
-    const isCash = { $ne: ['$paymentMethod', PaymentMethod.BANK] };
-    // A missing settledAt is not equal to null in $expr, so normalise it first.
-    const settledAt = { $ifNull: ['$settledAt', null] };
-    const notSettledBy = (moment: Date | null, inclusive: boolean) =>
-      moment
-        ? { $or: [{ $eq: [settledAt, null] }, { [inclusive ? '$gte' : '$gt']: [settledAt, moment] }] }
-        : { $eq: [settledAt, null] };
+    const methodIs = (method: PaymentMethod) => ({ $eq: ['$paymentMethod', method] });
 
     const receiptStages: PipelineStage[] = [
       {
         $match: {
-          cashierId: cashierMatch,
+          collectedById: staffMatch,
           status: { $ne: VoucherStatus.CANCELLED },
-          settlementStatus: { $ne: null },
-          ...this.dateFilter(null, range.to),
+          ...this.dateFilter(range.from, range.to),
         },
       },
       {
         $group: {
-          _id: '$cashierId',
-          unsettledOpening: range.from
-            ? sumIf(and(isCash, { $lt: ['$voucherDate', range.from] }, notSettledBy(range.from, true)))
-            : { $sum: 0 },
-          unsettledClosing: sumIf(and(isCash, notSettledBy(range.to, false))),
-          collectedCash: sumIf(and(during, isCash)),
-          collectedBank: sumIf(and(during, { $not: [isCash] })),
-          receiptCount: sumIf(during, 1),
+          _id: '$collectedById',
+          receipts: { $sum: 1 },
+          collectedCheque: sumIf(methodIs(PaymentMethod.CHEQUE)),
+          collectedBank: sumIf(methodIs(PaymentMethod.BANK)),
+          // Vouchers from before bank support have no method and count as cash.
+          collectedCash: sumIf({ $not: [{ $in: ['$paymentMethod', [PaymentMethod.CHEQUE, PaymentMethod.BANK]] }] }),
         },
       },
     ];
-
-    // Handovers from before approval have no approvedAt: their voucher date stands in.
-    const approvedAt = { $ifNull: ['$approvedAt', '$voucherDate'] };
-    const isApproved = { $eq: ['$status', VoucherStatus.APPROVED] };
-    const approvedBy = (moment: Date | null) => (moment ? { $lte: [approvedAt, moment] } : true);
+    const approvedInRange = {
+      $and: [
+        { $eq: ['$status', VoucherStatus.APPROVED] },
+        range.from ? { $gte: ['$approvedAt', range.from] } : true,
+        range.to ? { $lte: ['$approvedAt', range.to] } : true,
+      ],
+    };
     const handoverStages: PipelineStage[] = [
-      { $match: { cashierId: cashierMatch, status: { $in: LIVE_HANDOVER } } },
+      { $match: { collectedById: staffMatch, status: { $in: [VoucherStatus.SUBMITTED, VoucherStatus.APPROVED] } } },
       {
         $group: {
-          _id: '$cashierId',
-          pendingApproval: sumIf(
-            and({ $eq: ['$status', VoucherStatus.SUBMITTED] }, range.to ? { $lte: ['$voucherDate', range.to] } : true),
-            '$expectedCash',
-          ),
-          settled: sumIf(
-            and(isApproved, range.from ? { $gte: [approvedAt, range.from] } : true, approvedBy(range.to)),
-            { $ifNull: ['$receivedCash', 0] },
-          ),
-          openShortage: sumIf(and(isApproved, approvedBy(range.to)), {
-            $subtract: [{ $ifNull: ['$expectedCash', 0] }, { $ifNull: ['$receivedCash', 0] }],
-          }),
-          handoverCount: sumIf(during, 1),
+          _id: '$collectedById',
+          handedOver: sumIf(approvedInRange, { $ifNull: ['$receivedTotal', 0] }),
+          pendingApproval: sumIf({ $eq: ['$status', VoucherStatus.SUBMITTED] }, '$submittedTotal'),
         },
       },
     ];
 
-    type ReceiptGroup = Pick<
-      Totals,
-      'unsettledOpening' | 'unsettledClosing' | 'collectedCash' | 'collectedBank' | 'receiptCount'
-    > & { _id: Types.ObjectId };
-    type HandoverGroup = Pick<Totals, 'pendingApproval' | 'settled' | 'openShortage' | 'handoverCount'> & {
+    type ReceiptGroup = Pick<Totals, 'receipts' | 'collectedCash' | 'collectedCheque' | 'collectedBank'> & {
       _id: Types.ObjectId;
     };
+    type HandoverGroup = Pick<Totals, 'handedOver' | 'pendingApproval'> & { _id: Types.ObjectId };
     const [receiptRows, handoverRows] = await Promise.all([
       this.receiptModel.aggregate<ReceiptGroup>(receiptStages).exec(),
       this.handoverModel.aggregate<HandoverGroup>(handoverStages).exec(),
     ]);
-
     const receiptsBy = new Map(receiptRows.map((row) => [row._id.toString(), row]));
     const handoversBy = new Map(handoverRows.map((row) => [row._id.toString(), row]));
-    const ids = [...new Set([...receiptsBy.keys(), ...handoversBy.keys(), ...alwaysInclude])];
-    const cashiers = await this.cashierModel
-      .find({ _id: { $in: ids.map((id) => new Types.ObjectId(id)) }, settlesWithOffice: true })
-      .select('code name status staffType locationId')
-      .lean()
-      .exec();
-    const locationIds = cashiers.flatMap((cashier) => (cashier.locationId ? [cashier.locationId] : []));
-    const locations = await this.locationModel
-      .find({ _id: { $in: locationIds } })
-      .select('name')
-      .lean()
-      .exec();
-    const locationName = new Map(locations.map((location) => [location._id.toString(), location.name]));
+    const active = [...new Set([...receiptsBy.keys(), ...handoversBy.keys(), ...alwaysInclude])].map(
+      (id) => new Types.ObjectId(id),
+    );
 
-    return cashiers
-      .map((cashier): SalesmanCollectionRow => {
-        const id = cashier._id.toString();
+    // Anyone holding own accounts may have money with them, even with no activity.
+    const users = await this.userModel
+      .find(
+        staffIds
+          ? { _id: { $in: staffIds.map((id) => new Types.ObjectId(id)) } }
+          : { $or: [{ _id: { $in: active } }, { 'allowedCashAccountIds.0': { $exists: true } }] },
+      )
+      .select('name status isActive locationId allowedCashAccountIds')
+      .lean()
+      .exec();
+    const accountIds = [...new Set(users.flatMap((user) => (user.allowedCashAccountIds ?? []).map(String)))];
+    const [summaries, balances, locations] = await Promise.all([
+      this.ledgerAccountService.getSummaries(accountIds),
+      this.ledgerAccountService.getBalances(accountIds),
+      this.locationModel
+        .find({ _id: { $in: users.flatMap((user) => (user.locationId ? [user.locationId] : [])) } })
+        .select('name')
+        .lean()
+        .exec(),
+    ]);
+    const locationName = new Map(locations.map((location) => [location._id.toString(), location.name]));
+    const holding = (user: (typeof users)[number]) =>
+      sum2(
+        (user.allowedCashAccountIds ?? [])
+          .map(String)
+          .filter((accountId) => {
+            const type = summaries.get(accountId)?.type;
+            return type !== undefined && CASH_LIKE_ACCOUNT_TYPES.includes(type);
+          })
+          .map((accountId) => balances.get(accountId) ?? 0),
+      );
+
+    return users
+      .map((user): SalesmanCollectionRow => {
+        const id = user._id.toString();
         const receipts = receiptsBy.get(id);
         const handovers = handoversBy.get(id);
+        const collectedCash = round2(receipts?.collectedCash ?? 0);
+        const collectedCheque = round2(receipts?.collectedCheque ?? 0);
+        const collectedBank = round2(receipts?.collectedBank ?? 0);
         return {
-          cashier: {
+          staff: {
             id,
-            code: cashier.code,
-            name: cashier.name,
-            status: cashier.status,
-            staffType: cashier.staffType ?? StaffType.CASHIER,
-            location: cashier.locationId
-              ? { id: cashier.locationId.toString(), name: locationName.get(cashier.locationId.toString()) ?? null }
+            name: user.name,
+            status: isUserActive(user) ? UserStatus.ACTIVE : UserStatus.INACTIVE,
+            location: user.locationId
+              ? { id: user.locationId.toString(), name: locationName.get(user.locationId.toString()) ?? null }
               : null,
           },
-          unsettledOpening: round2(receipts?.unsettledOpening ?? 0),
-          collectedCash: round2(receipts?.collectedCash ?? 0),
-          collectedBank: round2(receipts?.collectedBank ?? 0),
+          receipts: receipts?.receipts ?? 0,
+          collectedCash,
+          collectedCheque,
+          collectedBank,
+          total: sum2([collectedCash, collectedCheque, collectedBank]),
+          handedOver: round2(handovers?.handedOver ?? 0),
           pendingApproval: round2(handovers?.pendingApproval ?? 0),
-          settled: round2(handovers?.settled ?? 0),
-          openShortage: round2(handovers?.openShortage ?? 0),
-          unsettledClosing: round2(receipts?.unsettledClosing ?? 0),
-          receiptCount: receipts?.receiptCount ?? 0,
-          handoverCount: handovers?.handoverCount ?? 0,
+          withSalesman: holding(user),
         };
       })
       .filter(
         (row) =>
-          alwaysInclude.includes(row.cashier.id) ||
-          row.receiptCount > 0 ||
-          row.handoverCount > 0 ||
+          alwaysInclude.includes(row.staff.id) ||
           (Object.keys(ZERO_TOTALS) as (keyof Totals)[]).some((key) => row[key] !== 0),
       )
-      .sort((a, b) => a.cashier.name.localeCompare(b.cashier.name));
+      .sort((a, b) => a.staff.name.localeCompare(b.staff.name));
   }
 
   /**
-   * Staff the viewer may see that match the filters, or null for "any".
-   * An "own"-scoped user is limited to their linked staff record (none: no rows).
+   * Users the viewer may see that match the filters, or null for "any".
+   * An "own"-scoped user is limited to themselves.
    */
-  private async allowedCashierIds(
-    query: { cashierId?: string; locationId?: string },
+  private async allowedStaffIds(
+    query: { staffId?: string; locationId?: string },
     viewer: ScopedUser,
   ): Promise<string[] | null> {
-    let ids: string[] | null = query.cashierId ? [query.cashierId] : null;
+    let ids: string[] | null = query.staffId ? [query.staffId] : null;
     if (isOwnScope(viewer)) {
-      const own = await this.cashierModel.findOne({ linkedUserId: new Types.ObjectId(viewer.id) }).select('_id').exec();
-      const ownId = own?._id.toString();
-      ids = ownId && (!ids || ids.includes(ownId)) ? [ownId] : [];
+      ids = !ids || ids.includes(viewer.id) ? [viewer.id] : [];
     }
     if (query.locationId) {
-      const atLocation = await this.cashierModel
+      const atLocation = await this.userModel
         .find({ locationId: new Types.ObjectId(query.locationId), ...(ids ? { _id: { $in: ids } } : {}) })
         .select('_id')
         .lean()
         .exec();
-      ids = atLocation.map((cashier) => cashier._id.toString());
+      ids = atLocation.map((user) => user._id.toString());
     }
     return ids;
   }
@@ -397,15 +344,14 @@ export class SalesmanCollectionsService {
     if (rows.length === 0) return { ...ZERO_TOTALS };
     const total = (key: keyof Totals) => sum2(rows.map((row) => row[key]));
     return {
-      unsettledOpening: total('unsettledOpening'),
+      receipts: rows.reduce((count, row) => count + row.receipts, 0),
       collectedCash: total('collectedCash'),
+      collectedCheque: total('collectedCheque'),
       collectedBank: total('collectedBank'),
+      total: total('total'),
+      handedOver: total('handedOver'),
       pendingApproval: total('pendingApproval'),
-      settled: total('settled'),
-      openShortage: total('openShortage'),
-      unsettledClosing: total('unsettledClosing'),
-      receiptCount: rows.reduce((count, row) => count + row.receiptCount, 0),
-      handoverCount: rows.reduce((count, row) => count + row.handoverCount, 0),
+      withSalesman: total('withSalesman'),
     };
   }
 

@@ -3,6 +3,7 @@ import { Transform } from 'class-transformer';
 import {
   ArrayUnique,
   IsArray,
+  IsBoolean,
   IsEmail,
   IsEnum,
   IsInt,
@@ -16,6 +17,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { PASSWORD_MIN_LENGTH, UserStatus } from '../schemas/user.schema.js';
+import { CollectorPurpose } from '../users.service.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 const trimLower = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value);
@@ -53,6 +55,16 @@ export class CreateUserDto {
   @ArrayUnique()
   @IsMongoId({ each: true })
   allowedCashAccountIds?: string[];
+
+  /** Hands collected cash to the office on cash handovers (van salesmen). */
+  @IsOptional()
+  @IsBoolean()
+  settlesWithOffice?: boolean;
+
+  /** Where the user is based; null clears it. */
+  @IsOptional()
+  @IsMongoId()
+  locationId?: string | null;
 }
 
 /** Any subset. The password is changed only through reset-password. Set status "inactive" to deactivate. */
@@ -101,4 +113,11 @@ export class UserQueryDto {
   @Min(1)
   @Max(100)
   limit: number = 20;
+}
+
+export class UserLookupQueryDto {
+  /** Only users who can be put on this voucher type as Collected By / Paid By. */
+  @IsOptional()
+  @IsEnum(CollectorPurpose)
+  for?: CollectorPurpose;
 }

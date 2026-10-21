@@ -7,7 +7,7 @@ import { LedgerAccountModule } from '../ledger-accounts/ledger-account.module.js
 import { SequenceModule } from '../../sequence/sequence.module.js';
 import { AuditModule } from '../../audit/audit.module.js';
 import { CommentsModule } from '../../comments/comments.module.js';
-import { CashierModule } from '../../cashier/cashier.module.js';
+import { UsersModule } from '../../users/users.module.js';
 import { CompanyModule } from '../../company/company.module.js';
 
 /** The posting engine and PDF printing shared by every cash/bank voucher module. */
@@ -18,7 +18,7 @@ import { CompanyModule } from '../../company/company.module.js';
     SequenceModule,
     AuditModule,
     CommentsModule,
-    CashierModule,
+    UsersModule,
     CompanyModule,
   ],
   providers: [VoucherPostingService, VoucherPrintService],

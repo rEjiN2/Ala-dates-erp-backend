@@ -11,23 +11,23 @@ export class SalesmanCollectionsQueryDto {
   @IsDateString()
   dateTo?: string;
 
-  /** The staff (cashier) record. */
+  /** The Collected By user. */
+  @IsOptional()
+  @IsMongoId()
+  userId?: string;
+
+  /** Older name for userId. */
   @IsOptional()
   @IsMongoId()
   staffId?: string;
 
-  /** Older name for staffId. */
-  @IsOptional()
-  @IsMongoId()
-  cashierId?: string;
-
-  /** Cashiers based at this location. */
+  /** Users based at this location. */
   @IsOptional()
   @IsMongoId()
   locationId?: string;
 }
 
-/** The details endpoint takes the cashier from the path. */
+/** The details endpoint takes the user from the path. */
 export class SalesmanCollectionDetailsQueryDto {
   @IsOptional()
   @IsDateString()

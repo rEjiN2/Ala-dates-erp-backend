@@ -65,13 +65,19 @@ export class VoucherFieldsDto {
   @MaxLength(100)
   paymentReference?: string | null;
 
+  /** Cheque vouchers only: the date on the cheque. */
+  @IsOptional()
+  @IsDateString()
+  chequeDate?: string | null;
+
   /**
-   * Must be an active cashier when the voucher is saved. Required, except for
-   * an "own"-scoped user: their linked cashier is used (any other is 403).
+   * The user who handled the money (Collected By / Paid By). Defaults to the
+   * caller; anyone else needs vouchers:select-collector (403) and must be an
+   * active user whose role may create this voucher type.
    */
   @IsOptional()
   @IsMongoId()
-  cashierId?: string;
+  collectedById?: string;
 
   @IsOptional()
   @IsString()
@@ -127,11 +133,12 @@ export class VoucherQueryDto {
   @IsMongoId()
   accountId?: string;
 
+  /** User id of the collector (Collected By / Paid By). */
   @IsOptional()
   @IsMongoId()
-  cashierId?: string;
+  collectedBy?: string;
 
-  /** cash or bank. Vouchers from before bank support have no method and count as cash. */
+  /** cash, cheque or bank. Vouchers from before bank support have no method and count as cash. */
   @IsOptional()
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;

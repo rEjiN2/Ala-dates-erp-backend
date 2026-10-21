@@ -3,14 +3,14 @@ import { amountInWords } from '../../../common/utils/amount-in-words.js';
 
 /** Labels that differ between voucher types (see VoucherDefinition.pdf and headerLabel). */
 export interface VoucherPdfLabels {
-  titles: { cash: string; bank: string };
+  titles: { cash: string; bank: string; cheque?: string };
   documentTitle: string;
   /** Info-table label for the header account, e.g. "Received Into". */
   headerLabel: string;
   counterpartyColumn: string;
   signatures: readonly [string, string];
-  /** Info-table label for the voucher's cashier; defaults to "Cashier". */
-  cashierLabel?: string;
+  /** Info-table label for the voucher's collector, e.g. "Collected By" / "Paid By". */
+  collectorLabel: string;
 }
 
 /** Everything printed on the voucher, already resolved to display values. */
@@ -30,10 +30,10 @@ export interface VoucherPdfData {
     voucherDate: Date;
     /** The header (cash/wallet/bank) account. */
     headerAccountName: string;
-    paymentMethod: 'cash' | 'bank';
+    paymentMethod: 'cash' | 'cheque' | 'bank';
     paymentReference: string | null;
-    cashierName: string | null;
-    /** Extra info-table rows (e.g. "Received By" on a handover). */
+    collectedByName: string | null;
+    /** Extra info-table rows. */
     extraInfo?: { label: string; value: string }[];
     lines: { counterparty: string; narration: string | null; amount: number; vat: number; netAmount: number }[];
     grossTotal: number;
@@ -127,8 +127,8 @@ export function buildVoucherPdf(data: VoucherPdfData, labels: VoucherPdfLabels):
         [
           { text: labels.headerLabel, style: 'label' },
           receipt.headerAccountName,
-          { text: labels.cashierLabel ?? 'Cashier', style: 'label' },
-          receipt.cashierName ?? '-',
+          { text: labels.collectorLabel, style: 'label' },
+          receipt.collectedByName ?? '-',
         ],
         ...(receipt.extraInfo ?? []).map((row) => [
           { text: row.label, style: 'label' },
@@ -241,7 +241,7 @@ export function buildVoucherPdf(data: VoucherPdfData, labels: VoucherPdfLabels):
       : {}),
     content: [
       header,
-      { text: labels.titles[receipt.paymentMethod], style: 'title' },
+      { text: labels.titles[receipt.paymentMethod] ?? labels.titles.cash, style: 'title' },
       info,
       lines,
       totals,

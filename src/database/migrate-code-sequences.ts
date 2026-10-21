@@ -2,7 +2,7 @@
  * One-time migration: `pnpm migrate:code-sequences`.
  *
  * Run once after deploying generated Location / Product Group codes (and again
- * after deploying Parties and Cashiers), before
+ * after deploying Parties), before
  * anyone creates a record, so the counters start above every code that was
  * entered by hand. Safe to re-run; it never renames a record or lowers a
  * counter. See sync-code-sequences.ts for the rules.
@@ -16,7 +16,6 @@ import { Location, LocationDocument } from '../modules/location/schemas/location
 import { ProductGroup, ProductGroupDocument } from '../modules/product/product-groups/schemas/product-group.schema.js';
 import { SequenceService } from '../modules/sequence/sequence.service.js';
 import { Party } from '../modules/party/schemas/party.schema.js';
-import { Cashier } from '../modules/cashier/schemas/cashier.schema.js';
 import { LedgerAccount } from '../modules/accounting/ledger-accounts/schemas/ledger-account.schema.js';
 import { syncCodeSequences } from './sync-code-sequences.js';
 
@@ -31,7 +30,6 @@ async function migrate(): Promise<void> {
       sequenceService: app.get(SequenceService),
       partyModel: app.get<Model<unknown>>(getModelToken(Party.name)),
       ledgerAccountModel: app.get<Model<unknown>>(getModelToken(LedgerAccount.name)),
-      cashierModel: app.get<Model<unknown>>(getModelToken(Cashier.name)),
     });
 
     for (const result of results) {

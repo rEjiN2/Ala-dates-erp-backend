@@ -26,7 +26,7 @@ describe('VoucherPostingService (shared by receipts and payments)', () => {
   });
 
   async function setup() {
-    const cashier = await h.cashiers.create({ name: 'Sachin' }, user);
+    await h.persistUser(user);
     const a = {
       cash: await h.makeAccount('CASH-0001', CASH, 0, 'Main Cash'),
       wallet: await h.makeAccount('WAL-0001', WALLET, 0, 'STC Pay'),
@@ -40,10 +40,10 @@ describe('VoucherPostingService (shared by receipts and payments)', () => {
     };
     const line = (account: LedgerAccountDocument, amount: number, vat = 0) => ({ accountId: account.id, amount, vat });
     const receive = (into: LedgerAccountDocument, lines: ReturnType<typeof line>[], date = '2026-10-01') =>
-      h.receipts.create({ voucherDate: date, cashAccountId: into.id, cashierId: cashier.id, lines }, user);
+      h.receipts.create({ voucherDate: date, cashAccountId: into.id, lines }, user);
     const pay = (from: LedgerAccountDocument, lines: ReturnType<typeof line>[], acknowledgeWarnings = true) =>
       h.payments.create(
-        { voucherDate: '2026-10-02', paidFromAccountId: from.id, cashierId: cashier.id, lines, acknowledgeWarnings },
+        { voucherDate: '2026-10-02', paidFromAccountId: from.id, lines, acknowledgeWarnings },
         user,
       );
     return { a, line, receive, pay };
@@ -85,8 +85,9 @@ describe('VoucherPostingService (shared by receipts and payments)', () => {
     const p3 = await pay(a.wallet, [line(a.suspense, 10)]);
 
     // Edits: amounts, a moved header account, a date-only change and a new line.
-    await h.receipts.update(r1.id, { cashAccountId: a.bank.id, lines: [line(a.ali, 350), line(a.suspense, 20)] }, user);
+    // p1 leaves cash first: moving r1 out of cash while p1 still spends it would take cash below zero.
     await h.payments.update(p1.id, { paidFromAccountId: a.wallet.id, acknowledgeWarnings: true }, user);
+    await h.receipts.update(r1.id, { cashAccountId: a.bank.id, lines: [line(a.ali, 350), line(a.suspense, 20)] }, user);
     await h.payments.update(p2.id, { lines: [line(a.rent, 80, 4)] }, user);
     await h.receipts.update(r2.id, { voucherDate: '2026-10-05' }, user);
     // Cancels, and a hard-deleted receipt.

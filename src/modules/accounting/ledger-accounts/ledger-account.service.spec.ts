@@ -33,9 +33,8 @@ import { AuditLog, AuditLogSchema } from '../../audit/schemas/audit-log.schema.j
 import { CommentsService } from '../../comments/comments.service.js';
 import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { Comment, CommentSchema } from '../../comments/schemas/comment.schema.js';
-import { Cashier, CashierSchema } from '../../cashier/schemas/cashier.schema.js';
-import { CashierService } from '../../cashier/cashier.service.js';
-import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
+import { UserUsageRegistry } from '../../users/user-usage.registry.js';
+import { Role, RoleSchema } from '../../roles/schemas/role.schema.js';
 import { UsersService } from '../../users/users.service.js';
 import { User, UserSchema } from '../../users/schemas/user.schema.js';
 import { VoucherPostingService } from '../vouchers/voucher-posting.service.js';
@@ -62,8 +61,8 @@ describe('Accounts master (LedgerAccountService)', () => {
           { name: Counter.name, schema: CounterSchema },
           { name: AuditLog.name, schema: AuditLogSchema },
           { name: Comment.name, schema: CommentSchema },
-          { name: Cashier.name, schema: CashierSchema },
           { name: User.name, schema: UserSchema },
+          { name: Role.name, schema: RoleSchema },
           { name: LedgerEntry.name, schema: LedgerEntrySchema },
         ]),
       ],
@@ -77,8 +76,7 @@ describe('Accounts master (LedgerAccountService)', () => {
         AuditService,
         CommentsService,
         EntityAccessRegistry,
-        CashierService,
-        CashierUsageRegistry,
+        UserUsageRegistry,
         UsersService,
         VoucherPostingService,
       ],

@@ -33,13 +33,14 @@ describe('DashboardService.getSummary', () => {
     expect(summary.balancesByType.find((g) => g.type === LedgerAccountType.PARTY)!.total).toBe(-250);
   });
 
-  it('always returns all eight types in enum order, wallet included, empty ones at zero', async () => {
+  it('always returns all nine types in enum order, wallet included, empty ones at zero', async () => {
     const summary = await serviceWith([account(LedgerAccountType.BANK, 'BANK-1', 10)]).getSummary();
 
     expect(summary.balancesByType.map((g) => g.type)).toEqual([
       'cash',
       'bank',
       'wallet',
+      'cheque',
       'party',
       'supplier',
       'income',

@@ -4,7 +4,6 @@ import type { ProductGroupDocument } from '../modules/product/product-groups/sch
 import { LOCATION_CODE_SEQUENCES } from '../modules/location/location-code.js';
 import { PRODUCT_GROUP_CODE_SEQUENCE } from '../modules/product/product-groups/product-group-code.js';
 import { PARTY_CODE_SEQUENCES } from '../modules/party/party-code.js';
-import { CASHIER_CODE_SEQUENCE } from '../modules/cashier/cashier-code.js';
 import { CodeSequence, escapeRegExp, parseSequenceCode } from '../modules/sequence/code-sequence.js';
 import type { SequenceService } from '../modules/sequence/sequence.service.js';
 
@@ -46,7 +45,6 @@ export async function syncCodeSequences(deps: {
    */
   partyModel?: Model<any>;
   ledgerAccountModel?: Model<any>;
-  cashierModel?: Model<any>;
 }): Promise<CodeSequenceSyncResult[]> {
   const partyCodeHolders = [deps.partyModel, deps.ledgerAccountModel].filter((model) => model !== undefined);
   const sources: CodeSource[] = [
@@ -55,7 +53,6 @@ export async function syncCodeSequences(deps: {
     ...(partyCodeHolders.length > 0
       ? Object.values(PARTY_CODE_SEQUENCES).map((sequence) => ({ sequence, models: partyCodeHolders }))
       : []),
-    ...(deps.cashierModel ? [{ sequence: CASHIER_CODE_SEQUENCE, models: [deps.cashierModel] }] : []),
   ];
 
   const results: CodeSequenceSyncResult[] = [];

@@ -6,6 +6,7 @@ import { CompanyController } from './company.controller.js';
 import { FilesModule } from '../files/files.module.js';
 import { AuditModule } from '../audit/audit.module.js';
 import { CommentsModule } from '../comments/comments.module.js';
+import { LedgerAccountModule } from '../accounting/ledger-accounts/ledger-account.module.js';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { CommentsModule } from '../comments/comments.module.js';
     FilesModule,
     AuditModule,
     CommentsModule,
+    LedgerAccountModule,
   ],
   controllers: [CompanyController],
   providers: [CompanyService],

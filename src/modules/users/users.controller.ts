@@ -7,7 +7,7 @@ import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 import { Permission } from '../roles/permissions.js';
 import { UsersService } from './users.service.js';
 import { UserManagementService } from './user-management.service.js';
-import { CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto } from './dto/user.dto.js';
+import { CreateUserDto, ResetPasswordDto, UpdateUserDto, UserLookupQueryDto, UserQueryDto } from './dto/user.dto.js';
 
 /** The lookup is open to any logged-in user; everything else needs users:manage. */
 @Controller('users')
@@ -18,10 +18,13 @@ export class UsersController {
     private readonly userManagement: UserManagementService,
   ) {}
 
-  /** id + name of every user, for "Created by" style filters. */
+  /**
+   * id + name of every user, for "Created by" style filters. With ?for=receipt|payment:
+   * the users who can be Collected By / Paid By (only yourself without vouchers:select-collector).
+   */
   @Get('lookup')
-  lookup() {
-    return this.usersService.lookup();
+  lookup(@Query() query: UserLookupQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return query.for ? this.usersService.collectorLookup(query.for, user) : this.usersService.lookup();
   }
 
   @Get()

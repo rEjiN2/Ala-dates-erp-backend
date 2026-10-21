@@ -38,17 +38,16 @@ import { ActivityController, CommentsController } from '../../comments/comments.
 import { Comment, CommentDocument, CommentSchema } from '../../comments/schemas/comment.schema.js';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard.js';
 import { createAppValidationPipe } from '../../../common/pipes/app-validation.pipe.js';
-import { Permission } from '../../roles/permissions.js';
+import { DataScope, Permission } from '../../roles/permissions.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { CashReceiptPrintService } from './cash-receipt-print.service.js';
 import { VoucherPostingService } from '../vouchers/voucher-posting.service.js';
 import { VoucherPrintService } from '../vouchers/voucher-print.service.js';
 import { LedgerEntry, LedgerEntrySchema } from '../vouchers/schemas/ledger-entry.schema.js';
-import { Cashier, CashierDocument, CashierSchema, CashierStatus } from '../../cashier/schemas/cashier.schema.js';
-import { CashierService } from '../../cashier/cashier.service.js';
-import { CashierUsageRegistry } from '../../cashier/cashier-usage.registry.js';
 import { UsersService } from '../../users/users.service.js';
-import { User, UserSchema } from '../../users/schemas/user.schema.js';
+import { UserUsageRegistry } from '../../users/user-usage.registry.js';
+import { User, UserDocument, UserSchema, UserStatus } from '../../users/schemas/user.schema.js';
+import { Role, RoleDocument, RoleSchema } from '../../roles/schemas/role.schema.js';
 import { CompanyService } from '../../company/company.service.js';
 import {
   CompanySettings,
@@ -56,7 +55,8 @@ import {
   CompanySettingsSchema,
 } from '../../company/schemas/company-settings.schema.js';
 import { FilesService } from '../../files/files.service.js';
-import { backfillCashReceiptCashiers } from '../../../database/backfill-cash-receipt-cashiers.js';
+import { backfillCollectedBy } from '../../../database/backfill-collected-by.js';
+import { backfillRemoveHandovers } from '../../../database/backfill-remove-handovers.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
 
 const RECEIPT_PERMISSIONS: string[] = [
@@ -88,17 +88,35 @@ describe('CashReceiptService (transactional)', () => {
   let counterModel: Model<CounterDocument>;
   let auditModel: Model<AuditLogDocument>;
   let commentModel: Model<CommentDocument>;
-  let cashierModel: Model<CashierDocument>;
+  let userModel: Model<UserDocument>;
+  let roleModel: Model<RoleDocument>;
   let companyModel: Model<CompanySettingsDocument>;
-  let cashierService: CashierService;
   let printService: CashReceiptPrintService;
-  /** Active cashier "Sachin" used by default for every receipt; recreated per test. */
-  let mainCashier: CashierDocument;
-  /** Active cashier "Omar". */
-  let otherCashier: CashierDocument;
 
+  /** Saved per test as real users (same ids), so they can be Collected By. */
   const sachin = makeUser('Sachin');
   const omar = makeUser('Omar');
+
+  /** Saves `user` with a role holding its permissions, as the collector checks read them from the DB. */
+  async function persistUser(
+    user: AuthenticatedUser,
+    extra: { status?: UserStatus; settlesWithOffice?: boolean } = {},
+  ): Promise<AuthenticatedUser> {
+    const role = await roleModel.create({
+      name: `${user.name} role ${new Types.ObjectId().toString()}`,
+      permissions: user.permissions,
+      dataScope: user.dataScope ?? DataScope.ALL,
+    });
+    await userModel.create({
+      _id: new Types.ObjectId(user.id),
+      email: user.email,
+      name: user.name,
+      passwordHash: 'x',
+      role: role._id,
+      ...extra,
+    });
+    return user;
+  }
   /** Who the fake JWT guard says is calling, for the HTTP tests. */
   let tokenUser: AuthenticatedUser = sachin;
 
@@ -116,8 +134,8 @@ describe('CashReceiptService (transactional)', () => {
           { name: Location.name, schema: LocationSchema },
           { name: AuditLog.name, schema: AuditLogSchema },
           { name: Comment.name, schema: CommentSchema },
-          { name: Cashier.name, schema: CashierSchema },
           { name: User.name, schema: UserSchema },
+          { name: Role.name, schema: RoleSchema },
           { name: CompanySettings.name, schema: CompanySettingsSchema },
           { name: LedgerEntry.name, schema: LedgerEntrySchema },
         ]),
@@ -133,8 +151,7 @@ describe('CashReceiptService (transactional)', () => {
         CommentsService,
         ActivityService,
         EntityAccessRegistry,
-        CashierService,
-        CashierUsageRegistry,
+        UserUsageRegistry,
         UsersService,
         CompanyService,
         CashReceiptPrintService,
@@ -165,15 +182,16 @@ describe('CashReceiptService (transactional)', () => {
     counterModel = moduleRef.get(getModelToken(Counter.name));
     auditModel = moduleRef.get(getModelToken(AuditLog.name));
     commentModel = moduleRef.get(getModelToken(Comment.name));
-    cashierModel = moduleRef.get(getModelToken(Cashier.name));
+    userModel = moduleRef.get(getModelToken(User.name));
+    roleModel = moduleRef.get(getModelToken(Role.name));
     companyModel = moduleRef.get(getModelToken(CompanySettings.name));
-    cashierService = moduleRef.get(CashierService);
     printService = moduleRef.get(CashReceiptPrintService);
     await Promise.all([
       cashReceiptModel.init(),
       auditModel.init(),
       commentModel.init(),
-      cashierModel.init(),
+      userModel.init(),
+      roleModel.init(),
       companyModel.init(),
     ]);
   }, 120_000);
@@ -192,20 +210,20 @@ describe('CashReceiptService (transactional)', () => {
     await auditModel.collection.deleteMany({});
     await commentModel.collection.deleteMany({});
     await moduleRef.get(getModelToken(LedgerEntry.name)).collection.deleteMany({});
-    await cashierModel.deleteMany({}).exec();
+    await userModel.deleteMany({}).exec();
+    await roleModel.deleteMany({}).exec();
+    await cashReceiptModel.db.collection('cashiers').deleteMany({});
     await companyModel.deleteMany({}).exec();
   });
 
   beforeEach(async () => {
-    mainCashier = await cashierService.create({ name: 'Sachin' }, sachin);
-    otherCashier = await cashierService.create({ name: 'Omar' }, sachin);
-    // Cashier creation is audited; start each test with an empty log.
-    await auditModel.collection.deleteMany({});
+    await persistUser(sachin);
+    await persistUser(omar);
   });
 
-  /** service.create with the default cashier filled in. */
-  function createReceipt(dto: Omit<CreateCashReceiptDto, 'cashierId'> & { cashierId?: string }, actor: Actor) {
-    return service.create({ cashierId: mainCashier.id, ...dto }, actor);
+  /** service.create; Collected By defaults to the actor. */
+  function createReceipt(dto: CreateCashReceiptDto, actor: Actor) {
+    return service.create(dto, actor);
   }
 
   async function makeAccount(
@@ -377,7 +395,7 @@ describe('CashReceiptService (transactional)', () => {
           },
           sachin,
         ),
-      ).rejects.toThrow(/Choose a cash, wallet or bank account/);
+      ).rejects.toThrow(/Choose a cash, wallet, cheque or bank account/);
 
       expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
     });
@@ -499,12 +517,12 @@ describe('CashReceiptService (transactional)', () => {
         throw new Error('disk full');
       });
 
-      await expect(service.update(receipt._id.toString(), { cashierId: otherCashier.id }, omar)).rejects.toThrow(
+      await expect(service.update(receipt._id.toString(), { collectedById: omar.id }, omar)).rejects.toThrow(
         'disk full',
       );
 
       const unchanged = await service.findById(receipt._id.toString());
-      expect(unchanged.cashierName).toBe('Sachin');
+      expect(unchanged.collectedByName).toBe('Sachin');
       expect(unchanged.updatedBy).toBeNull();
       expect((await auditFor(receipt._id)).map((entry) => entry.action)).toEqual(['created']);
       expect(await balanceOf(cash)).toBe(1105);
@@ -634,7 +652,7 @@ describe('CashReceiptService (transactional)', () => {
         {},
         { changeNote: 'Just looking' },
         {
-          cashierId: mainCashier.id,
+          collectedById: sachin.id,
           voucherDate: '2026-09-21',
           cashAccountId: cash._id.toString(),
         },
@@ -777,9 +795,9 @@ describe('CashReceiptService (transactional)', () => {
 
       // Editing one starts its history from that edit only.
       await expect(service.update(legacyId.toString(), { comments: 'Checked' }, sachin)).rejects.toThrow(
-        /choose a cashier/,
+        /has no Collected By user: choose one \(collectedById\)/,
       );
-      await service.update(legacyId.toString(), { cashierId: mainCashier.id }, sachin);
+      await service.update(legacyId.toString(), { collectedById: sachin.id }, sachin);
       expect((await auditFor(legacyId)).map((entry) => entry.action)).toEqual(['updated']);
       expect((await service.findById(legacyId.toString())).createdBy).toBeNull();
     });
@@ -866,7 +884,7 @@ describe('CashReceiptService (transactional)', () => {
         voucherNo: 'CR000001',
         date: new Date('2026-09-10'),
         cashAccount: { id: main.id, name: 'Main Cash' },
-        cashier: { id: mainCashier.id, name: 'Sachin', staffType: 'cashier' },
+        collectedBy: { id: sachin.id, name: 'Sachin' },
         paymentMethod: 'cash',
         // Ali, Omar, Ali: first account plus one other distinct account.
         partiesSummary: {
@@ -1063,7 +1081,6 @@ describe('CashReceiptService (transactional)', () => {
         body: {
           voucherDate: '2026-09-21',
           cashAccountId: cash.id,
-          cashierId: mainCashier.id,
           lines: [{ accountId: party.id, amount: 10 }],
         },
       };
@@ -1215,7 +1232,7 @@ describe('CashReceiptService (transactional)', () => {
     });
   });
 
-  describe('cashier', () => {
+  describe('collected by', () => {
     async function accounts() {
       const cash = await makeAccount('CASH-001', LedgerAccountType.CASH, 0, 'Main Cash');
       const party = await makeAccount('PARTY-001', LedgerAccountType.PARTY, 0, 'Ali Traders');
@@ -1223,129 +1240,172 @@ describe('CashReceiptService (transactional)', () => {
       return { cash, party, dto };
     }
 
-    it('is required', async () => {
+    /** May record receipts collected by someone else. */
+    const manager = () =>
+      persistUser(makeUser('Manager', [...RECEIPT_PERMISSIONS, Permission.VOUCHERS_SELECT_COLLECTOR]));
+
+    it('defaults to me and snapshots my name', async () => {
       const { dto } = await accounts();
+      const receipt = await createReceipt(dto, omar);
+      expect(receipt.collectedById!.toString()).toBe(omar.id);
+      expect(receipt.collectedByName).toBe('Omar');
+
+      await userModel.updateOne({ _id: omar.id }, { $set: { name: 'Omar Khan' } }).exec();
+      expect((await service.findById(receipt.id)).collectedByName).toBe('Omar');
+    });
+
+    it('needs vouchers:select-collector to name another user', async () => {
+      const { dto } = await accounts();
+      await expect(createReceipt({ ...dto, collectedById: sachin.id }, omar)).rejects.toThrow(
+        'You can only record vouchers collected by yourself.',
+      );
+      expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
+
+      const boss = await manager();
+      const receipt = await createReceipt({ ...dto, collectedById: omar.id }, boss);
+      expect(receipt.collectedById!.toString()).toBe(omar.id);
+      expect(receipt.collectedByName).toBe('Omar');
+      expect(receipt.createdBy).toMatchObject({ name: 'Manager' });
+    });
+
+    it('rejects an unknown, inactive or ineligible collector, consuming no voucher number', async () => {
+      const { dto } = await accounts();
+      const boss = await manager();
+      const unknownId = new Types.ObjectId().toString();
+      await persistUser(makeUser('Zaid'), { status: UserStatus.INACTIVE });
+      const viewer = await persistUser(makeUser('Viewer', [Permission.CASH_RECEIPTS_READ]));
+      const zaid = (await userModel.findOne({ name: 'Zaid' }).exec())!;
+
+      await expect(createReceipt({ ...dto, collectedById: unknownId }, boss)).rejects.toThrow(
+        `User ${unknownId} not found`,
+      );
+      await expect(createReceipt({ ...dto, collectedById: zaid.id }, boss)).rejects.toThrow('User Zaid is inactive');
+      await expect(createReceipt({ ...dto, collectedById: viewer.id }, boss)).rejects.toThrow(
+        'User Viewer cannot be chosen here: their role lacks cash-receipts:create',
+      );
+      expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
+
       const pipe = createAppValidationPipe();
       const { CreateCashReceiptDto } = await import('./dto/create-cash-receipt.dto.js');
+      for (const legacyField of [{ cashier: 'Free text' }, { cashierId: sachin.id }]) {
+        await expect(
+          pipe.transform({ ...dto, ...legacyField }, { type: 'body', metatype: CreateCashReceiptDto }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
 
-      // Optional in the body (an "own"-scoped user gets their linked cashier), but required by the service otherwise.
-      await expect(service.create(dto as CreateCashReceiptDto, sachin)).rejects.toThrow('cashierId is required');
-      await expect(
-        pipe.transform({ ...dto, cashier: 'Free text' }, { type: 'body', metatype: CreateCashReceiptDto }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      await expect(service.create({ ...dto, cashierId: new Types.ObjectId().toString() }, sachin)).rejects.toThrow(
-        /Cashier .* not found/,
+      const receipt = await createReceipt(dto, sachin);
+      expect(receipt.voucherNo).toBe('CR000001');
+      await expect(service.update(receipt.id, { collectedById: null as never }, sachin)).rejects.toThrow(
+        'A cash receipt must have a collected by user',
       );
-      await expect(
-        service.update(new Types.ObjectId().toString(), { cashierId: null as never }, sachin),
-      ).rejects.toThrow();
-      expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
     });
 
-    it('rejects an inactive cashier on create, consuming no voucher number', async () => {
-      const { dto } = await accounts();
-      await cashierService.update(otherCashier.id, { status: CashierStatus.INACTIVE }, sachin);
-
-      await expect(createReceipt({ ...dto, cashierId: otherCashier.id }, sachin)).rejects.toThrow(
-        /CSH-0002 \(Omar\) is inactive/,
-      );
-      expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
-      expect((await createReceipt(dto, sachin)).voucherNo).toBe('CR000001');
-    });
-
-    it('snapshots the cashier name on the receipt', async () => {
+    it('keeps an unchanged inactive collector on edit, but needs an eligible one to switch', async () => {
       const { dto } = await accounts();
       const receipt = await createReceipt(dto, sachin);
-      expect(receipt.cashierId!.toString()).toBe(mainCashier.id);
-      expect(receipt.cashierName).toBe('Sachin');
-
-      await cashierService.update(mainCashier.id, { name: 'Sachin Kumar' }, sachin);
-      expect((await service.findById(receipt.id)).cashierName).toBe('Sachin');
-    });
-
-    it('keeps an unchanged inactive cashier on edit, but needs an active one to switch', async () => {
-      const { dto } = await accounts();
-      const receipt = await createReceipt(dto, sachin);
-      await cashierService.update(mainCashier.id, { status: CashierStatus.INACTIVE }, sachin);
+      await userModel.updateOne({ _id: sachin.id }, { $set: { status: UserStatus.INACTIVE } }).exec();
 
       // Unchanged (omitted, or the same id sent back): allowed although inactive.
       await expect(service.update(receipt.id, { comments: 'Checked' }, sachin)).resolves.toBeDefined();
       await expect(
-        service.update(receipt.id, { cashierId: mainCashier.id, comments: 'Checked again' }, sachin),
+        service.update(receipt.id, { collectedById: sachin.id, comments: 'Checked again' }, sachin),
       ).resolves.toBeDefined();
 
-      const third = await cashierService.create({ name: 'Zaid', status: CashierStatus.INACTIVE }, sachin);
-      await expect(service.update(receipt.id, { cashierId: third.id }, sachin)).rejects.toThrow(/is inactive/);
+      const boss = await manager();
+      const zaid = await persistUser(makeUser('Zaid'), { status: UserStatus.INACTIVE });
+      await expect(service.update(receipt.id, { collectedById: zaid.id }, boss)).rejects.toThrow(/is inactive/);
 
-      const switched = await service.update(receipt.id, { cashierId: otherCashier.id }, omar);
-      expect(switched.cashierName).toBe('Omar');
+      const switched = await service.update(receipt.id, { collectedById: omar.id }, omar);
+      expect(switched.collectedByName).toBe('Omar');
       const [latest] = await auditFor(receipt._id);
-      expect(latest.changes).toEqual([{ field: 'cashier', label: 'Collected By', from: 'Sachin', to: 'Omar' }]);
+      expect(latest.changes).toEqual([{ field: 'collectedBy', label: 'Collected By', from: 'Sachin', to: 'Omar' }]);
     });
 
-    it('filters the list by cashier and shows it on each row', async () => {
+    it('edits and cancels a receipt once locked on a cash handover; the migration drops the lock fields', async () => {
+      const { dto } = await accounts();
+      const first = await createReceipt(dto, sachin);
+      const second = await createReceipt(dto, sachin);
+      const lock = { settlementStatus: 'settled', handoverId: new Types.ObjectId(), settledAt: new Date() };
+      await cashReceiptModel.collection.updateMany({}, { $set: lock });
+
+      await service.update(first.id, { comments: 'Edited after handovers went away' }, sachin);
+      await service.cancel(second.id, { reason: 'Duplicate' }, sachin);
+
+      expect(await backfillRemoveHandovers(cashReceiptModel)).toEqual({ unlocked: 2 });
+      expect(await backfillRemoveHandovers(cashReceiptModel)).toEqual({ unlocked: 0 });
+      const raw = await cashReceiptModel.collection.find({}).toArray();
+      expect(raw.some((doc) => 'settlementStatus' in doc || 'handoverId' in doc || 'settledAt' in doc)).toBe(false);
+    });
+
+    it('filters the list by collector and shows it on each row', async () => {
       const { dto } = await accounts();
       await createReceipt(dto, sachin);
-      await createReceipt({ ...dto, cashierId: otherCashier.id }, sachin);
+      await createReceipt(dto, omar);
 
-      const byOmar = await service.findAll({ cashierId: otherCashier.id });
-      expect(byOmar.items.map((row) => row.cashier)).toEqual([{ id: otherCashier.id, name: 'Omar', staffType: 'cashier' }]);
+      const byOmar = await service.findAll({ collectedBy: omar.id });
+      expect(byOmar.items.map((row) => row.collectedBy)).toEqual([{ id: omar.id, name: 'Omar' }]);
       expect(byOmar.summary).toEqual({ count: 1, total: 10 });
-      expect((await service.findAll({ cashierId: mainCashier.id, status: 'posted' })).items).toHaveLength(1);
+      expect((await service.findAll({ collectedBy: sachin.id, status: 'posted' })).items).toHaveLength(1);
     });
 
-    it('cannot be deleted once a receipt uses it, even a cancelled one; deactivating is allowed', async () => {
+    it('makes a user undeletable once a receipt names them, even a cancelled one', async () => {
       const { dto } = await accounts();
       const receipt = await createReceipt(dto, sachin);
       await service.cancel(receipt.id, { reason: 'Duplicate' }, sachin);
 
-      await expect(cashierService.remove(mainCashier.id)).rejects.toThrow(
-        'Cannot delete cashier CSH-0001 (Sachin): it is used by cash receipts. Deactivate it instead.',
-      );
-      await expect(
-        cashierService.update(mainCashier.id, { status: CashierStatus.INACTIVE }, sachin),
-      ).resolves.toMatchObject({ status: 'inactive' });
-      await expect(cashierService.remove(otherCashier.id)).resolves.toEqual({ success: true });
+      const usage = moduleRef.get(UserUsageRegistry);
+      expect(await usage.findUsage(new Types.ObjectId(sachin.id))).toBe('cash receipts');
+      expect(await usage.findUsage(new Types.ObjectId(omar.id))).toBeNull();
     });
 
-    it('moves a legacy free-text cashier into cashierName, idempotently, and still loads', async () => {
+    it('backfills old cashier receipts to users, idempotently, and still loads and edits them', async () => {
       const cash = await makeAccount('CASH-001', LedgerAccountType.CASH, 0, 'Main Cash');
       const party = await makeAccount('PARTY-001', LedgerAccountType.PARTY, 0, 'Ali Traders');
-      const legacy = (voucherNo: string, cashier: string | undefined) => ({
+      const linkedCashierId = new Types.ObjectId();
+      const unlinkedCashierId = new Types.ObjectId();
+      const cashiers = cashReceiptModel.db.collection('cashiers');
+      await cashiers.insertMany([
+        { _id: linkedCashierId, name: 'Ali', linkedUserId: new Types.ObjectId(omar.id), settlesWithOffice: true },
+        { _id: unlinkedCashierId, name: 'Ali', linkedUserId: null },
+      ]);
+      // A user from before settlesWithOffice existed.
+      await userModel.collection.updateOne({ _id: new Types.ObjectId(omar.id) }, { $unset: { settlesWithOffice: '' } });
+      const legacy = (voucherNo: string, cashierId: Types.ObjectId) => ({
         voucherNo,
         voucherDate: new Date('2026-01-05'),
         cashAccountId: cash._id,
-        ...(cashier === undefined ? {} : { cashier }),
+        cashierId,
+        cashierName: 'Old Counter Ali',
         lines: [{ accountId: party._id, oldBalance: 0, amount: 5, vat: 0, netAmount: 5 }],
         grossTotal: 5,
         totalTax: 0,
         grandTotal: 5,
       });
       await cashReceiptModel.collection.insertMany([
-        legacy('CR000901', '  Old Counter Ali '),
-        legacy('CR000902', '   '),
-        legacy('CR000903', undefined),
+        legacy('CR000901', linkedCashierId),
+        legacy('CR000902', unlinkedCashierId),
       ]);
 
-      // Before the migration they load, with no cashier.
-      expect(
-        (await service.findById((await cashReceiptModel.findOne({ voucherNo: 'CR000901' }))!.id)).cashierId,
-      ).toBeNull();
-
-      expect(await backfillCashReceiptCashiers(cashReceiptModel)).toEqual({ migrated: 2 });
-      expect(await backfillCashReceiptCashiers(cashReceiptModel)).toEqual({ migrated: 0 });
-
-      const raw = await cashReceiptModel.collection.find({}, { sort: { voucherNo: 1 } }).toArray();
-      expect(
-        raw.map((doc) => [doc.voucherNo, doc.cashierId ?? null, doc.cashierName ?? null, 'cashier' in doc]),
-      ).toEqual([
-        ['CR000901', null, 'Old Counter Ali', false],
-        ['CR000902', null, null, false],
-        ['CR000903', null, null, false],
-      ]);
+      const run = () =>
+        backfillCollectedBy({ cashiers, user: userModel, vouchers: [cashReceiptModel.collection] });
+      expect(await run()).toEqual({ linkedVouchers: 1, unlinkedVouchers: 1, users: 1 });
+      expect(await run()).toEqual({ linkedVouchers: 0, unlinkedVouchers: 0, users: 0 });
+      expect((await userModel.findById(omar.id).exec())!.settlesWithOffice).toBe(true);
 
       const rows = (await service.findAll({ sortBy: 'voucherNo', sortDir: 'asc' })).items;
-      expect(rows[0].cashier).toEqual({ id: null, name: 'Old Counter Ali', staffType: null });
+      expect(rows.map((row) => row.collectedBy)).toEqual([
+        { id: omar.id, name: 'Old Counter Ali' },
+        { id: null, name: 'Old Counter Ali' },
+      ]);
+      const unlinked = await service.findById(rows[1].id);
+      expect(unlinked.collectedById).toBeNull();
+      expect(unlinked.collectedByName).toBe('Old Counter Ali');
+
+      await expect(service.update(rows[1].id, { comments: 'Checked' }, sachin)).rejects.toThrow(
+        /has no Collected By user: choose one \(collectedById\)/,
+      );
+      const fixed = await service.update(rows[1].id, { comments: 'Checked', collectedById: sachin.id }, sachin);
+      expect(fixed.collectedByName).toBe('Sachin');
     });
   });
 
@@ -1440,7 +1500,7 @@ describe('CashReceiptService (transactional)', () => {
       const body = {
         voucherDate: '2026-09-21',
         cashAccountId: bank.id,
-        cashierId: mainCashier.id,
+        collectedById: sachin.id,
         lines: [{ accountId: party.id, amount: 10 }],
       };
       await expect(
@@ -1477,7 +1537,7 @@ describe('CashReceiptService (transactional)', () => {
       );
       await expect(service.update(receipt.id, { lines }, sachin)).rejects.toThrow(/cannot also be used on a line/);
       await expect(service.update(receipt.id, { cashAccountId: party.id }, sachin)).rejects.toThrow(
-        /Choose a cash, wallet or bank account/,
+        /Choose a cash, wallet, cheque or bank account/,
       );
       expect(await balanceOf(bank)).toBe(2010);
     });
@@ -1537,7 +1597,7 @@ describe('CashReceiptService (transactional)', () => {
       const { customer, supplier, income, bank } = await accounts();
       for (const header of [customer, supplier, income]) {
         await expect(receive(header, bank)).rejects.toThrow(
-          `${header.code} (${header.name}) is a ${header.type} account. Choose a cash, wallet or bank account.`,
+          `${header.code} (${header.name}) is a ${header.type} account. Choose a cash, wallet, cheque or bank account.`,
         );
       }
       expect(await cashReceiptModel.countDocuments().exec()).toBe(0);
@@ -1691,7 +1751,8 @@ describe('CashReceiptService (transactional)', () => {
         voucherNo: 'CR000900',
         voucherDate: new Date('2026-01-05'),
         cashAccountId: cash._id,
-        cashierName: 'Old Counter Ali',
+        collectedById: null,
+        collectedByName: 'Old Counter Ali',
         lines: [{ accountId: party._id, oldBalance: 0, amount: 70, vat: 0, netAmount: 70 }],
         grossTotal: 70,
         totalTax: 0,

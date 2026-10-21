@@ -108,7 +108,7 @@ export async function ensureDefaultRoles(roleModel: Model<RoleDocument>): Promis
     await ensureStarterRole(
       roleModel,
       VAN_SALESMAN_ROLE_NAME,
-      'Enters cash receipts for their own cashier; sees only their own receipts and no balances',
+      'Enters cash receipts collected by themselves; sees only their own receipts and no balances',
       VAN_SALESMAN_PERMISSIONS,
       DataScope.OWN,
     ),

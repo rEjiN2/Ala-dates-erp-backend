@@ -12,6 +12,8 @@ import { FilesService } from '../files/files.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditLog, AuditLogDocument, AuditLogSchema } from '../audit/schemas/audit-log.schema.js';
 import { EntityAccessRegistry } from '../comments/entity-access.registry.js';
+import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
+import { LedgerAccountUsageRegistry } from '../accounting/ledger-accounts/ledger-account-usage.registry.js';
 import { createAppValidationPipe } from '../../common/pipes/app-validation.pipe.js';
 import { REQUIRE_PERMISSION_KEY } from '../../common/decorators/require-permission.decorator.js';
 import { ADMIN_PERMISSIONS, Permission } from '../roles/permissions.js';
@@ -53,6 +55,9 @@ describe('Company profile (CompanyService)', () => {
         CompanyService,
         AuditService,
         EntityAccessRegistry,
+        LedgerAccountUsageRegistry,
+        // No default handover accounts are set in these tests.
+        { provide: LedgerAccountService, useValue: { getSummaries: async () => new Map() } },
         { provide: FilesService, useValue: fakeFilesService },
       ],
     }).compile();

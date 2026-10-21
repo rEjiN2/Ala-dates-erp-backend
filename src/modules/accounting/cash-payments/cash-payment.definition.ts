@@ -33,7 +33,8 @@ export const CASH_PAYMENT_DEFINITION: VoucherDefinition = {
   warnOnOverdraw: true,
   usageSource: 'cash payments',
   readPermission: Permission.CASH_PAYMENTS_READ,
-  cashierLabel: 'Paid By',
+  createPermission: Permission.CASH_PAYMENTS_CREATE,
+  collectorLabel: 'Paid By',
   pdf: {
     titles: { cash: 'CASH PAYMENT VOUCHER', bank: 'BANK PAYMENT VOUCHER' },
     documentTitle: 'Cash Payment',

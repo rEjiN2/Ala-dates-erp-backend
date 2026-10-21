@@ -21,8 +21,12 @@ import { ChangePasswordDto, CreateUserDto, ResetPasswordDto, UpdateUserDto, User
 import { UsersService } from './users.service.js';
 import { Role, RoleDocument } from '../roles/schemas/role.schema.js';
 import { ADMIN_ROLE_NAME, DataScope } from '../roles/permissions.js';
-import { Cashier, CashierDocument, StaffType } from '../cashier/schemas/cashier.schema.js';
-import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
+import { Location, LocationDocument } from '../location/schemas/location.schema.js';
+import { UserUsageRegistry } from './user-usage.registry.js';
+import {
+  CASH_LIKE_ACCOUNT_TYPES,
+  LedgerAccountService,
+} from '../accounting/ledger-accounts/ledger-account.service.js';
 import {
   LedgerAccountStatus,
   LedgerAccountType,
@@ -38,7 +42,7 @@ import { runInTransaction } from '../../common/utils/transaction.util.js';
 const BCRYPT_ROUNDS = 10;
 
 /** Account types a user may be allowed to receive money into. */
-const ALLOWED_CASH_ACCOUNT_TYPES: readonly LedgerAccountType[] = [LedgerAccountType.CASH, LedgerAccountType.WALLET];
+const ALLOWED_CASH_ACCOUNT_TYPES: readonly LedgerAccountType[] = CASH_LIKE_ACCOUNT_TYPES;
 
 export interface UserView {
   id: string;
@@ -48,15 +52,8 @@ export interface UserView {
   status: UserStatus;
   mustChangePassword: boolean;
   allowedCashAccounts: { id: string; code: string; name: string; type: string }[];
-  /** Set on the Cashier master (Cashier.linkedUserId), shown here read-only. */
-  linkedCashier: {
-    id: string;
-    code: string;
-    name: string;
-    status: string;
-    staffType: StaffType;
-    settlesWithOffice: boolean;
-  } | null;
+  settlesWithOffice: boolean;
+  location: { id: string; name: string | null } | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -75,6 +72,8 @@ interface UserDisplay extends Record<string, unknown> {
   role: string;
   status: string;
   allowedCashAccounts: string | null;
+  settlesWithOffice: string;
+  location: string | null;
 }
 
 const AUDITED_FIELDS: readonly DiffField<UserDisplay>[] = [
@@ -83,6 +82,8 @@ const AUDITED_FIELDS: readonly DiffField<UserDisplay>[] = [
   { key: 'role', label: 'Role' },
   { key: 'status', label: 'Status' },
   { key: 'allowedCashAccounts', label: 'Allowed cash accounts' },
+  { key: 'settlesWithOffice', label: 'Settles with office' },
+  { key: 'location', label: 'Location' },
 ];
 
 /**
@@ -95,11 +96,12 @@ export class UserManagementService {
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Role.name) private readonly roleModel: Model<RoleDocument>,
-    @InjectModel(Cashier.name) private readonly cashierModel: Model<CashierDocument>,
+    @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly usersService: UsersService,
     private readonly ledgerAccountService: LedgerAccountService,
     private readonly auditService: AuditService,
+    private readonly usage: UserUsageRegistry,
   ) {}
 
   async list(query: UserQueryDto): Promise<UserPage> {
@@ -133,7 +135,7 @@ export class UserManagementService {
     return view;
   }
 
-  /** GET /auth/me: the request user plus their role scope, linked cashier and allowed accounts. */
+  /** GET /auth/me: the request user plus their role scope, settlement flag and allowed accounts. */
   async profile(userId: string): Promise<AuthProfile> {
     const user = await this.getById(userId);
     const [view] = await this.toViews([user]);
@@ -141,7 +143,7 @@ export class UserManagementService {
       ...this.usersService.toAuthenticatedUser(user),
       dataScope: view.role?.dataScope ?? DataScope.ALL,
       mustChangePassword: view.mustChangePassword,
-      linkedCashier: view.linkedCashier,
+      settlesWithOffice: view.settlesWithOffice,
       allowedCashAccounts: view.allowedCashAccounts,
     };
   }
@@ -151,6 +153,7 @@ export class UserManagementService {
     const role = await this.getRole(dto.roleId);
     const allowedCashAccountIds = dto.allowedCashAccountIds ?? [];
     await this.assertCashAccounts(allowedCashAccountIds, []);
+    await this.assertLocation(dto.locationId);
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
     const created = await this.inTransaction(async (session) => {
@@ -165,6 +168,8 @@ export class UserManagementService {
             status: dto.status ?? UserStatus.ACTIVE,
             mustChangePassword: true,
             allowedCashAccountIds: allowedCashAccountIds.map((id) => new Types.ObjectId(id)),
+            settlesWithOffice: dto.settlesWithOffice ?? false,
+            locationId: dto.locationId ? new Types.ObjectId(dto.locationId) : null,
           },
         ],
         { session },
@@ -200,6 +205,9 @@ export class UserManagementService {
         current.allowedCashAccountIds.map((accountId) => accountId.toString()),
       );
     }
+    if (provided('locationId')) {
+      await this.assertLocation(dto.locationId);
+    }
 
     await this.inTransaction(async (session) => {
       const existing = await this.getById(id, session);
@@ -218,6 +226,8 @@ export class UserManagementService {
           (accountId) => new Types.ObjectId(accountId),
         );
       }
+      if (provided('settlesWithOffice')) existing.settlesWithOffice = Boolean(dto.settlesWithOffice);
+      if (provided('locationId')) existing.locationId = dto.locationId ? new Types.ObjectId(dto.locationId) : null;
 
       const changes = diffFields(before, await this.display(existing, session), AUDITED_FIELDS);
       if (changes.length === 0) {
@@ -312,8 +322,9 @@ export class UserManagementService {
   }
 
   /**
-   * Only a user with no history can be deleted: not linked to a cashier and
-   * never the actor of an audited change. Otherwise deactivate them.
+   * Only a user with no history can be deleted: never on a voucher as
+   * Collected By / Paid By and never the actor of an audited change.
+   * Otherwise deactivate them.
    */
   async remove(id: string, actor: Actor): Promise<{ success: true }> {
     if (id === actor.id) {
@@ -321,11 +332,9 @@ export class UserManagementService {
     }
     return this.inTransaction(async (session) => {
       const user = await this.getById(id, session);
-      const cashier = await this.cashierModel.findOne({ linkedUserId: user._id }).session(session).exec();
-      if (cashier) {
-        throw new ConflictException(
-          `Cannot delete user ${user.email}: they are linked to cashier ${cashier.code} (${cashier.name}). Deactivate the user instead.`,
-        );
+      const usedBy = await this.usage.findUsage(user._id, session);
+      if (usedBy) {
+        throw new ConflictException(`Cannot delete user ${user.email}: they are on ${usedBy}. Deactivate the user instead.`);
       }
       if (await this.auditService.hasActor(user._id, session)) {
         throw new ConflictException(`Cannot delete user ${user.email}: they have recorded activity. Deactivate the user instead.`);
@@ -413,7 +422,7 @@ export class UserManagementService {
       const account = await this.ledgerAccountService.findById(accountId);
       if (!ALLOWED_CASH_ACCOUNT_TYPES.includes(account.type)) {
         throw new BadRequestException(
-          `${account.code} (${account.name}) is a ${account.type} account. Only cash and wallet accounts can be allowed.`,
+          `${account.code} (${account.name}) is a ${account.type} account. Only cash, wallet and cheque accounts can be allowed.`,
         );
       }
       if (account.status !== LedgerAccountStatus.ACTIVE) {
@@ -422,9 +431,16 @@ export class UserManagementService {
     }
   }
 
+  private async assertLocation(id: string | null | undefined): Promise<void> {
+    if (id && !(await this.locationModel.exists({ _id: id }).exec())) {
+      throw new NotFoundException(`Location ${id} not found`);
+    }
+  }
+
   private async display(user: UserDocument, session: ClientSession): Promise<UserDisplay> {
-    const [role, accounts] = await Promise.all([
+    const [role, location, accounts] = await Promise.all([
       this.roleModel.findById(this.roleIdOf(user)).session(session).exec(),
+      user.locationId ? this.locationModel.findById(user.locationId).select('name').session(session).exec() : null,
       this.ledgerAccountService.getSummaries(
         user.allowedCashAccountIds.map((accountId) => accountId.toString()),
         session,
@@ -440,24 +456,25 @@ export class UserManagementService {
       role: role?.name ?? this.roleIdOf(user),
       status: isUserActive(user) ? UserStatus.ACTIVE : UserStatus.INACTIVE,
       allowedCashAccounts: accountLabels.length > 0 ? accountLabels.join(', ') : null,
+      settlesWithOffice: user.settlesWithOffice ? 'Yes' : 'No',
+      location: user.locationId ? (location?.name ?? user.locationId.toString()) : null,
     };
   }
 
   private async toViews(users: UserDocument[]): Promise<UserView[]> {
     const accountIds = users.flatMap((user) => user.allowedCashAccountIds.map((accountId) => accountId.toString()));
-    const [accounts, cashiers] = await Promise.all([
+    const [accounts, locations] = await Promise.all([
       this.ledgerAccountService.getSummaries(accountIds),
-      this.cashierModel
-        .find({ linkedUserId: { $in: users.map((user) => user._id) } })
-        .select('code name status staffType settlesWithOffice linkedUserId')
+      this.locationModel
+        .find({ _id: { $in: users.flatMap((user) => (user.locationId ? [user.locationId] : [])) } })
+        .select('name')
         .lean()
         .exec(),
     ]);
-    const cashierByUser = new Map(cashiers.map((cashier) => [cashier.linkedUserId!.toString(), cashier]));
+    const locationName = new Map(locations.map((location) => [location._id.toString(), location.name]));
 
     return users.map((user) => {
       const role = user.role instanceof Types.ObjectId ? null : (user.role as RoleDocument | null);
-      const cashier = cashierByUser.get(user.id as string);
       return {
         id: user.id as string,
         name: user.name,
@@ -469,15 +486,9 @@ export class UserManagementService {
           const account = accounts.get(accountId.toString());
           return account ? [{ id: accountId.toString(), code: account.code, name: account.name, type: account.type }] : [];
         }),
-        linkedCashier: cashier
-          ? {
-              id: cashier._id.toString(),
-              code: cashier.code,
-              name: cashier.name,
-              status: cashier.status,
-              staffType: cashier.staffType ?? StaffType.CASHIER,
-              settlesWithOffice: cashier.settlesWithOffice ?? false,
-            }
+        settlesWithOffice: Boolean(user.settlesWithOffice),
+        location: user.locationId
+          ? { id: user.locationId.toString(), name: locationName.get(user.locationId.toString()) ?? null }
           : null,
         createdAt: (user as unknown as { createdAt?: Date }).createdAt,
         updatedAt: (user as unknown as { updatedAt?: Date }).updatedAt,

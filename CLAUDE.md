@@ -22,16 +22,17 @@ multi-location stock. Replaces legacy ERP (atACC).
 
 ## Where things live (verify on first use, then correct this section)
 src/modules/<domain>/: auth, users, roles, location, product-group,
-accounts (LedgerAccount), party, cashier (= Staff), company, cash-receipt,
-cash-payment, cash-handover, dashboard, files, sequence, audit, comments.
+accounts (LedgerAccount), party, company, cash-receipt, cash-payment,
+cash-handover, reports, dashboard, files, sequence, audit, comments.
+Voucher modules live under src/modules/accounting/.
 Shared: PERMISSIONS constant, VoucherPostingService, SequenceService,
 AuditService, DataScope helper, StorageService, amount-in-words, sum2.
 
 ## Status (update after each step)
 Built: auth, locations, product groups, accounts, customers/suppliers,
-cashiers, company profile, cash receipt, cash payment, dashboard cash card,
-MEGA storage.
-In progress: Staff rename, Users/Roles + scoping, Cash Handover + salesman report.
+company profile, cash receipt, cash payment, dashboard cash card, MEGA
+storage, Users/Roles + scoping (Cashier module removed; collectors are users).
+In progress: Cash Handover (balance-based) + salesman report.
 Planned: products, opening balances, stock engine, purchase invoice, stock
 transfer, sales invoice, allocation, bundling, returns, reports, migration.
 
@@ -40,23 +41,23 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   New permission = constant + seed. Seed is idempotent and upserts admin with
   ALL permissions. Users re-login to get new permissions. Vouchers use
   :read :create :edit :cancel (not :manage). Also balances:view,
-  users:manage, roles:manage, cash-handovers:approve, reports:salesman.
+  users:manage, roles:manage, vouchers:select-collector, reports:salesman,
+  cash-handovers:read|create|approve|cancel.
 - Roles: dataScope own|all. Scope own: list/get/pdf/activity/comments return
-  only vouchers where createdBy = me OR collector = my linked staff, else
-  404. On create, collector forced to my staff record; header account must
-  be in my allowedCashAccountIds, else 403. No balances:view = strip
+  only vouchers where createdBy = me OR collectedById = me, else 404.
+  Header account must be in my allowedCashAccountIds, else 403. No balances:view = strip
   balances from lookups and old-balance. Use the DataScope helper for every
   voucher type.
 - People on vouchers: "Created By" = login, automatic, from JWT only, never
-  the body. "Collected By" (receipt) / "Paid By" (payment) = Staff member who
-  handled the money, chosen on the form. Staff = Cashier module internally
-  (cashierId, /cashiers, CSH- codes). Staff has staffType (cashier |
-  van_salesman | accountant | owner | other) and settlesWithOffice (true only
-  for van salesmen by default). Inactive staff stay visible on old vouchers,
-  not choosable on new ones. Linked login: Cashier.linkedUserId, unique.
+  the body. "Collected By" (receipt) / "Paid By" (payment) = a User: collectedById + collectedByName snapshot. Default =
+  me; another user needs vouchers:select-collector (else 403) and must be
+  active with the type's :create permission. GET /users/lookup?for=
+  receipt|payment. User.locationId filters the salesman report. Inactive users
+  stay visible on old vouchers. Old `cashiers` collection kept, unused
+  (pnpm migrate:collected-by moved vouchers).
 - Codes: SequenceService (atomic $inc, takes a Mongo session). Clients never
   send codes; immutable. BR/WH/ST/VAN, PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CSH, CR, CP, HO.
+  CHQ, CR, CP, HO.
 - Money: Balance = debits - credits (customer owing us is positive).
   LedgerEntry insert-only. Every voucher posts via VoucherPostingService in
   ONE Mongo transaction (number, entries, balances, audit). Totals computed
@@ -67,11 +68,17 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   supplier, customer, expense, other; overspending cash/wallet returns
   warnings, needs acknowledgeWarnings (bank exempt). Lists filter by
   paymentMethod (cash|bank) and date, status, account, staff, q.
-- Handover: only staff with settlesWithOffice. Receipts settlementStatus
-  unsettled|submitted|settled (server-set); submit locks receipts. Approver
-  != submitter unless company allowSelfApproval (default off). Approval posts
-  only receivedCash (debit receiving account, credit van account); shortage
-  stays in van balance; excess rejected; bank receipts only marked verified.
+- Accounts: type cheque (CHQ-) = cheques in hand, cash-like, not in the
+  dashboard Cash & Bank total. Receipt header cash|wallet|cheque|bank;
+  paymentMethod cash|cheque|bank; cheque needs paymentReference (+chequeDate).
+- Handover (collection `handovers`; old `cash_handovers` kept, unused):
+  balance-based. Pending = balances of the user's allowedCashAccountIds
+  (cash/wallet/cheque); no flags on receipts. Submit per source <= balance
+  minus his other submitted. Approve (not own-scope, not submitter/owner)
+  posts received per line: debit receivedInto (default Company
+  defaultCashInHand / defaultChequesInHand), credit source; short needs a
+  reason. Cancel approved = reversal. Receipt edit/cancel may not take a
+  cash-like account from >= 0 to below zero ("already handed over").
 - Audit/comments: AuditService.record(entry, session) in the same
   transaction; insert-only; /activity merges both.
 - Accounts: scope=company (cash, bank, wallet, income, expense, other) vs

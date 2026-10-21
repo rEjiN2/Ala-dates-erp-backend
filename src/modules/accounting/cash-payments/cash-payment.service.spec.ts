@@ -1,23 +1,46 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BadRequestException } from '@nestjs/common';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Types } from 'mongoose';
 import request from 'supertest';
-import { createVoucherHarness, makeUser, type VoucherHarness } from '../../../../test/voucher-test-module.js';
-import { LedgerAccountStatus, LedgerAccountType } from '../ledger-accounts/schemas/ledger-account.schema.js';
+import {
+  createVoucherHarness,
+  makeUser,
+  type VoucherHarness,
+} from '../../../../test/voucher-test-module.js';
+import {
+  LedgerAccountStatus,
+  LedgerAccountType,
+} from '../ledger-accounts/schemas/ledger-account.schema.js';
 import type { LedgerAccountDocument } from '../ledger-accounts/schemas/ledger-account.schema.js';
-import { CashierStatus, type CashierDocument } from '../../cashier/schemas/cashier.schema.js';
+import { UserStatus } from '../../users/schemas/user.schema.js';
 import { VoucherWarningsException } from '../vouchers/voucher-posting.service.js';
-import { CreateCashPaymentDto, UpdateCashPaymentDto } from './dto/cash-payment.dto.js';
+import {
+  CreateCashPaymentDto,
+  UpdateCashPaymentDto,
+} from './dto/cash-payment.dto.js';
 import { createAppValidationPipe } from '../../../common/pipes/app-validation.pipe.js';
 import { Permission } from '../../roles/permissions.js';
 import { CashPaymentController } from './cash-payment.controller.js';
 import { REQUIRE_PERMISSION_KEY } from '../../../common/decorators/require-permission.decorator.js';
 
-const { CASH, WALLET, BANK, PARTY, SUPPLIER, INCOME, EXPENSE, OTHER } = LedgerAccountType;
+const { CASH, WALLET, BANK, PARTY, SUPPLIER, INCOME, EXPENSE, OTHER } =
+  LedgerAccountType;
 
 describe('CashPaymentService', () => {
   let h: VoucherHarness;
-  let cashier: CashierDocument;
   const sachin = makeUser('Sachin');
   const omar = makeUser('Omar');
 
@@ -30,7 +53,8 @@ describe('CashPaymentService', () => {
   });
 
   beforeEach(async () => {
-    cashier = await h.cashiers.create({ name: 'Sachin' }, sachin);
+    await h.persistUser(sachin);
+    await h.persistUser(omar);
   });
 
   afterEach(async () => {
@@ -55,7 +79,12 @@ describe('CashPaymentService', () => {
 
   const pay = (
     from: LedgerAccountDocument,
-    lines: { account: LedgerAccountDocument; amount: number; vat?: number; narration?: string }[],
+    lines: {
+      account: LedgerAccountDocument;
+      amount: number;
+      vat?: number;
+      narration?: string;
+    }[],
     extra: Partial<CreateCashPaymentDto> = {},
     actor = sachin,
   ) =>
@@ -63,15 +92,21 @@ describe('CashPaymentService', () => {
       {
         voucherDate: '2026-10-01',
         paidFromAccountId: from.id,
-        cashierId: cashier.id,
-        lines: lines.map(({ account, ...line }) => ({ accountId: account.id, ...line })),
+        lines: lines.map(({ account, ...line }) => ({
+          accountId: account.id,
+          ...line,
+        })),
         ...extra,
       },
       actor,
     );
 
   const entriesOf = async (voucherId: Types.ObjectId) =>
-    (await h.models.entry.find({ voucherId }).sort({ _id: 1 }).lean().exec()) as unknown as {
+    (await h.models.entry
+      .find({ voucherId })
+      .sort({ _id: 1 })
+      .lean()
+      .exec()) as unknown as {
       accountId: Types.ObjectId;
       debit: number;
       credit: number;
@@ -83,7 +118,9 @@ describe('CashPaymentService', () => {
     it('credits the paid-from account and debits each line: the opposite of a receipt', async () => {
       const { cash, supplier } = await accounts();
 
-      const payment = await pay(cash, [{ account: supplier, amount: 100, vat: 5, narration: 'Invoice 9' }]);
+      const payment = await pay(cash, [
+        { account: supplier, amount: 100, vat: 5, narration: 'Invoice 9' },
+      ]);
       expect(payment).toMatchObject({
         voucherNo: 'CP-0001',
         grossTotal: 100,
@@ -91,12 +128,17 @@ describe('CashPaymentService', () => {
         grandTotal: 105,
         paymentMethod: 'cash',
       });
-      expect(payment.lines[0]).toMatchObject({ oldBalance: -500, netAmount: 105 });
+      expect(payment.lines[0]).toMatchObject({
+        oldBalance: -500,
+        netAmount: 105,
+      });
       expect(await h.balanceOf(cash)).toBe(895);
       expect(await h.balanceOf(supplier)).toBe(-395);
 
       const entries = await entriesOf(payment._id);
-      expect(entries.map((e) => [e.accountId.toString(), e.debit, e.credit, e.kind])).toEqual([
+      expect(
+        entries.map((e) => [e.accountId.toString(), e.debit, e.credit, e.kind]),
+      ).toEqual([
         [cash.id, 0, 105, 'posting'],
         [supplier.id, 105, 0, 'posting'],
       ]);
@@ -106,7 +148,6 @@ describe('CashPaymentService', () => {
         {
           voucherDate: '2026-10-01',
           cashAccountId: cash.id,
-          cashierId: cashier.id,
           lines: [{ accountId: supplier.id, amount: 100, vat: 5 }],
         },
         sachin,
@@ -118,11 +159,16 @@ describe('CashPaymentService', () => {
     it('gives parallel saves unique, gapless numbers', async () => {
       const { cash, expense } = await accounts();
       const payments = await Promise.all(
-        Array.from({ length: 10 }, () => pay(cash, [{ account: expense, amount: 1 }])),
+        Array.from({ length: 10 }, () =>
+          pay(cash, [{ account: expense, amount: 1 }]),
+        ),
       );
 
       expect(payments.map((p) => p.voucherNo).sort()).toEqual(
-        Array.from({ length: 10 }, (_, i) => `CP-${String(i + 1).padStart(4, '0')}`),
+        Array.from(
+          { length: 10 },
+          (_, i) => `CP-${String(i + 1).padStart(4, '0')}`,
+        ),
       );
       expect(await h.balanceOf(cash)).toBe(990);
       expect(await h.balanceOf(expense)).toBe(10);
@@ -131,30 +177,91 @@ describe('CashPaymentService', () => {
     it('writes nothing at all when the transaction fails part-way', async () => {
       const { cash, supplier } = await accounts();
       const record = h.audit.record.bind(h.audit);
-      vi.spyOn(h.audit, 'record').mockImplementationOnce(async (entry, session) => {
-        await record(entry, session);
-        throw new Error('disk full');
-      });
+      vi.spyOn(h.audit, 'record').mockImplementationOnce(
+        async (entry, session) => {
+          await record(entry, session);
+          throw new Error('disk full');
+        },
+      );
 
-      await expect(pay(cash, [{ account: supplier, amount: 100 }])).rejects.toThrow('disk full');
+      await expect(
+        pay(cash, [{ account: supplier, amount: 100 }]),
+      ).rejects.toThrow('disk full');
       expect(await h.models.payment.countDocuments().exec()).toBe(0);
       expect(await h.models.entry.countDocuments().exec()).toBe(0);
-      expect(await h.models.audit.countDocuments({ entityType: 'cash-payment' }).exec()).toBe(0);
+      expect(
+        await h.models.audit
+          .countDocuments({ entityType: 'cash-payment' })
+          .exec(),
+      ).toBe(0);
       expect(await h.balanceOf(cash)).toBe(1000);
       expect(await h.balanceOf(supplier)).toBe(-500);
-      expect((await pay(cash, [{ account: supplier, amount: 100 }])).voucherNo).toBe('CP-0001');
+      expect(
+        (await pay(cash, [{ account: supplier, amount: 100 }])).voucherNo,
+      ).toBe('CP-0001');
     });
 
-    it('requires an active cashier and takes no server-owned fields from the body', async () => {
+    it('defaults Paid By to the actor; another user must be eligible and needs select-collector', async () => {
       const { cash, supplier } = await accounts();
-      await h.cashiers.update(cashier.id, { status: CashierStatus.INACTIVE }, sachin);
-      await expect(pay(cash, [{ account: supplier, amount: 10 }])).rejects.toThrow(/is inactive/);
+      const own = await pay(cash, [{ account: supplier, amount: 10 }]);
+      expect(own).toMatchObject({ collectedByName: 'Sachin' });
+      expect(own.collectedById?.toString()).toBe(sachin.id);
 
+      const forOmar = await pay(cash, [{ account: supplier, amount: 10 }], {
+        collectedById: omar.id,
+      });
+      expect(forOmar).toMatchObject({ collectedByName: 'Omar' });
+      expect(forOmar.collectedById?.toString()).toBe(omar.id);
+
+      const clerk = await h.persistUser(
+        makeUser('Clerk', [Permission.CASH_PAYMENTS_CREATE]),
+      );
+      await expect(
+        pay(
+          cash,
+          [{ account: supplier, amount: 10 }],
+          { collectedById: omar.id },
+          clerk,
+        ),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'You can only record vouchers collected by yourself.',
+        ),
+      );
+
+      const missing = new Types.ObjectId().toString();
+      await expect(
+        pay(cash, [{ account: supplier, amount: 10 }], {
+          collectedById: missing,
+        }),
+      ).rejects.toThrow(new NotFoundException(`User ${missing} not found`));
+      const gone = await h.persistUser(makeUser('Gone'), {
+        status: UserStatus.INACTIVE,
+      });
+      await expect(
+        pay(cash, [{ account: supplier, amount: 10 }], {
+          collectedById: gone.id,
+        }),
+      ).rejects.toThrow('User Gone is inactive');
+      const reader = await h.persistUser(
+        makeUser('Reader', [Permission.CASH_RECEIPTS_CREATE]),
+      );
+      await expect(
+        pay(cash, [{ account: supplier, amount: 10 }], {
+          collectedById: reader.id,
+        }),
+      ).rejects.toThrow(
+        `User Reader cannot be chosen here: their role lacks ${Permission.CASH_PAYMENTS_CREATE}`,
+      );
+      expect(await h.models.payment.countDocuments().exec()).toBe(2);
+    });
+
+    it('takes no server-owned fields from the body', async () => {
+      const { cash, supplier } = await accounts();
       const pipe = createAppValidationPipe();
       const body = {
         voucherDate: '2026-10-01',
         paidFromAccountId: cash.id,
-        cashierId: cashier.id,
         lines: [{ accountId: supplier.id, amount: 10 }],
       };
       for (const extra of [
@@ -164,43 +271,71 @@ describe('CashPaymentService', () => {
         { createdBy: { id: sachin.id, name: 'X' } },
       ]) {
         await expect(
-          pipe.transform({ ...body, ...extra }, { type: 'body', metatype: CreateCashPaymentDto }),
+          pipe.transform(
+            { ...body, ...extra },
+            { type: 'body', metatype: CreateCashPaymentDto },
+          ),
         ).rejects.toBeInstanceOf(BadRequestException);
       }
-      // Optional in the body (an "own"-scoped user gets their linked cashier), but required by the service otherwise.
-      const { cashierId: _cashierId, ...withoutCashier } = body;
       await expect(
-        h.payments.create(withoutCashier as unknown as CreateCashPaymentDto, sachin),
-      ).rejects.toThrow('cashierId is required');
+        pipe.transform(
+          { ...body, collectedById: 'not-an-id' },
+          { type: 'body', metatype: CreateCashPaymentDto },
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
   describe('account types', () => {
     it('accepts cash, wallet and bank as paid-from, and a bank payment prints as one', async () => {
       const { bank, wallet, cash, supplier } = await accounts();
-      expect((await pay(cash, [{ account: supplier, amount: 1 }])).paymentMethod).toBe('cash');
-      expect((await pay(wallet, [{ account: supplier, amount: 1 }])).paymentMethod).toBe('cash');
-      expect((await pay(bank, [{ account: supplier, amount: 1 }], { acknowledgeWarnings: false })).paymentMethod).toBe(
-        'bank',
-      );
+      expect(
+        (await pay(cash, [{ account: supplier, amount: 1 }])).paymentMethod,
+      ).toBe('cash');
+      expect(
+        (await pay(wallet, [{ account: supplier, amount: 1 }])).paymentMethod,
+      ).toBe('cash');
+      expect(
+        (
+          await pay(bank, [{ account: supplier, amount: 1 }], {
+            acknowledgeWarnings: false,
+          })
+        ).paymentMethod,
+      ).toBe('bank');
     });
 
     it('rejects any other paid-from account, and an inactive one', async () => {
       const { customer, expense, supplier } = await accounts();
       for (const from of [customer, expense, supplier]) {
-        await expect(pay(from, [{ account: expense === from ? customer : expense, amount: 1 }])).rejects.toThrow(
+        await expect(
+          pay(from, [
+            { account: expense === from ? customer : expense, amount: 1 },
+          ]),
+        ).rejects.toThrow(
           `${from.code} (${from.name}) is a ${from.type} account. Choose a cash, wallet or bank account.`,
         );
       }
-      const closed = await h.makeAccount('CASH-0009', CASH, 100, 'Closed Till', LedgerAccountStatus.INACTIVE);
-      await expect(pay(closed, [{ account: customer, amount: 1 }])).rejects.toThrow(/inactive/);
+      const closed = await h.makeAccount(
+        'CASH-0009',
+        CASH,
+        100,
+        'Closed Till',
+        LedgerAccountStatus.INACTIVE,
+      );
+      await expect(
+        pay(closed, [{ account: customer, amount: 1 }]),
+      ).rejects.toThrow(/inactive/);
     });
 
     it('accepts supplier, customer, expense, income and other lines', async () => {
-      const { cash, supplier, customer, expense, income, other } = await accounts();
+      const { cash, supplier, customer, expense, income, other } =
+        await accounts();
       const payment = await pay(
         cash,
-        [supplier, customer, expense, income, other].map((account) => ({ account, amount: 10 })),
+        [supplier, customer, expense, income, other].map((account) => ({
+          account,
+          amount: 10,
+        })),
       );
       expect(payment.grandTotal).toBe(50);
     });
@@ -233,7 +368,9 @@ describe('CashPaymentService', () => {
 
       const attempt = pay(cash, [{ account: supplier, amount: 1200 }]);
       await expect(attempt).rejects.toBeInstanceOf(VoucherWarningsException);
-      const error = (await attempt.catch((e: unknown) => e)) as VoucherWarningsException;
+      const error = (await attempt.catch(
+        (e: unknown) => e,
+      )) as VoucherWarningsException;
       expect(error.getStatus()).toBe(409);
       expect(error.warnings).toEqual([
         {
@@ -243,14 +380,17 @@ describe('CashPaymentService', () => {
           accountName: 'Main Cash',
           balanceBefore: 1000,
           balanceAfter: -200,
-          message: 'This cash payment takes Main Cash (CASH-0001) below zero: 1000.00 becomes -200.00.',
+          message:
+            'This cash payment takes Main Cash (CASH-0001) below zero: 1000.00 becomes -200.00.',
         },
       ]);
       expect(await h.models.payment.countDocuments().exec()).toBe(0);
       expect(await h.models.entry.countDocuments().exec()).toBe(0);
       expect(await h.balanceOf(cash)).toBe(1000);
 
-      const saved = await pay(cash, [{ account: supplier, amount: 1200 }], { acknowledgeWarnings: true });
+      const saved = await pay(cash, [{ account: supplier, amount: 1200 }], {
+        acknowledgeWarnings: true,
+      });
       expect(saved.voucherNo).toBe('CP-0001');
       expect(await h.balanceOf(cash)).toBe(-200);
     });
@@ -260,14 +400,19 @@ describe('CashPaymentService', () => {
       const body = {
         voucherDate: '2026-10-01',
         paidFromAccountId: wallet.id,
-        cashierId: cashier.id,
         lines: [{ accountId: expense.id, amount: 50 }],
       };
 
-      const refused = await request(h.app.getHttpServer()).post('/cash-payments').send(body);
+      const refused = await request(h.app.getHttpServer())
+        .post('/cash-payments')
+        .send(body);
       expect(refused.status).toBe(409);
       expect(refused.body.warnings).toEqual([
-        expect.objectContaining({ code: 'NEGATIVE_BALANCE', accountCode: 'WAL-0001', balanceAfter: -20 }),
+        expect.objectContaining({
+          code: 'NEGATIVE_BALANCE',
+          accountCode: 'WAL-0001',
+          balanceAfter: -20,
+        }),
       ]);
       expect(refused.body.message).toMatch(/acknowledgeWarnings: true/);
 
@@ -285,16 +430,27 @@ describe('CashPaymentService', () => {
 
     it('warns on an edit that takes cash further below zero, but not on one that leaves it as it was', async () => {
       const { cash, supplier } = await accounts();
-      const payment = await pay(cash, [{ account: supplier, amount: 1100 }], { acknowledgeWarnings: true });
+      const payment = await pay(cash, [{ account: supplier, amount: 1100 }], {
+        acknowledgeWarnings: true,
+      });
 
-      await expect(h.payments.update(payment.id, { comments: 'Checked' }, sachin)).resolves.toBeDefined();
       await expect(
-        h.payments.update(payment.id, { lines: [{ accountId: supplier.id, amount: 1300 }] }, sachin),
+        h.payments.update(payment.id, { comments: 'Checked' }, sachin),
+      ).resolves.toBeDefined();
+      await expect(
+        h.payments.update(
+          payment.id,
+          { lines: [{ accountId: supplier.id, amount: 1300 }] },
+          sachin,
+        ),
       ).rejects.toBeInstanceOf(VoucherWarningsException);
       expect(await h.balanceOf(cash)).toBe(-100);
       await h.payments.update(
         payment.id,
-        { lines: [{ accountId: supplier.id, amount: 1300 }], acknowledgeWarnings: true },
+        {
+          lines: [{ accountId: supplier.id, amount: 1300 }],
+          acknowledgeWarnings: true,
+        },
         sachin,
       );
       expect(await h.balanceOf(cash)).toBe(-300);
@@ -308,7 +464,11 @@ describe('CashPaymentService', () => {
 
       const edited = await h.payments.update(
         payment.id,
-        { paidFromAccountId: bank.id, lines: [{ accountId: expense.id, amount: 250 }], changeNote: 'Paid by transfer' },
+        {
+          paidFromAccountId: bank.id,
+          lines: [{ accountId: expense.id, amount: 250 }],
+          changeNote: 'Paid by transfer',
+        },
         omar,
       );
       expect(edited.paymentMethod).toBe('bank');
@@ -318,15 +478,28 @@ describe('CashPaymentService', () => {
       expect(await h.balanceOf(expense)).toBe(250);
 
       const [entry] = await h.audit.findForEntity('cash-payment', payment._id);
-      expect(entry).toMatchObject({ action: 'updated', actorName: 'Omar', reason: 'Paid by transfer' });
+      expect(entry).toMatchObject({
+        action: 'updated',
+        actorName: 'Omar',
+        reason: 'Paid by transfer',
+      });
       expect(entry.changes).toEqual(
-        expect.arrayContaining([{ field: 'cashAccount', label: 'Paid from', from: 'Main Cash', to: 'ADCB' }]),
+        expect.arrayContaining([
+          {
+            field: 'cashAccount',
+            label: 'Paid from',
+            from: 'Main Cash',
+            to: 'ADCB',
+          },
+        ]),
       );
 
       await h.payments.cancel(payment.id, { reason: 'Duplicate' }, omar);
       expect(await h.balanceOf(bank)).toBe(0);
       expect(await h.balanceOf(expense)).toBe(0);
-      expect((await entriesOf(payment._id)).map((e) => `${e.kind}:${e.cause}`)).toEqual([
+      expect(
+        (await entriesOf(payment._id)).map((e) => `${e.kind}:${e.cause}`),
+      ).toEqual([
         'posting:created',
         'posting:created',
         'reversal:updated',
@@ -338,28 +511,78 @@ describe('CashPaymentService', () => {
       ]);
     });
 
+    it('changes Paid By on edit under the create rules, records it in the diff, and never clears it', async () => {
+      const { cash, supplier } = await accounts();
+      const payment = await pay(cash, [{ account: supplier, amount: 100 }]);
+
+      await expect(
+        h.payments.update(
+          payment.id,
+          { collectedById: null } as unknown as UpdateCashPaymentDto,
+          sachin,
+        ),
+      ).rejects.toThrow(BadRequestException);
+      const clerk = await h.persistUser(
+        makeUser('Clerk', [
+          Permission.CASH_PAYMENTS_CREATE,
+          Permission.CASH_PAYMENTS_EDIT,
+        ]),
+      );
+      await expect(
+        h.payments.update(payment.id, { collectedById: omar.id }, clerk),
+      ).rejects.toThrow(ForbiddenException);
+      const reader = await h.persistUser(
+        makeUser('Reader', [Permission.CASH_RECEIPTS_CREATE]),
+      );
+      await expect(
+        h.payments.update(payment.id, { collectedById: reader.id }, sachin),
+      ).rejects.toThrow(/their role lacks/);
+
+      const edited = await h.payments.update(
+        payment.id,
+        { collectedById: omar.id },
+        sachin,
+      );
+      expect(edited).toMatchObject({ collectedByName: 'Omar' });
+      const [entry] = await h.audit.findForEntity('cash-payment', payment._id);
+      expect(entry.changes).toEqual([
+        { field: 'collectedBy', label: 'Paid By', from: 'Sachin', to: 'Omar' },
+      ]);
+      // Naming the current collector again is not a change.
+      await expect(
+        h.payments.update(payment.id, { collectedById: omar.id }, sachin),
+      ).rejects.toThrow('No changes to save');
+    });
+
     it('needs a cancel reason, refuses edits after cancel, and rejects a no-change edit', async () => {
       const { cash, supplier } = await accounts();
       const payment = await pay(cash, [{ account: supplier, amount: 100 }]);
 
-      await expect(h.payments.update(payment.id, { changeNote: 'nothing' }, sachin)).rejects.toThrow(
-        'No changes to save',
-      );
+      await expect(
+        h.payments.update(payment.id, { changeNote: 'nothing' }, sachin),
+      ).rejects.toThrow('No changes to save');
       for (const reason of ['', 'ab', '   ']) {
-        await expect(h.payments.cancel(payment.id, { reason }, sachin)).rejects.toThrow(/at least 3 characters/);
+        await expect(
+          h.payments.cancel(payment.id, { reason }, sachin),
+        ).rejects.toThrow(/at least 3 characters/);
       }
       await h.payments.cancel(payment.id, { reason: 'Wrong supplier' }, sachin);
-      await expect(h.payments.update(payment.id, { comments: 'x' }, sachin)).rejects.toThrow(
+      await expect(
+        h.payments.update(payment.id, { comments: 'x' }, sachin),
+      ).rejects.toThrow(
         `Cash payment CP-0001 is cancelled and cannot be edited`,
       );
-      await expect(h.payments.cancel(payment.id, { reason: 'Again' }, sachin)).rejects.toThrow(
-        /cannot be cancelled again/,
-      );
+      await expect(
+        h.payments.cancel(payment.id, { reason: 'Again' }, sachin),
+      ).rejects.toThrow(/cannot be cancelled again/);
       expect(await h.balanceOf(cash)).toBe(1000);
 
       const pipe = createAppValidationPipe();
       await expect(
-        pipe.transform({ voucherNo: 'CP-1' }, { type: 'body', metatype: UpdateCashPaymentDto }),
+        pipe.transform(
+          { voucherNo: 'CP-1' },
+          { type: 'body', metatype: UpdateCashPaymentDto },
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
@@ -367,7 +590,9 @@ describe('CashPaymentService', () => {
   describe('list', () => {
     it('filters (including paidFromAccountId) and summarises excluding cancelled payments', async () => {
       const { cash, bank, supplier, expense } = await accounts();
-      await pay(cash, [{ account: supplier, amount: 100 }], { paymentReference: 'CHQ 77' });
+      await pay(cash, [{ account: supplier, amount: 100 }], {
+        paymentReference: 'CHQ 77',
+      });
       await pay(bank, [{ account: expense, amount: 40 }]);
       const third = await pay(cash, [{ account: expense, amount: 10 }]);
       await h.payments.cancel(third.id, { reason: 'Duplicate' }, sachin);
@@ -382,25 +607,52 @@ describe('CashPaymentService', () => {
         }),
       );
       expect(all.items[0]).not.toHaveProperty('cashAccount');
+      expect(all.items[0].collectedBy).toEqual({
+        id: sachin.id,
+        name: 'Sachin',
+      });
 
-      const fromCash = await h.payments.findAll({ paidFromAccountId: cash.id, status: 'posted' });
-      expect(fromCash.items.map((row) => [row.voucherNo, row.paidFromAccount])).toEqual([
-        ['CP-0001', { id: cash.id, name: 'Main Cash' }],
-      ]);
-      expect((await h.payments.findAll({ q: 'chq 77' })).items.map((r) => r.voucherNo)).toEqual(['CP-0001']);
-      expect((await h.payments.findAll({ accountId: expense.id })).summary).toEqual({ count: 2, total: 40 });
-      expect((await h.payments.findAll({ sortBy: 'amount', sortDir: 'desc' })).items.map((r) => r.grandTotal)).toEqual([
-        100, 40, 10,
-      ]);
+      const fromCash = await h.payments.findAll({
+        paidFromAccountId: cash.id,
+        status: 'posted',
+      });
+      expect(
+        fromCash.items.map((row) => [row.voucherNo, row.paidFromAccount]),
+      ).toEqual([['CP-0001', { id: cash.id, name: 'Main Cash' }]]);
+      expect(
+        (await h.payments.findAll({ q: 'chq 77' })).items.map(
+          (r) => r.voucherNo,
+        ),
+      ).toEqual(['CP-0001']);
+      expect(
+        (await h.payments.findAll({ accountId: expense.id })).summary,
+      ).toEqual({ count: 2, total: 40 });
+      expect(
+        (
+          await h.payments.findAll({ sortBy: 'amount', sortDir: 'desc' })
+        ).items.map((r) => r.grandTotal),
+      ).toEqual([100, 40, 10]);
+
+      await pay(cash, [{ account: expense, amount: 7 }], {
+        collectedById: omar.id,
+      });
+      const byOmar = await h.payments.findAll({ collectedBy: omar.id });
+      expect(
+        byOmar.items.map((row) => [row.grandTotal, row.collectedBy]),
+      ).toEqual([[7, { id: omar.id, name: 'Omar' }]]);
     });
   });
 
   describe('PDF', () => {
     it('prints CASH PAYMENT VOUCHER with a Paid To table and Received by signature, then DUPLICATEs', async () => {
       const { cash, supplier } = await accounts();
-      const payment = await pay(cash, [{ account: supplier, amount: 1250.5, narration: 'Dates lot 4' }], {
-        acknowledgeWarnings: true,
-      });
+      const payment = await pay(
+        cash,
+        [{ account: supplier, amount: 1250.5, narration: 'Dates lot 4' }],
+        {
+          acknowledgeWarnings: true,
+        },
+      );
 
       const first = await h.payments.print(payment.id, sachin);
       const text = JSON.stringify(first.definition);
@@ -423,14 +675,20 @@ describe('CashPaymentService', () => {
       expect(first.definition.watermark).toBeUndefined();
 
       const second = await h.payments.print(payment.id, omar);
-      expect(JSON.stringify(second.definition)).toContain('DUPLICATE - Reprint 1');
-      const prints = (await h.audit.findForEntity('cash-payment', payment._id)).filter((e) => e.action === 'printed');
+      expect(JSON.stringify(second.definition)).toContain(
+        'DUPLICATE - Reprint 1',
+      );
+      const prints = (
+        await h.audit.findForEntity('cash-payment', payment._id)
+      ).filter((e) => e.action === 'printed');
       expect(prints.map((e) => e.actorName)).toEqual(['Omar', 'Sachin']);
     });
 
     it('prints BANK PAYMENT VOUCHER for a bank account and watermarks a cancelled payment', async () => {
       const { bank, supplier } = await accounts();
-      const payment = await pay(bank, [{ account: supplier, amount: 10 }], { paymentReference: 'TT-55' });
+      const payment = await pay(bank, [{ account: supplier, amount: 10 }], {
+        paymentReference: 'TT-55',
+      });
       await h.payments.cancel(payment.id, { reason: 'Bounced' }, omar);
 
       const { definition } = await h.payments.print(payment.id, sachin);
@@ -454,7 +712,9 @@ describe('CashPaymentService', () => {
         });
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toBe('application/pdf');
-      expect(res.headers['content-disposition']).toBe('inline; filename="CP-0001.pdf"');
+      expect(res.headers['content-disposition']).toBe(
+        'inline; filename="CP-0001.pdf"',
+      );
       expect((res.body as Buffer).subarray(0, 4).toString()).toBe('%PDF');
     });
   });
@@ -467,36 +727,63 @@ describe('CashPaymentService', () => {
 
       h.harness.tokenUser = makeUser('Nobody', []);
       expect((await request(server).get('/cash-payments')).status).toBe(403);
-      expect((await request(server).get(`/cash-payments/${payment.id}`)).status).toBe(403);
-      expect((await request(server).get(`/cash-payments/${payment.id}/pdf`)).status).toBe(403);
       expect(
-        (await request(server).get('/comments').query({ entityType: 'cash-payment', entityId: payment.id })).status,
+        (await request(server).get(`/cash-payments/${payment.id}`)).status,
+      ).toBe(403);
+      expect(
+        (await request(server).get(`/cash-payments/${payment.id}/pdf`)).status,
+      ).toBe(403);
+      expect(
+        (
+          await request(server)
+            .get('/comments')
+            .query({ entityType: 'cash-payment', entityId: payment.id })
+        ).status,
       ).toBe(403);
 
       h.harness.tokenUser = makeUser('Viewer', [Permission.CASH_PAYMENTS_READ]);
       const body = {
         voucherDate: '2026-10-01',
         paidFromAccountId: cash.id,
-        cashierId: cashier.id,
         lines: [{ accountId: supplier.id, amount: 1 }],
       };
 
-      expect((await request(server).post('/cash-payments').send(body)).status).toBe(403);
-      expect((await request(server).patch(`/cash-payments/${payment.id}`).send({ comments: 'x' })).status).toBe(403);
-      expect((await request(server).post(`/cash-payments/${payment.id}/cancel`).send({ reason: 'Nope' })).status).toBe(
-        403,
-      );
+      expect(
+        (await request(server).post('/cash-payments').send(body)).status,
+      ).toBe(403);
+      expect(
+        (
+          await request(server)
+            .patch(`/cash-payments/${payment.id}`)
+            .send({ comments: 'x' })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await request(server)
+            .post(`/cash-payments/${payment.id}/cancel`)
+            .send({ reason: 'Nope' })
+        ).status,
+      ).toBe(403);
       expect((await request(server).get('/cash-payments')).status).toBe(200);
-      expect((await request(server).get(`/cash-payments/${payment.id}`)).status).toBe(200);
+      expect(
+        (await request(server).get(`/cash-payments/${payment.id}`)).status,
+      ).toBe(200);
 
       const comment = await request(server)
         .post('/comments')
-        .send({ entityType: 'cash-payment', entityId: payment.id, text: 'Receipt from supplier filed' });
+        .send({
+          entityType: 'cash-payment',
+          entityId: payment.id,
+          text: 'Receipt from supplier filed',
+        });
       expect(comment.status).toBe(201);
       const activity = await request(server)
         .get('/activity')
         .query({ entityType: 'cash-payment', entityId: payment.id });
-      expect(activity.body.items.map((item: { kind: string }) => item.kind)).toEqual(['comment', 'audit']);
+      expect(
+        activity.body.items.map((item: { kind: string }) => item.kind),
+      ).toEqual(['comment', 'audit']);
       expect(activity.body.commentCount).toBe(1);
       for (const permission of [
         Permission.CASH_PAYMENTS_READ,
@@ -514,9 +801,12 @@ describe('CashPaymentService', () => {
         ['update', Permission.CASH_PAYMENTS_EDIT],
         ['cancel', Permission.CASH_PAYMENTS_CANCEL],
       ] as const) {
-        expect(Reflect.getMetadata(REQUIRE_PERMISSION_KEY, CashPaymentController.prototype[method])).toEqual([
-          permission,
-        ]);
+        expect(
+          Reflect.getMetadata(
+            REQUIRE_PERMISSION_KEY,
+            CashPaymentController.prototype[method],
+          ),
+        ).toEqual([permission]);
       }
     });
   });

@@ -15,6 +15,9 @@ import { AuditService } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/schemas/audit-log.schema.js';
 import { diffFields, type DiffField } from '../audit/field-diff.js';
 import { EntityAccessRegistry } from '../comments/entity-access.registry.js';
+import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
+import { LedgerAccountUsageRegistry } from '../accounting/ledger-accounts/ledger-account-usage.registry.js';
+import { LedgerAccountType } from '../accounting/ledger-accounts/schemas/ledger-account.schema.js';
 import { type Actor, toUserSnapshot, userRefOf } from '../../common/schemas/user-snapshot.schema.js';
 import { runInTransaction } from '../../common/utils/transaction.util.js';
 
@@ -45,11 +48,25 @@ export interface CompanySettingsView extends Record<EditableField, string | null
   /** Our own file reference; fetch the image through GET /files/:id. */
   logo: { id: string; url: string } | null;
   allowSelfApproval: boolean;
+  defaultCashInHandAccountId: string | null;
+  defaultChequesInHandAccountId: string | null;
   updatedBy: { id: string; name: string } | null;
   updatedAt: Date | null;
 }
 
-type DisplayRecord = Record<EditableField | 'logo' | 'allowSelfApproval', string | null>;
+type DisplayRecord = Record<
+  EditableField | 'logo' | 'allowSelfApproval' | 'defaultCashInHandAccount' | 'defaultChequesInHandAccount',
+  string | null
+>;
+
+/** Default handover accounts and the types each may be. */
+const DEFAULT_ACCOUNT_FIELDS = [
+  {
+    field: 'defaultCashInHandAccountId',
+    types: [LedgerAccountType.CASH, LedgerAccountType.WALLET],
+  },
+  { field: 'defaultChequesInHandAccountId', types: [LedgerAccountType.CHEQUE] },
+] as const;
 
 const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'legalName', label: 'Legal name' },
@@ -66,6 +83,8 @@ const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'currencyCode', label: 'Currency' },
   { key: 'receiptFooterText', label: 'Receipt footer text' },
   { key: 'allowSelfApproval', label: 'Allow self-approval of handovers' },
+  { key: 'defaultCashInHandAccount', label: 'Default cash in hand account' },
+  { key: 'defaultChequesInHandAccount', label: 'Default cheques in hand account' },
 ];
 
 @Injectable()
@@ -77,8 +96,18 @@ export class CompanyService {
     @InjectConnection() private readonly connection: Connection,
     private readonly filesService: FilesService,
     private readonly auditService: AuditService,
+    private readonly ledgerAccountService: LedgerAccountService,
     entityAccess: EntityAccessRegistry,
+    ledgerUsage: LedgerAccountUsageRegistry,
   ) {
+    ledgerUsage.register('company settings (default handover account)', async (accountId, session) =>
+      Boolean(
+        await this.settingsModel
+          .exists({ $or: [{ defaultCashInHandAccountId: accountId }, { defaultChequesInHandAccountId: accountId }] })
+          .session(session ?? null)
+          .exec(),
+      ),
+    );
     // Change history via GET /activity: readable by anyone logged in, like GET /company.
     entityAccess.register(COMPANY_SETTINGS_ENTITY_TYPE, {
       exists: async (id) => Boolean(await this.settingsModel.exists({ _id: id }).exec()),
@@ -113,6 +142,10 @@ export class CompanyService {
         throw new BadRequestException(`The logo must be a PNG or JPEG image, not ${file.mimeType}`);
       }
     }
+    for (const { field, types } of DEFAULT_ACCOUNT_FIELDS) {
+      const id = dto[field];
+      if (id) await this.ledgerAccountService.findActiveReceiptAccount(id, types);
+    }
     // Outside the transaction: no ledger, so ensure() creating the document
     // separately is harmless, and it keeps the upsert out of a retried callback.
     await this.ensure();
@@ -128,6 +161,9 @@ export class CompanyService {
       settings.legalName = dto.legalName;
       settings.logoFileRef = dto.logoFileRef ? new Types.ObjectId(dto.logoFileRef) : null;
       settings.allowSelfApproval = dto.allowSelfApproval ?? false;
+      for (const { field } of DEFAULT_ACCOUNT_FIELDS) {
+        settings.set(field, dto[field] ? new Types.ObjectId(dto[field]) : null);
+      }
 
       const changes = diffFields(before, await this.display(settings), AUDITED_FIELDS);
       if (changes.length === 0) {
@@ -192,7 +228,20 @@ export class CompanyService {
         .then((file) => file.originalName)
         .catch(() => logoId);
     }
-    return { ...record, logo, allowSelfApproval: settings.allowSelfApproval ? 'Yes' : 'No' };
+    const accountIds = DEFAULT_ACCOUNT_FIELDS.flatMap(({ field }) => settings.get(field)?.toString() ?? []);
+    const accounts = await this.ledgerAccountService.getSummaries(accountIds);
+    const accountLabel = (field: (typeof DEFAULT_ACCOUNT_FIELDS)[number]['field']) => {
+      const id = settings.get(field)?.toString() as string | undefined;
+      const account = id ? accounts.get(id) : undefined;
+      return id ? (account ? `${account.code} (${account.name})` : id) : null;
+    };
+    return {
+      ...record,
+      logo,
+      allowSelfApproval: settings.allowSelfApproval ? 'Yes' : 'No',
+      defaultCashInHandAccount: accountLabel('defaultCashInHandAccountId'),
+      defaultChequesInHandAccount: accountLabel('defaultChequesInHandAccountId'),
+    };
   }
 
   private toView(settings: CompanySettingsDocument): CompanySettingsView {
@@ -208,6 +257,8 @@ export class CompanyService {
       currencyCode: settings.currencyCode,
       logo: logoId ? { id: logoId, url: `/files/${logoId}` } : null,
       allowSelfApproval: settings.allowSelfApproval ?? false,
+      defaultCashInHandAccountId: settings.defaultCashInHandAccountId?.toString() ?? null,
+      defaultChequesInHandAccountId: settings.defaultChequesInHandAccountId?.toString() ?? null,
       updatedBy: userRefOf(settings.updatedBy),
       updatedAt: settings.updatedAt ?? null,
     };

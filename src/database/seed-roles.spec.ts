@@ -127,14 +127,30 @@ describe('role seed', () => {
     });
     await ensureDefaultRoles(roleModel);
     const salesman = await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec();
-    // New: cash-handovers:read. Removed by an administrator earlier: cash-receipts:create stays removed.
-    expect(sorted(salesman!.permissions)).toEqual(sorted([Permission.CASH_RECEIPTS_READ, Permission.CASH_HANDOVERS_READ]));
+    // New: cash-handovers:read/create. Removed by an administrator earlier: cash-receipts:create stays removed.
+    expect(sorted(salesman!.permissions)).toEqual(
+      sorted([Permission.CASH_RECEIPTS_READ, Permission.CASH_HANDOVERS_READ, Permission.CASH_HANDOVERS_CREATE]),
+    );
 
     await roleModel.updateOne({ name: VAN_SALESMAN_ROLE_NAME }, { permissions: [Permission.CASH_RECEIPTS_READ] }).exec();
     await ensureDefaultRoles(roleModel);
     expect((await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec())!.permissions).toEqual([
       Permission.CASH_RECEIPTS_READ,
     ]);
+  });
+
+  it('gives the accountant select-collector, not the van salesman, and drops cashiers:manage', async () => {
+    await roleModel.create({
+      name: 'Old desk',
+      permissions: ['cashiers:manage', 'cash-handovers:edit', Permission.PARTIES_MANAGE],
+    });
+    await ensureDefaultRoles(roleModel);
+    const permissionsOf = async (name: string) => (await roleModel.findOne({ name }).lean().exec())!.permissions;
+    expect(await permissionsOf(ACCOUNTANT_ROLE_NAME)).toContain(Permission.VOUCHERS_SELECT_COLLECTOR);
+    expect(await permissionsOf(ACCOUNTANT_ROLE_NAME)).not.toContain(Permission.USERS_MANAGE);
+    expect(await permissionsOf(VAN_SALESMAN_ROLE_NAME)).not.toContain(Permission.VOUCHERS_SELECT_COLLECTOR);
+    expect(await permissionsOf(VAN_SALESMAN_ROLE_NAME)).not.toContain(Permission.BALANCES_VIEW);
+    expect(await permissionsOf('Old desk')).toEqual([Permission.PARTIES_MANAGE]);
   });
 
   it('moves users from isActive to status, once', async () => {

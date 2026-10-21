@@ -1,18 +1,21 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
-  ArrayUnique,
   IsArray,
   IsDateString,
   IsIn,
+  IsInt,
   IsMongoId,
   IsNumber,
   IsOptional,
+  IsPositive,
   IsString,
+  Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
-import { CancelVoucherDto, VoucherQueryDto } from '../../vouchers/dto/voucher.dto.js';
+import { CancelVoucherDto } from '../../vouchers/dto/voucher.dto.js';
 
 const trimToNull = ({ value }: { value: unknown }) => {
   if (typeof value !== 'string') return value;
@@ -22,33 +25,34 @@ const trimToNull = ({ value }: { value: unknown }) => {
 
 export const HANDOVER_STATUSES = ['submitted', 'approved', 'rejected', 'cancelled'] as const;
 
-/** Submit. No number, totals or who/when: the server sets them; expectedCash and bankTotal come from the receipts. */
-export class CreateCashHandoverDto {
-  @IsDateString()
-  voucherDate: string;
-
-  /**
-   * Staff (cashier record) handing over; must settle with the office.
-   * Required, except for an "own"-scoped user: their linked staff is used (any other is 403).
-   */
-  @IsOptional()
-  @IsMongoId()
-  staffId?: string;
-
-  /** Active cash or wallet account the cash receipts were received into. */
+export class HandoverLineDto {
+  /** One of the user's own cash, wallet or cheque accounts. */
   @IsMongoId()
   sourceAccountId: string;
 
-  /** That staff member's unsettled receipts. */
+  /** At most the account's balance minus what is already on their other submitted handovers. */
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  amount: number;
+}
+
+/** Submit. No number, totals or who/when: the server sets them. */
+export class CreateCashHandoverDto {
+  /** Defaults to today. */
+  @IsOptional()
+  @IsDateString()
+  voucherDate?: string;
+
+  /** Whose money; defaults to the caller. Anyone else needs vouchers:select-collector. */
+  @IsOptional()
+  @IsMongoId()
+  userId?: string;
+
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayUnique()
-  @IsMongoId({ each: true })
-  receiptIds: string[];
-
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  countedCash: number;
+  @ValidateNested({ each: true })
+  @Type(() => HandoverLineDto)
+  lines: HandoverLineDto[];
 
   @IsOptional()
   @IsString()
@@ -56,45 +60,74 @@ export class CreateCashHandoverDto {
   notes?: string;
 }
 
-export class ApproveCashHandoverDto {
-  /** Equal to expectedCash, or less with varianceReason; more is rejected. */
+export class ApproveHandoverLineDto {
+  @IsMongoId()
+  sourceAccountId: string;
+
+  /** Defaults to the submitted amount; never more. */
+  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  receivedCash: number;
+  receivedAmount?: number;
 
-  /** Active cash, wallet or bank account; not the source account. */
+  /** Defaults to the company's cash in hand (cash/wallet sources) or cheques in hand (cheque sources). */
+  @IsOptional()
   @IsMongoId()
-  receivedIntoAccountId: string;
+  receivedIntoAccountId?: string;
+}
 
+export class ApproveCashHandoverDto {
+  /** Per source account; sources left out are received in full into their default account. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ApproveHandoverLineDto)
+  lines?: ApproveHandoverLineDto[];
+
+  /** Required when anything is received short. */
   @IsOptional()
   @Transform(trimToNull)
   @IsString()
   @MaxLength(500)
-  varianceReason?: string | null;
+  reason?: string | null;
 }
 
 export class RejectCashHandoverDto extends CancelVoucherDto {}
 
 export class CancelCashHandoverDto extends CancelVoucherDto {}
 
-/** Shared voucher filters; cashierId there is the staff member, like staffId. */
-export class CashHandoverQueryDto extends VoucherQueryDto {
+export class CashHandoverQueryDto {
   @IsOptional()
-  @IsMongoId()
-  sourceAccountId?: string;
+  @IsDateString()
+  dateFrom?: string;
 
   @IsOptional()
-  @IsMongoId()
-  staffId?: string;
+  @IsDateString()
+  dateTo?: string;
 
   @IsOptional()
   @IsIn(HANDOVER_STATUSES)
-  handoverStatus?: (typeof HANDOVER_STATUSES)[number];
-}
+  status?: (typeof HANDOVER_STATUSES)[number];
 
-export class UnsettledReceiptsQueryDto {
-  /** Required unless "own"-scoped (their linked staff is used). */
   @IsOptional()
   @IsMongoId()
-  staffId?: string;
+  userId?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+}
+
+export class PendingQueryDto {
+  /** Defaults to the caller; anyone else needs vouchers:select-collector. */
+  @IsOptional()
+  @IsMongoId()
+  userId?: string;
 }

@@ -6,10 +6,11 @@ export interface DiffableVoucher {
   voucherDate: Date;
   /** The cash/wallet/bank account in the header ("received into", "paid from", ...). */
   headerAccountId: string;
-  /** null only on receipts from before the cashier master. */
-  cashierId: string | null;
-  cashierName: string | null;
+  /** null only on vouchers whose old cashier had no linked login. */
+  collectedById: string | null;
+  collectedByName: string | null;
   paymentReference?: string | null;
+  chequeDate?: Date | null;
   comments?: string | null;
   lines: readonly DiffableLine[];
 }
@@ -41,7 +42,7 @@ export function diffVoucher(
   after: DiffableVoucher,
   accountNames: ReadonlyMap<string, string>,
   headerLabel: string,
-  cashierLabel = 'Cashier',
+  collectorLabel = 'Collected By',
 ): AuditChange[] {
   const nameOf = (accountId: string) => accountNames.get(accountId) ?? `Account ${accountId}`;
   const changes: AuditChange[] = [];
@@ -66,15 +67,26 @@ export function diffVoucher(
     });
   }
 
-  // Compared by id: a cashier renamed in the master since is not a change here.
-  if (before.cashierId !== after.cashierId) {
-    changes.push({ field: 'cashier', label: cashierLabel, from: text(before.cashierName), to: text(after.cashierName) });
+  // Compared by id: a user renamed since is not a change here.
+  if (before.collectedById !== after.collectedById) {
+    changes.push({
+      field: 'collectedBy',
+      label: collectorLabel,
+      from: text(before.collectedByName),
+      to: text(after.collectedByName),
+    });
   }
 
   const fromReference = text(before.paymentReference);
   const toReference = text(after.paymentReference);
   if (fromReference !== toReference) {
     changes.push({ field: 'paymentReference', label: 'Payment reference', from: fromReference, to: toReference });
+  }
+
+  const fromChequeDate = before.chequeDate ? formatDate(before.chequeDate) : null;
+  const toChequeDate = after.chequeDate ? formatDate(after.chequeDate) : null;
+  if (fromChequeDate !== toChequeDate) {
+    changes.push({ field: 'chequeDate', label: 'Cheque date', from: fromChequeDate, to: toChequeDate });
   }
 
   const fromComments = text(before.comments);

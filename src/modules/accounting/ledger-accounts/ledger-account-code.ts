@@ -6,6 +6,7 @@ export const LEDGER_ACCOUNT_CODE_SEQUENCES: Readonly<Partial<Record<LedgerAccoun
   [LedgerAccountType.CASH]: { key: 'ledger-account:cash', prefix: 'CASH-', width: 4 },
   [LedgerAccountType.BANK]: { key: 'ledger-account:bank', prefix: 'BNK-', width: 4 },
   [LedgerAccountType.WALLET]: { key: 'ledger-account:wallet', prefix: 'WAL-', width: 4 },
+  [LedgerAccountType.CHEQUE]: { key: 'ledger-account:cheque', prefix: 'CHQ-', width: 4 },
   [LedgerAccountType.INCOME]: { key: 'ledger-account:income', prefix: 'INC-', width: 4 },
   [LedgerAccountType.EXPENSE]: { key: 'ledger-account:expense', prefix: 'EXP-', width: 4 },
   [LedgerAccountType.OTHER]: { key: 'ledger-account:other', prefix: 'OTH-', width: 4 },

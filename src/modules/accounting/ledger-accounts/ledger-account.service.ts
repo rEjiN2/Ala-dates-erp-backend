@@ -30,11 +30,18 @@ import { escapeRegExp } from '../../sequence/code-sequence.js';
 import { round2 } from '../../../common/utils/money.util.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
-/** Account types money can be received into on a receipt voucher. */
+/** Account types a voucher header may use by default (payments). */
 export const RECEIPT_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
   LedgerAccountType.CASH,
   LedgerAccountType.WALLET,
   LedgerAccountType.BANK,
+];
+
+/** Cash-like accounts a user holds money in: what a van salesman hands over. */
+export const CASH_LIKE_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
+  LedgerAccountType.CASH,
+  LedgerAccountType.WALLET,
+  LedgerAccountType.CHEQUE,
 ];
 
 export interface LedgerAccountPage {
@@ -292,12 +299,15 @@ export class LedgerAccountService {
    * Resolves the "received into" account of a receipt voucher: an active
    * cash, wallet or bank account. Anything else is rejected.
    */
-  async findActiveReceiptAccount(id: string): Promise<LedgerAccountDocument> {
+  async findActiveReceiptAccount(
+    id: string,
+    types: readonly LedgerAccountType[] = RECEIPT_ACCOUNT_TYPES,
+  ): Promise<LedgerAccountDocument> {
     const account = await this.findById(id);
 
-    if (!RECEIPT_ACCOUNT_TYPES.includes(account.type)) {
+    if (!types.includes(account.type)) {
       throw new BadRequestException(
-        `${account.code} (${account.name}) is a ${account.type} account. Choose a cash, wallet or bank account.`,
+        `${account.code} (${account.name}) is a ${account.type} account. Choose a ${types.slice(0, -1).join(', ')} or ${types.at(-1)} account.`,
       );
     }
     if (account.status !== LedgerAccountStatus.ACTIVE) {

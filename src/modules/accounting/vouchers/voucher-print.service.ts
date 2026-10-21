@@ -65,9 +65,11 @@ export class VoucherPrintService {
         throw new NotFoundException(`${def.label} ${id} not found`);
       }
 
-      const headerAccountId = (voucher.get(def.headerField) as Types.ObjectId).toString();
+      const headerAccountId = def.pdf.headerAccountName
+        ? null
+        : (voucher.get(def.headerField) as Types.ObjectId).toString();
       const names = await this.ledgerAccountService.getNames(
-        [headerAccountId, ...voucher.lines.map((line) => line.accountId.toString())],
+        [...(headerAccountId ? [headerAccountId] : []), ...voucher.lines.map((line) => line.accountId.toString())],
         session,
       );
       const nameOf = (accountId: string) => names.get(accountId) ?? accountId;
@@ -92,8 +94,8 @@ export class VoucherPrintService {
           voucher: {
             voucherNo: voucher.voucherNo,
             voucherDate: voucher.voucherDate,
-            headerAccountName: nameOf(headerAccountId),
-            cashierName: voucher.cashierName,
+            headerAccountName: def.pdf.headerAccountName?.(voucher) ?? nameOf(headerAccountId!),
+            collectedByName: voucher.collectedByName,
             extraInfo: def.pdf.extraInfo?.(voucher) ?? [],
             paymentMethod: voucher.paymentMethod ?? 'cash',
             paymentReference: voucher.paymentReference ?? null,
@@ -126,7 +128,7 @@ export class VoucherPrintService {
           headerLabel: titleCase(def.headerLabel),
           counterpartyColumn: def.pdf.counterpartyColumn,
           signatures: def.pdf.signatures,
-          cashierLabel: def.cashierLabel,
+          collectorLabel: def.collectorLabel,
         },
       );
       const buffer = await renderPdf(definition);

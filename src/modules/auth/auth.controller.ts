@@ -63,7 +63,7 @@ export class AuthController {
     return { success: true };
   }
 
-  /** The user, role, permissions, data scope, linked cashier and allowed cash accounts. */
+  /** The user, role, permissions, data scope, settlesWithOffice and allowed cash accounts. */
   @Get('me')
   @UseGuards(JwtAuthGuard)
   @AllowPendingPasswordChange()

@@ -46,6 +46,17 @@ export class User {
   @Prop({ type: [{ type: Types.ObjectId, ref: 'LedgerAccount' }], default: [] })
   allowedCashAccountIds: Types.ObjectId[];
 
+  /**
+   * Van salesmen: hands collected cash to the office on a cash handover.
+   * Their receipts start unsettled; they appear in the salesman report.
+   */
+  @Prop({ default: false })
+  settlesWithOffice: boolean;
+
+  /** Where the user is based (e.g. their van); filters the salesman report. */
+  @Prop({ type: Types.ObjectId, ref: 'Location', default: null })
+  locationId: Types.ObjectId | null;
+
   @Prop({ select: false })
   refreshTokenHash?: string;
 }
