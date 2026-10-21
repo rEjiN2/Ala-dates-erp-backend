@@ -14,6 +14,12 @@ import { Role, RoleDocument } from '../modules/roles/schemas/role.schema.js';
 import { User, UserDocument } from '../modules/users/schemas/user.schema.js';
 import { backfillUserStatus, ensureDefaultRoles } from './seed-roles.js';
 import { CompanyService } from '../modules/company/company.service.js';
+import {
+  DEFAULT_UNITS,
+  UNIT_COLLATION,
+  Unit,
+  UnitDocument,
+} from '../modules/product/units/schemas/unit.schema.js';
 
 const CASH_ACCOUNT_NAMES = ['Main Cash Counter', 'Branch Petty Cash'];
 const CHEQUES_IN_HAND_NAME = 'Cheques in Hand';
@@ -68,6 +74,15 @@ async function seed(): Promise<void> {
       await company.save();
     }
     logger.log(`Ledger account ready: ${cheques.code} (${cheques.name})`);
+
+    // Default units, matched on symbol (ignoring case); existing ones are left as they are.
+    const unitModel = app.get<Model<UnitDocument>>(getModelToken(Unit.name));
+    for (const unit of DEFAULT_UNITS) {
+      await unitModel
+        .updateOne({ symbol: unit.symbol }, { $setOnInsert: unit }, { upsert: true, collation: UNIT_COLLATION })
+        .exec();
+    }
+    logger.log(`Units ready: ${DEFAULT_UNITS.map((unit) => unit.symbol).join(', ')}`);
 
     // Splits legacy permissions (cash-receipts:manage, ...) in every role, then
     // upserts admin (every permission, scope all, protected), Accountant and

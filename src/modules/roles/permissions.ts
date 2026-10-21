@@ -32,6 +32,10 @@ export const Permission = {
   LOCATIONS_MANAGE: 'locations:manage',
   PARTIES_MANAGE: 'parties:manage',
   PRODUCT_GROUPS_MANAGE: 'product-groups:manage',
+  PRODUCTS_MANAGE: 'products:manage',
+  /** See purchase prices (cost) on products and their activity timeline. Never for van salesmen. */
+  PRODUCTS_VIEW_COST: 'products:view-cost',
+  UNITS_MANAGE: 'units:manage',
   /** The salesman collections report (cash collected vs handed over, per user who settles with the office). */
   REPORTS_SALESMAN: 'reports:salesman',
   ROLES_MANAGE: 'roles:manage',

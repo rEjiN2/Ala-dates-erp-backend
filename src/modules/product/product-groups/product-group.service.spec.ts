@@ -77,6 +77,7 @@ describe('ProductGroupService', () => {
     service = new ProductGroupService(
       modelMock as unknown as ConstructorParameters<typeof ProductGroupService>[0],
       sequenceMock as unknown as ConstructorParameters<typeof ProductGroupService>[1],
+      { exists: vi.fn(() => queryMock(null)) } as unknown as ConstructorParameters<typeof ProductGroupService>[2],
     );
   });
 

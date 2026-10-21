@@ -31,9 +31,11 @@ AuditService, DataScope helper, StorageService, amount-in-words, sum2.
 ## Status (update after each step)
 Built: auth, locations, product groups, accounts, customers/suppliers,
 company profile, cash receipt, cash payment, dashboard cash card, MEGA
-storage, Users/Roles + scoping (Cashier module removed; collectors are users).
+storage, Users/Roles + scoping (Cashier module removed; collectors are users),
+units + products (src/modules/product/{units,products}; ProductUsageRegistry
+for later modules; purchasePrice only with products:view-cost).
 In progress: Cash Handover (balance-based) + salesman report.
-Planned: products, opening balances, stock engine, purchase invoice, stock
+Planned: opening balances, stock engine, purchase invoice, stock
 transfer, sales invoice, allocation, bundling, returns, reports, migration.
 
 ## Conventions
@@ -57,7 +59,7 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   (pnpm migrate:collected-by moved vouchers).
 - Codes: SequenceService (atomic $inc, takes a Mongo session). Clients never
   send codes; immutable. BR/WH/ST/VAN, PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CHQ, CR, CP, HO.
+  CHQ, CR, CP, HO, PRD.
 - Money: Balance = debits - credits (customer owing us is positive).
   LedgerEntry insert-only. Every voucher posts via VoucherPostingService in
   ONE Mongo transaction (number, entries, balances, audit). Totals computed

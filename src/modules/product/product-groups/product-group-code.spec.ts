@@ -8,6 +8,7 @@ import { ProductGroupService } from './product-group.service.js';
 import { ProductGroup, ProductGroupDocument, ProductGroupSchema } from './schemas/product-group.schema.js';
 import { CreateProductGroupDto } from './dto/create-product-group.dto.js';
 import { UpdateProductGroupDto } from './dto/update-product-group.dto.js';
+import { Product, ProductSchema } from '../products/schemas/product.schema.js';
 import { SequenceService } from '../../sequence/sequence.service.js';
 import { Counter, CounterDocument, CounterSchema } from '../../sequence/schemas/counter.schema.js';
 import { createAppValidationPipe } from '../../../common/pipes/app-validation.pipe.js';
@@ -24,6 +25,7 @@ describe('Product group code generation', () => {
         mongooseTestRoot('product_group_codes'),
         MongooseModule.forFeature([
           { name: ProductGroup.name, schema: ProductGroupSchema },
+          { name: Product.name, schema: ProductSchema },
           { name: Counter.name, schema: CounterSchema },
         ]),
       ],

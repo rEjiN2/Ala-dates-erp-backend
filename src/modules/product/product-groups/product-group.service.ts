@@ -8,6 +8,7 @@ import { wouldCreateCycle } from '../../../common/utils/cycle.util.js';
 import { buildTree, type TreeNode } from '../../../common/utils/tree.util.js';
 import { SequenceService } from '../../sequence/sequence.service.js';
 import { PRODUCT_GROUP_CODE_SEQUENCE } from './product-group-code.js';
+import { Product, ProductDocument } from '../products/schemas/product.schema.js';
 
 export interface ProductGroupTreeItem {
   id: string;
@@ -23,6 +24,7 @@ export class ProductGroupService {
   constructor(
     @InjectModel(ProductGroup.name) private readonly productGroupModel: Model<ProductGroupDocument>,
     private readonly sequenceService: SequenceService,
+    @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
   ) {}
 
   async findAll(): Promise<ProductGroupDocument[]> {
@@ -85,6 +87,9 @@ export class ProductGroupService {
     const childCount = await this.productGroupModel.countDocuments({ under: new Types.ObjectId(id) }).exec();
     if (childCount > 0) {
       throw new ConflictException('Cannot delete a product group that still has child groups');
+    }
+    if (await this.productModel.exists({ productGroupId: new Types.ObjectId(id) }).exec()) {
+      throw new ConflictException('Cannot delete a product group that still has products');
     }
 
     await this.productGroupModel.deleteOne({ _id: id }).exec();
