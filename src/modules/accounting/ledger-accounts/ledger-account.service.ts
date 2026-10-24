@@ -113,6 +113,8 @@ export class LedgerAccountService {
     const filter: QueryFilter<LedgerAccountDocument> = {
       ...this.searchFilter(query.q, ['code', 'name']),
       status: LedgerAccountStatus.ACTIVE,
+      // System accounts (Opening Balance Equity) are never chosen on a voucher.
+      systemKey: null,
     };
     if (query.scope || query.types?.length) {
       filter.type = { $in: this.allowedTypes(query.scope, query.types) };
@@ -277,6 +279,53 @@ export class LedgerAccountService {
     await this.ledgerAccountModel.deleteOne({ _id: account._id }, { session }).exec();
   }
 
+  /** The system-owned account with this key, created (code from its type's counter) on first use. */
+  async ensureSystemAccount(
+    systemKey: string,
+    name: string,
+    type: LedgerAccountType,
+    session?: ClientSession,
+  ): Promise<LedgerAccountDocument> {
+    const existing = await this.ledgerAccountModel
+      .findOne({ systemKey })
+      .session(session ?? null)
+      .exec();
+    if (existing) return existing;
+    const code = await this.sequenceService.nextCode(LEDGER_ACCOUNT_CODE_SEQUENCES[type]!, session);
+    const [created] = await this.ledgerAccountModel.create(
+      [{ code, name, type, balance: 0, status: LedgerAccountStatus.ACTIVE, systemKey }],
+      { session },
+    );
+    return created;
+  }
+
+  /** Accounts by code (case-insensitive), keyed by the upper-cased code. Unknown codes are simply absent. */
+  async findByCodes(
+    codes: readonly string[],
+    session?: ClientSession,
+  ): Promise<Map<string, { id: string; code: string; name: string; type: LedgerAccountType; systemKey: string | null }>> {
+    const wanted = [...new Set(codes.map((code) => code.trim().toUpperCase()))];
+    if (wanted.length === 0) return new Map();
+    const accounts = await this.ledgerAccountModel
+      .find({ code: { $in: wanted } })
+      .select('code name type systemKey')
+      .session(session ?? null)
+      .lean()
+      .exec();
+    return new Map(
+      accounts.map((account) => [
+        account.code,
+        {
+          id: account._id.toString(),
+          code: account.code,
+          name: account.name,
+          type: account.type,
+          systemKey: account.systemKey ?? null,
+        },
+      ]),
+    );
+  }
+
   /** The account of this type with this name, ignoring case, or null. */
   async findByTypeAndName(
     type: LedgerAccountType,
@@ -338,21 +387,21 @@ export class LedgerAccountService {
   async getSummaries(
     ids: readonly string[],
     session?: ClientSession,
-  ): Promise<Map<string, { code: string; name: string; type: LedgerAccountType }>> {
+  ): Promise<Map<string, { code: string; name: string; type: LedgerAccountType; systemKey: string | null }>> {
     const objectIds = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
     if (objectIds.length === 0) {
       return new Map();
     }
     const accounts = await this.ledgerAccountModel
       .find({ _id: { $in: objectIds } })
-      .select('code name type')
+      .select('code name type systemKey')
       .session(session ?? null)
       .lean()
       .exec();
     return new Map(
       accounts.map((account) => [
         account._id.toString(),
-        { code: account.code, name: account.name, type: account.type },
+        { code: account.code, name: account.name, type: account.type, systemKey: account.systemKey ?? null },
       ]),
     );
   }
@@ -439,6 +488,9 @@ export class LedgerAccountService {
   }
 
   private assertNotSystemManaged(account: LedgerAccountDocument, action: string): void {
+    if (account.systemKey) {
+      throw new ForbiddenException(`${account.code} (${account.name}) is a system account and cannot be ${action}`);
+    }
     if (SYSTEM_MANAGED_ACCOUNT_TYPES.includes(account.type)) {
       throw this.systemManagedError(account.type, action);
     }

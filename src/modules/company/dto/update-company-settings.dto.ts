@@ -94,6 +94,11 @@ export class UpdateCompanySettingsDto {
   @IsBoolean()
   allowSelfApproval?: boolean;
 
+  /** Omitted means off: stock may not go below zero. */
+  @IsOptional()
+  @IsBoolean()
+  allowNegativeStock?: boolean;
+
   /** Active cash or wallet account; the default "received into" for cash handed over. */
   @IsOptional()
   @IsMongoId()
@@ -103,4 +108,9 @@ export class UpdateCompanySettingsDto {
   @IsOptional()
   @IsMongoId()
   defaultChequesInHandAccountId?: string | null;
+
+  /** Active cash or wallet account; pays handover expense claims (paidFrom petty_cash). */
+  @IsOptional()
+  @IsMongoId()
+  defaultPettyCashAccountId?: string | null;
 }

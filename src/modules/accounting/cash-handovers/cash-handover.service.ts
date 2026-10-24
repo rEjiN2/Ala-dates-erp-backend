@@ -7,6 +7,7 @@ import {
   CashHandoverDocument,
   type HandoverBankReceipt,
   type HandoverCheque,
+  ExpensePaidFrom,
   type HandoverExpense,
   type HandoverLine,
 } from './schemas/cash-handover.schema.js';
@@ -276,6 +277,8 @@ export class CashHandoverService {
     const userId = resolveCollectorId(actor, dto.userId);
     const chequeIds = [...new Set(dto.chequeIds ?? [])];
     const expenseInputs = dto.expenses ?? [];
+    // Only expenses paid from the user's own cash reduce what they can hand over.
+    const ownExpenses = expenseInputs.filter((e) => (e.paidFrom ?? ExpensePaidFrom.OWN) === ExpensePaidFrom.OWN);
     const bankReceiptIds = [...new Set(dto.bankReceiptIds ?? [])];
     if (dto.lines.length === 0 && chequeIds.length === 0 && expenseInputs.length === 0 && bankReceiptIds.length === 0) {
       throw new BadRequestException('A handover needs at least one amount, cheque, bank receipt or expense');
@@ -297,7 +300,7 @@ export class CashHandoverService {
         }
         const amount = round2(line.amount);
         const spent = sum2(
-          expenseInputs.filter((e) => e.sourceAccountId === line.sourceAccountId).map((e) => e.amount),
+          ownExpenses.filter((e) => e.sourceAccountId === line.sourceAccountId).map((e) => e.amount),
         );
         if (round2(amount + spent) > account.available) {
           throw new BadRequestException(
@@ -316,15 +319,34 @@ export class CashHandoverService {
       });
 
       const expenses: HandoverExpense[] = [];
+      const pettyCash = expenseInputs.some((e) => e.paidFrom === ExpensePaidFrom.PETTY_CASH)
+        ? await this.pettyCashAccount()
+        : null;
       for (const input of expenseInputs) {
-        const source = holdings.get(input.sourceAccountId);
+        if (input.paidFrom === ExpensePaidFrom.PETTY_CASH) {
+          const account = await this.ledgerAccountService.findActiveReceiptAccount(input.expenseAccountId, [
+            LedgerAccountType.EXPENSE,
+          ]);
+          expenses.push({
+            expenseAccountId: account._id,
+            expenseAccountName: account.name,
+            paidFrom: ExpensePaidFrom.PETTY_CASH,
+            sourceAccountId: pettyCash!._id,
+            sourceAccountName: pettyCash!.name,
+            amount: round2(input.amount),
+            description: input.description ?? null,
+            attachment: null,
+          });
+          continue;
+        }
+        const source = input.sourceAccountId ? holdings.get(input.sourceAccountId) : undefined;
         if (!source || source.type === LedgerAccountType.CHEQUE) {
           throw new BadRequestException(`An expense must be paid from one of ${user.name}'s cash or wallet accounts`);
         }
         // Paid from an account with no amount handed over: still within what is held.
         if (!dto.lines.some((line) => line.sourceAccountId === input.sourceAccountId)) {
           const spent = sum2(
-            expenseInputs.filter((e) => e.sourceAccountId === input.sourceAccountId).map((e) => e.amount),
+            ownExpenses.filter((e) => e.sourceAccountId === input.sourceAccountId).map((e) => e.amount),
           );
           if (spent > source.available) {
             throw new BadRequestException(
@@ -338,6 +360,7 @@ export class CashHandoverService {
         expenses.push({
           expenseAccountId: account._id,
           expenseAccountName: account.name,
+          paidFrom: ExpensePaidFrom.OWN,
           sourceAccountId: new Types.ObjectId(source.accountId),
           sourceAccountName: source.name,
           amount: round2(input.amount),
@@ -448,7 +471,9 @@ export class CashHandoverService {
           );
         }
         const spent = sum2(
-          (handover.expenses ?? []).filter((e) => e.sourceAccountId.equals(item.sourceAccountId)).map((e) => e.amount),
+          (handover.expenses ?? [])
+            .filter((e) => e.paidFrom !== ExpensePaidFrom.PETTY_CASH && e.sourceAccountId.equals(item.sourceAccountId))
+            .map((e) => e.amount),
         );
         const balance = round2((held.get(item.sourceAccountId.toString()) ?? 0) - spent);
         if (received > balance) {
@@ -475,6 +500,7 @@ export class CashHandoverService {
         item.receivedIntoAccountId = into._id;
         item.receivedIntoAccountName = into.name;
       }
+      await this.assertPettyCashCovers(handover, session);
       const reason = dto.reason?.trim() || null;
       if (short && !reason) {
         throw new BadRequestException('Less than submitted was received: a reason is required');
@@ -860,6 +886,41 @@ export class CashHandoverService {
       held.set(row._id.toString(), (held.get(row._id.toString()) ?? 0) - row.total);
     }
     return held;
+  }
+
+  /** The company default petty cash account, which pays expense claims. */
+  private async pettyCashAccount() {
+    const id = (await this.companyService.ensure()).defaultPettyCashAccountId;
+    if (!id) {
+      throw new BadRequestException(
+        'Petty cash claims need a default petty cash account in the company settings',
+      );
+    }
+    return this.ledgerAccountService.findActiveReceiptAccount(id.toString(), [
+      LedgerAccountType.CASH,
+      LedgerAccountType.WALLET,
+    ]);
+  }
+
+  /** Petty cash claims may not take a petty cash account below zero. */
+  private async assertPettyCashCovers(handover: CashHandoverDocument, session: ClientSession): Promise<void> {
+    const claimed = new Map<string, { name: string; amount: number }>();
+    for (const expense of handover.expenses ?? []) {
+      if (expense.paidFrom !== ExpensePaidFrom.PETTY_CASH) continue;
+      const key = expense.sourceAccountId.toString();
+      const row = claimed.get(key) ?? { name: expense.sourceAccountName, amount: 0 };
+      claimed.set(key, { name: row.name, amount: round2(row.amount + expense.amount) });
+    }
+    if (claimed.size === 0) return;
+    const balances = await this.ledgerAccountService.getBalances([...claimed.keys()], session);
+    for (const [id, { name, amount }] of claimed) {
+      const balance = round2(balances.get(id) ?? 0);
+      if (amount > balance) {
+        throw new BadRequestException(
+          `${name} holds only ${balance.toFixed(2)}, less than the ${amount.toFixed(2)} of expense claims`,
+        );
+      }
+    }
   }
 
   /** Amounts on the user's submitted handovers, by source account. */

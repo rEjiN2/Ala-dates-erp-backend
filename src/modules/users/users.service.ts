@@ -118,6 +118,7 @@ export class UsersService {
       permissions: role.permissions,
       dataScope: role.dataScope ?? DataScope.ALL,
       allowedCashAccountIds: (user.allowedCashAccountIds ?? []).map((id) => id.toString()),
+      allowedLocationIds: (user.allowedLocationIds ?? []).map((id) => id.toString()),
       mustChangePassword: Boolean(user.mustChangePassword),
     };
   }

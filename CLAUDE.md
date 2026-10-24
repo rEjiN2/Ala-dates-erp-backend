@@ -35,7 +35,12 @@ storage, Users/Roles + scoping (Cashier module removed; collectors are users),
 units + products (src/modules/product/{units,products}; ProductUsageRegistry
 for later modules; purchasePrice only with products:view-cost).
 In progress: Cash Handover (balance-based) + salesman report.
-Planned: opening balances, stock engine, purchase invoice, stock
+Built: opening balances (OB voucher). Stock step 1 (src/modules/stock):
+StockEntry (insert-only) + StockBalance via StockService.post(entries,
+actor, session, {strict}); reversalsOf(); Opening Stock OS-; /stock/summary,
+/stock/history; User.allowedLocationIds scopes stock for own-scoped roles;
+Company.allowNegativeStock (cancel always strict); product type locked once used.
+Planned: purchase invoice, stock
 transfer, sales invoice, allocation, bundling, returns, reports, migration.
 
 ## Conventions
@@ -59,7 +64,12 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   (pnpm migrate:collected-by moved vouchers).
 - Codes: SequenceService (atomic $inc, takes a Mongo session). Clients never
   send codes; immutable. BR/WH/ST/VAN, PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CHQ, CR, CP, HO, PRD.
+  CHQ, CR, CP, HO, PRD, OB.
+- Opening balances (src/modules/accounting/opening-balances, OB-): lines
+  {accountId, debit|credit}; diff posts to system account "Opening Balance
+  Equity" (LedgerAccount.systemKey: not editable, hidden from lookups,
+  rejected on voucher lines). One non-cancelled OB per account; no cheque
+  accounts. POST /opening-balances/validate (by code, no posting).
 - Money: Balance = debits - credits (customer owing us is positive).
   LedgerEntry insert-only. Every voucher posts via VoucherPostingService in
   ONE Mongo transaction (number, entries, balances, audit). Totals computed
@@ -85,6 +95,8 @@ transfer, sales invoice, allocation, bundling, returns, reports, migration.
   files ownerType cash-receipt, audited on the receipt. Handover pending is
   per user (their vouchers' entries), same-account approval posts nothing.
   Handover expenses[]: reserved on submit, approval posts source -> expense;
+  paidFrom own (user's cash/wallet) | petty_cash (claim on Company
+  defaultPettyCashAccountId; approval blocked if petty cash can't cover);
   bill via POST /cash-handovers/:id/expenses/:expenseId/attachment.
   Bank receipt by a collector who hands over (own-scoped role or
   settlesWithOffice; same rule for cheque with_salesman): bankHandoverStatus

@@ -54,6 +54,7 @@ export interface UserView {
   allowedCashAccounts: { id: string; code: string; name: string; type: string }[];
   settlesWithOffice: boolean;
   location: { id: string; name: string | null } | null;
+  allowedLocationIds: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -74,6 +75,7 @@ interface UserDisplay extends Record<string, unknown> {
   allowedCashAccounts: string | null;
   settlesWithOffice: string;
   location: string | null;
+  allowedLocations: string | null;
 }
 
 const AUDITED_FIELDS: readonly DiffField<UserDisplay>[] = [
@@ -84,6 +86,7 @@ const AUDITED_FIELDS: readonly DiffField<UserDisplay>[] = [
   { key: 'allowedCashAccounts', label: 'Allowed cash accounts' },
   { key: 'settlesWithOffice', label: 'Settles with office' },
   { key: 'location', label: 'Location' },
+  { key: 'allowedLocations', label: 'Allowed stock locations' },
 ];
 
 /**
@@ -154,6 +157,7 @@ export class UserManagementService {
     const allowedCashAccountIds = dto.allowedCashAccountIds ?? [];
     await this.assertCashAccounts(allowedCashAccountIds, []);
     await this.assertLocation(dto.locationId);
+    for (const locationId of dto.allowedLocationIds ?? []) await this.assertLocation(locationId);
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
     const created = await this.inTransaction(async (session) => {
@@ -170,6 +174,7 @@ export class UserManagementService {
             allowedCashAccountIds: allowedCashAccountIds.map((id) => new Types.ObjectId(id)),
             settlesWithOffice: dto.settlesWithOffice ?? false,
             locationId: dto.locationId ? new Types.ObjectId(dto.locationId) : null,
+            allowedLocationIds: (dto.allowedLocationIds ?? []).map((locationId) => new Types.ObjectId(locationId)),
           },
         ],
         { session },
@@ -208,6 +213,7 @@ export class UserManagementService {
     if (provided('locationId')) {
       await this.assertLocation(dto.locationId);
     }
+    for (const locationId of dto.allowedLocationIds ?? []) await this.assertLocation(locationId);
 
     await this.inTransaction(async (session) => {
       const existing = await this.getById(id, session);
@@ -228,6 +234,9 @@ export class UserManagementService {
       }
       if (provided('settlesWithOffice')) existing.settlesWithOffice = Boolean(dto.settlesWithOffice);
       if (provided('locationId')) existing.locationId = dto.locationId ? new Types.ObjectId(dto.locationId) : null;
+      if (provided('allowedLocationIds')) {
+        existing.allowedLocationIds = (dto.allowedLocationIds ?? []).map((locationId) => new Types.ObjectId(locationId));
+      }
 
       const changes = diffFields(before, await this.display(existing, session), AUDITED_FIELDS);
       if (changes.length === 0) {
@@ -438,14 +447,17 @@ export class UserManagementService {
   }
 
   private async display(user: UserDocument, session: ClientSession): Promise<UserDisplay> {
-    const [role, location, accounts] = await Promise.all([
+    const allowedLocationIds = user.allowedLocationIds ?? [];
+    const [role, location, accounts, allowedLocations] = await Promise.all([
       this.roleModel.findById(this.roleIdOf(user)).session(session).exec(),
       user.locationId ? this.locationModel.findById(user.locationId).select('name').session(session).exec() : null,
       this.ledgerAccountService.getSummaries(
         user.allowedCashAccountIds.map((accountId) => accountId.toString()),
         session,
       ),
+      this.locationModel.find({ _id: { $in: allowedLocationIds } }).select('name').session(session).lean().exec(),
     ]);
+    const allowedNames = new Map(allowedLocations.map((allowed) => [allowed._id.toString(), allowed.name]));
     const accountLabels = user.allowedCashAccountIds.map((accountId) => {
       const account = accounts.get(accountId.toString());
       return account ? `${account.code} (${account.name})` : accountId.toString();
@@ -458,6 +470,10 @@ export class UserManagementService {
       allowedCashAccounts: accountLabels.length > 0 ? accountLabels.join(', ') : null,
       settlesWithOffice: user.settlesWithOffice ? 'Yes' : 'No',
       location: user.locationId ? (location?.name ?? user.locationId.toString()) : null,
+      allowedLocations:
+        allowedLocationIds.length > 0
+          ? allowedLocationIds.map((id) => allowedNames.get(id.toString()) ?? id.toString()).join(', ')
+          : null,
     };
   }
 
@@ -490,6 +506,7 @@ export class UserManagementService {
         location: user.locationId
           ? { id: user.locationId.toString(), name: locationName.get(user.locationId.toString()) ?? null }
           : null,
+        allowedLocationIds: (user.allowedLocationIds ?? []).map((id) => id.toString()),
         createdAt: (user as unknown as { createdAt?: Date }).createdAt,
         updatedAt: (user as unknown as { updatedAt?: Date }).updatedAt,
       };

@@ -828,6 +828,37 @@ export class VoucherPostingService {
     await this.insertEntries(rows, session);
   }
 
+  /**
+   * Posts free-form debit/credit rows (opening balances) inside the caller's
+   * transaction; a reversal swaps each row's sides.
+   */
+  async postEntries(
+    voucher: { entityType: string; id: Types.ObjectId; voucherNo: string; voucherDate: Date },
+    entries: readonly { accountId: string; debit: number; credit: number; narration?: string | null }[],
+    kind: LedgerEntryKind,
+    cause: string,
+    session: ClientSession,
+  ): Promise<void> {
+    const postedAt = new Date();
+    const forward = kind === LedgerEntryKind.POSTING;
+    const rows = entries
+      .filter((entry) => entry.debit > 0 || entry.credit > 0)
+      .map((entry) => ({
+        voucherType: voucher.entityType,
+        voucherId: voucher.id,
+        voucherNo: voucher.voucherNo,
+        voucherDate: voucher.voucherDate,
+        kind,
+        cause,
+        postedAt,
+        accountId: new Types.ObjectId(entry.accountId),
+        narration: entry.narration ?? voucher.voucherNo,
+        debit: round2(forward ? entry.debit : entry.credit),
+        credit: round2(forward ? entry.credit : entry.debit),
+      }));
+    await this.insertEntries(rows, session);
+  }
+
   /** Inserts ledger entries and moves each account's balance by its debits minus credits. */
   private async insertEntries(
     rows: readonly { accountId: Types.ObjectId; debit: number; credit: number }[],
@@ -934,6 +965,11 @@ export class VoucherPostingService {
       const account = accounts.get(line.accountId);
       if (!account) {
         throw new NotFoundException(`Line ${index + 1}: ledger account ${line.accountId} not found`);
+      }
+      if (account.systemKey) {
+        throw new BadRequestException(
+          `Line ${index + 1}: ${account.code} (${account.name}) is a system account and cannot be used on a voucher`,
+        );
       }
       if (!def.lineAccountTypes.includes(account.type)) {
         throw new BadRequestException(

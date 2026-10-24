@@ -12,6 +12,7 @@ import {
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { PaymentMethod } from '../vouchers/schemas/voucher.schema.js';
 import { round2 } from '../../../common/utils/money.util.js';
+import { ExpensePaidFrom } from './schemas/cash-handover.schema.js';
 
 const { CASH, CHEQUE, BANK, PARTY } = LedgerAccountType;
 
@@ -314,6 +315,41 @@ describe('Cash handover (balance-based)', () => {
     await h.handovers.cancel(id(handover), { reason: 'Recount' }, admin);
     expect(await h.balanceOf(fuel)).toBe(0);
     expect(await h.balanceOf(vanCash)).toBe(1000);
+    await assertReconciled();
+  });
+
+  it('expenses without cash in hand are claimed from the default petty cash, which must cover them', async () => {
+    const fuel = await h.makeAccount('EXP-0001', LedgerAccountType.EXPENSE, 0, 'Fuel');
+    const petty = await h.makeAccount('CASH-0003', CASH, 0, 'Branch Petty Cash');
+    await h.receipts.create(
+      { voucherDate: '2026-10-01', cashAccountId: petty.id as string, lines: [{ accountId: customer.id as string, amount: 100 }] },
+      accountant,
+    );
+    await receive(vanCheques, 300, 'CHQ 1001');
+    const claim = (amount: number) => ({
+      expenseAccountId: fuel.id as string,
+      paidFrom: ExpensePaidFrom.PETTY_CASH,
+      amount,
+    });
+    const lines = [{ sourceAccountId: vanCheques.id as string, amount: 300 }];
+
+    await expect(h.handovers.create({ lines, expenses: [claim(80)] }, van)).rejects.toThrow(/default petty cash/);
+    await h.models.company.updateOne({}, { defaultPettyCashAccountId: petty._id }).exec();
+    // Own expenses still need the user's cash.
+    await expect(
+      h.handovers.create({ lines, expenses: [{ ...claim(80), paidFrom: ExpensePaidFrom.OWN }] }, van),
+    ).rejects.toThrow(/cash or wallet accounts/);
+
+    const tooMuch = await h.handovers.create({ lines, expenses: [claim(150)] }, van);
+    await expect(h.handovers.approve(id(tooMuch), {}, accountant)).rejects.toThrow(/less than the 150.00 of expense claims/);
+    await h.handovers.cancel(id(tooMuch), { reason: 'Too much' }, admin);
+
+    const handover = await h.handovers.create({ lines, expenses: [claim(80)] }, van);
+    expect(handover.expenses[0]).toMatchObject({ paidFrom: 'petty_cash', sourceAccountName: 'Branch Petty Cash' });
+    await h.handovers.approve(id(handover), {}, accountant);
+    expect(await h.balanceOf(fuel)).toBe(80);
+    expect(await h.balanceOf(petty)).toBe(20);
+    expect(await h.balanceOf(officeCheques)).toBe(300);
     await assertReconciled();
   });
 

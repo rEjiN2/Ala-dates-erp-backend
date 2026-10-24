@@ -116,6 +116,14 @@ export class HandoverFile {
 
 export const HandoverFileSchema = SchemaFactory.createForClass(HandoverFile);
 
+/** Where a handover expense was paid from. */
+export enum ExpensePaidFrom {
+  /** The user's own cash or wallet account (collected cash). */
+  OWN = 'own',
+  /** Claimed from the company default petty cash account: the user paid out of pocket. */
+  PETTY_CASH = 'petty_cash',
+}
+
 /**
  * Money the user spent out of what they collected (fuel, parking, ...).
  * Reserved from the source on submit like an amount; approval posts it
@@ -129,7 +137,10 @@ export class HandoverExpense {
   @Prop({ required: true })
   expenseAccountName: string;
 
-  /** One of the user's cash or wallet accounts it was paid from. */
+  @Prop({ type: String, enum: ExpensePaidFrom, default: ExpensePaidFrom.OWN })
+  paidFrom: ExpensePaidFrom;
+
+  /** One of the user's cash or wallet accounts, or the petty cash account for a claim. */
   @Prop({ type: Types.ObjectId, ref: LedgerAccount.name, required: true })
   sourceAccountId: Types.ObjectId;
 

@@ -31,6 +31,8 @@ export interface AuthenticatedUser {
   dataScope?: DataScope;
   /** Cash/wallet accounts an "own"-scoped user may receive money into. */
   allowedCashAccountIds?: string[];
+  /** Locations an "own"-scoped user sees stock for. */
+  allowedLocationIds?: string[];
   mustChangePassword?: boolean;
 }
 

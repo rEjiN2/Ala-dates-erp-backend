@@ -16,6 +16,12 @@ import {
   CashHandover,
   CashHandoverSchema,
 } from '../src/modules/accounting/cash-handovers/schemas/cash-handover.schema.js';
+import { OpeningBalanceService } from '../src/modules/accounting/opening-balances/opening-balance.service.js';
+import { OpeningBalanceController } from '../src/modules/accounting/opening-balances/opening-balance.controller.js';
+import {
+  OpeningBalance,
+  OpeningBalanceSchema,
+} from '../src/modules/accounting/opening-balances/schemas/opening-balance.schema.js';
 import { ChequeService } from '../src/modules/accounting/cheques/cheque.service.js';
 import { ChequeController } from '../src/modules/accounting/cheques/cheque.controller.js';
 import { SalesmanCollectionsService } from '../src/modules/reports/salesman-collections.service.js';
@@ -83,6 +89,7 @@ export async function createVoucherHarness(dbName: string) {
         { name: CashReceipt.name, schema: CashReceiptSchema },
         { name: CashPayment.name, schema: CashPaymentSchema },
         { name: CashHandover.name, schema: CashHandoverSchema },
+        { name: OpeningBalance.name, schema: OpeningBalanceSchema },
         { name: LedgerEntry.name, schema: LedgerEntrySchema },
         { name: LedgerAccount.name, schema: LedgerAccountSchema },
         { name: Counter.name, schema: CounterSchema },
@@ -98,6 +105,7 @@ export async function createVoucherHarness(dbName: string) {
       CashReceiptController,
       CashPaymentController,
       CashHandoverController,
+      OpeningBalanceController,
       ChequeController,
       ReportsController,
       CommentsController,
@@ -108,6 +116,7 @@ export async function createVoucherHarness(dbName: string) {
       CashReceiptPrintService,
       CashPaymentService,
       CashHandoverService,
+      OpeningBalanceService,
       ChequeService,
       SalesmanCollectionsService,
       VoucherPostingService,
@@ -147,6 +156,7 @@ export async function createVoucherHarness(dbName: string) {
     receipt: model(CashReceipt.name),
     payment: model(CashPayment.name),
     handover: model(CashHandover.name),
+    openingBalance: model(OpeningBalance.name),
     entry: model(LedgerEntry.name),
     account: model<LedgerAccountDocument>(LedgerAccount.name),
     counter: model(Counter.name),
@@ -215,6 +225,7 @@ export async function createVoucherHarness(dbName: string) {
     receiptPrints: moduleRef.get(CashReceiptPrintService),
     payments: moduleRef.get(CashPaymentService),
     handovers: moduleRef.get(CashHandoverService),
+    openingBalances: moduleRef.get(OpeningBalanceService),
     cheques: moduleRef.get(ChequeService),
     collections: moduleRef.get(SalesmanCollectionsService),
     posting: moduleRef.get(VoucherPostingService),

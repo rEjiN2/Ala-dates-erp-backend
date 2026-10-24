@@ -240,7 +240,13 @@ export class ProductService {
 
       if (provided('name')) product.name = dto.name!;
       if (provided('productGroupId')) product.productGroupId = new Types.ObjectId(dto.productGroupId!);
-      if (provided('type')) product.type = dto.type!;
+      if (provided('type') && dto.type !== product.type) {
+        const usedBy = await this.usageRegistry.findUsage(product._id, session);
+        if (usedBy) {
+          throw new BadRequestException(`The type of ${product.code} cannot change: it is used by ${usedBy}`);
+        }
+        product.type = dto.type!;
+      }
       if (provided('unitId')) product.unitId = new Types.ObjectId(dto.unitId!);
       if (provided('status')) product.status = dto.status!;
       for (const field of SIMPLE_FIELDS) {
@@ -435,7 +441,7 @@ export class ProductService {
   }
 
   /** The group id plus every group below it (groups nest through `under`). */
-  private async groupWithDescendants(groupId: string): Promise<Types.ObjectId[]> {
+  async groupWithDescendants(groupId: string): Promise<Types.ObjectId[]> {
     const groups = await this.productGroupModel.find().select('under').lean().exec();
     const children = new Map<string, string[]>();
     for (const group of groups) {

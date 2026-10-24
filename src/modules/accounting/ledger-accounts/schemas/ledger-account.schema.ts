@@ -126,14 +126,21 @@ export class LedgerAccount {
   @Prop({ type: BankDetailsSchema, default: null })
   bankDetails: BankDetails | null;
 
-  /** Virtual, derived from type. */
+  /**
+   * Set only on accounts the system creates and owns (Opening Balance Equity):
+   * never edited or deleted through the API, never offered or accepted on a voucher.
+   */
+  @Prop({ type: String, unique: true, sparse: true, immutable: true })
+  systemKey?: string;
+
+  /** Virtual, derived from type and systemKey. */
   isSystemManaged?: boolean;
 }
 
 export const LedgerAccountSchema = SchemaFactory.createForClass(LedgerAccount);
 
 LedgerAccountSchema.virtual('isSystemManaged').get(function (this: LedgerAccount) {
-  return SYSTEM_MANAGED_ACCOUNT_TYPES.includes(this.type);
+  return SYSTEM_MANAGED_ACCOUNT_TYPES.includes(this.type) || Boolean(this.systemKey);
 });
 
 // Name is unique within a type, ignoring case ("Main Cash" == "main cash").

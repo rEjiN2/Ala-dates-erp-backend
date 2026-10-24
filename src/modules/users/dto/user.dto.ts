@@ -56,6 +56,13 @@ export class CreateUserDto {
   @IsMongoId({ each: true })
   allowedCashAccountIds?: string[];
 
+  /** Locations an "own"-scoped user sees stock for. */
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsMongoId({ each: true })
+  allowedLocationIds?: string[];
+
   /** Hands collected cash to the office on cash handovers (van salesmen). */
   @IsOptional()
   @IsBoolean()

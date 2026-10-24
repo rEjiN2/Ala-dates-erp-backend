@@ -28,6 +28,16 @@ export const Permission = {
   CASH_HANDOVERS_APPROVE: 'cash-handovers:approve',
   /** Cancel any handover, approved ones included (reverses); a submitter may cancel their own submitted one without it. */
   CASH_HANDOVERS_CANCEL: 'cash-handovers:cancel',
+  OPENING_BALANCES_READ: 'opening-balances:read',
+  OPENING_BALANCES_CREATE: 'opening-balances:create',
+  OPENING_BALANCES_EDIT: 'opening-balances:edit',
+  OPENING_BALANCES_CANCEL: 'opening-balances:cancel',
+  /** Stock summary and history; "own"-scoped users only for their allowedLocationIds. */
+  STOCK_READ: 'stock:read',
+  OPENING_STOCK_READ: 'opening-stock:read',
+  OPENING_STOCK_CREATE: 'opening-stock:create',
+  OPENING_STOCK_EDIT: 'opening-stock:edit',
+  OPENING_STOCK_CANCEL: 'opening-stock:cancel',
   COMPANY_MANAGE: 'company:manage',
   LOCATIONS_MANAGE: 'locations:manage',
   PARTIES_MANAGE: 'parties:manage',
@@ -86,12 +96,18 @@ export const VAN_SALESMAN_ROLE_NAME = 'Van Salesman';
 /** The admin role holds every permission by default. */
 export const ADMIN_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS;
 
-/** Every voucher and master permission; no user, role or company management. */
+/** Every voucher and master permission; no user, role or company management; opening balances and stock read only. */
 export const ACCOUNTANT_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS.filter(
   (permission) =>
     permission !== Permission.USERS_MANAGE &&
     permission !== Permission.ROLES_MANAGE &&
-    permission !== Permission.COMPANY_MANAGE,
+    permission !== Permission.COMPANY_MANAGE &&
+    permission !== Permission.OPENING_BALANCES_CREATE &&
+    permission !== Permission.OPENING_BALANCES_EDIT &&
+    permission !== Permission.OPENING_BALANCES_CANCEL &&
+    permission !== Permission.OPENING_STOCK_CREATE &&
+    permission !== Permission.OPENING_STOCK_EDIT &&
+    permission !== Permission.OPENING_STOCK_CANCEL,
 );
 
 /** Enters receipts and submits handovers; sees only their own (dataScope own), no balances, no dashboard. */

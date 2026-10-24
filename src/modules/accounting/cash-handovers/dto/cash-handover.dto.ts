@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsDateString,
+  IsEnum,
   IsIn,
   IsInt,
   IsMongoId,
@@ -15,6 +16,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { CancelVoucherDto } from '../../vouchers/dto/voucher.dto.js';
+import { ExpensePaidFrom } from '../schemas/cash-handover.schema.js';
 
 const trimToNull = ({ value }: { value: unknown }) => {
   if (typeof value !== 'string') return value;
@@ -41,9 +43,15 @@ export class HandoverExpenseDto {
   @IsMongoId()
   expenseAccountId: string;
 
-  /** The user's cash or wallet account it was paid from. */
+  /** "own" (default): paid from sourceAccountId. "petty_cash": a claim on the company default petty cash. */
+  @IsOptional()
+  @IsEnum(ExpensePaidFrom)
+  paidFrom?: ExpensePaidFrom;
+
+  /** The user's cash or wallet account it was paid from; required for "own", ignored for "petty_cash". */
+  @IsOptional()
   @IsMongoId()
-  sourceAccountId: string;
+  sourceAccountId?: string;
 
   @IsNumber({ maxDecimalPlaces: 2 })
   @IsPositive()

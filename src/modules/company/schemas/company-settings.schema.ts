@@ -69,6 +69,10 @@ export class CompanySettings {
   @Prop({ type: Boolean, default: false })
   allowSelfApproval: boolean;
 
+  /** Lets stock postings take a product+location below zero. Off by default. */
+  @Prop({ type: Boolean, default: false })
+  allowNegativeStock: boolean;
+
   /** Cash handovers: where cash and wallet money is received by default (a cash or wallet account). */
   @Prop({ type: Types.ObjectId, ref: 'LedgerAccount', default: null })
   defaultCashInHandAccountId: Types.ObjectId | null;
@@ -76,6 +80,10 @@ export class CompanySettings {
   /** Cash handovers: where cheques are received by default (a cheque account). */
   @Prop({ type: Types.ObjectId, ref: 'LedgerAccount', default: null })
   defaultChequesInHandAccountId: Types.ObjectId | null;
+
+  /** Cash handovers: where expense claims are paid from when the salesman has no cash (a cash or wallet account). */
+  @Prop({ type: Types.ObjectId, ref: 'LedgerAccount', default: null })
+  defaultPettyCashAccountId: Types.ObjectId | null;
 
   @Prop({ type: UserSnapshotSchema, default: null })
   updatedBy: UserSnapshot | null;

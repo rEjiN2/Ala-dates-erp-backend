@@ -48,14 +48,16 @@ export interface CompanySettingsView extends Record<EditableField, string | null
   /** Our own file reference; fetch the image through GET /files/:id. */
   logo: { id: string; url: string } | null;
   allowSelfApproval: boolean;
+  allowNegativeStock: boolean;
   defaultCashInHandAccountId: string | null;
   defaultChequesInHandAccountId: string | null;
+  defaultPettyCashAccountId: string | null;
   updatedBy: { id: string; name: string } | null;
   updatedAt: Date | null;
 }
 
 type DisplayRecord = Record<
-  EditableField | 'logo' | 'allowSelfApproval' | 'defaultCashInHandAccount' | 'defaultChequesInHandAccount',
+  EditableField | 'logo' | 'allowSelfApproval' | 'allowNegativeStock' |'defaultCashInHandAccount' | 'defaultChequesInHandAccount' | 'defaultPettyCashAccount',
   string | null
 >;
 
@@ -66,6 +68,7 @@ const DEFAULT_ACCOUNT_FIELDS = [
     types: [LedgerAccountType.CASH, LedgerAccountType.WALLET],
   },
   { field: 'defaultChequesInHandAccountId', types: [LedgerAccountType.CHEQUE] },
+  { field: 'defaultPettyCashAccountId', types: [LedgerAccountType.CASH, LedgerAccountType.WALLET] },
 ] as const;
 
 const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
@@ -83,8 +86,10 @@ const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'currencyCode', label: 'Currency' },
   { key: 'receiptFooterText', label: 'Receipt footer text' },
   { key: 'allowSelfApproval', label: 'Allow self-approval of handovers' },
+  { key: 'allowNegativeStock', label: 'Allow negative stock' },
   { key: 'defaultCashInHandAccount', label: 'Default cash in hand account' },
   { key: 'defaultChequesInHandAccount', label: 'Default cheques in hand account' },
+  { key: 'defaultPettyCashAccount', label: 'Default petty cash account' },
 ];
 
 @Injectable()
@@ -103,7 +108,13 @@ export class CompanyService {
     ledgerUsage.register('company settings (default handover account)', async (accountId, session) =>
       Boolean(
         await this.settingsModel
-          .exists({ $or: [{ defaultCashInHandAccountId: accountId }, { defaultChequesInHandAccountId: accountId }] })
+          .exists({
+            $or: [
+              { defaultCashInHandAccountId: accountId },
+              { defaultChequesInHandAccountId: accountId },
+              { defaultPettyCashAccountId: accountId },
+            ],
+          })
           .session(session ?? null)
           .exec(),
       ),
@@ -161,6 +172,7 @@ export class CompanyService {
       settings.legalName = dto.legalName;
       settings.logoFileRef = dto.logoFileRef ? new Types.ObjectId(dto.logoFileRef) : null;
       settings.allowSelfApproval = dto.allowSelfApproval ?? false;
+      settings.allowNegativeStock = dto.allowNegativeStock ?? false;
       for (const { field } of DEFAULT_ACCOUNT_FIELDS) {
         settings.set(field, dto[field] ? new Types.ObjectId(dto[field]) : null);
       }
@@ -239,8 +251,10 @@ export class CompanyService {
       ...record,
       logo,
       allowSelfApproval: settings.allowSelfApproval ? 'Yes' : 'No',
+      allowNegativeStock: settings.allowNegativeStock ? 'Yes' : 'No',
       defaultCashInHandAccount: accountLabel('defaultCashInHandAccountId'),
       defaultChequesInHandAccount: accountLabel('defaultChequesInHandAccountId'),
+      defaultPettyCashAccount: accountLabel('defaultPettyCashAccountId'),
     };
   }
 
@@ -257,8 +271,10 @@ export class CompanyService {
       currencyCode: settings.currencyCode,
       logo: logoId ? { id: logoId, url: `/files/${logoId}` } : null,
       allowSelfApproval: settings.allowSelfApproval ?? false,
+      allowNegativeStock: settings.allowNegativeStock ?? false,
       defaultCashInHandAccountId: settings.defaultCashInHandAccountId?.toString() ?? null,
       defaultChequesInHandAccountId: settings.defaultChequesInHandAccountId?.toString() ?? null,
+      defaultPettyCashAccountId: settings.defaultPettyCashAccountId?.toString() ?? null,
       updatedBy: userRefOf(settings.updatedBy),
       updatedAt: settings.updatedAt ?? null,
     };

@@ -15,6 +15,10 @@ import { User, UserDocument } from '../modules/users/schemas/user.schema.js';
 import { backfillUserStatus, ensureDefaultRoles } from './seed-roles.js';
 import { CompanyService } from '../modules/company/company.service.js';
 import {
+  OPENING_BALANCE_EQUITY_KEY,
+  OPENING_BALANCE_EQUITY_NAME,
+} from '../modules/accounting/opening-balances/schemas/opening-balance.schema.js';
+import {
   DEFAULT_UNITS,
   UNIT_COLLATION,
   Unit,
@@ -55,6 +59,10 @@ async function seed(): Promise<void> {
       .updateOne({ key: 'cash-payment' }, { $setOnInsert: { key: 'cash-payment', seq: 0 } }, { upsert: true })
       .exec();
     logger.log('Voucher counter ready: cash-payment');
+    await counterModel
+      .updateOne({ key: 'opening-stock' }, { $setOnInsert: { key: 'opening-stock', seq: 0 } }, { upsert: true })
+      .exec();
+    logger.log('Voucher counter ready: opening-stock');
 
     // Created with the defaults (ALA DATES LLC, Jurf 3, Ajman) only if missing;
     // an edited profile is left as it is.
@@ -74,6 +82,26 @@ async function seed(): Promise<void> {
       await company.save();
     }
     logger.log(`Ledger account ready: ${cheques.code} (${cheques.name})`);
+
+    // System account that balances opening vouchers; never edited or chosen on a voucher.
+    const equity = await ledgerAccountService.ensureSystemAccount(
+      OPENING_BALANCE_EQUITY_KEY,
+      OPENING_BALANCE_EQUITY_NAME,
+      LedgerAccountType.OTHER,
+    );
+    logger.log(`Ledger account ready: ${equity.code} (${equity.name})`);
+
+    // Handover expense claims are paid from petty cash; an existing default is left as it is.
+    if (!company.defaultPettyCashAccountId) {
+      const pettyCash = await ledgerAccountModel
+        .findOne({ type: LedgerAccountType.CASH, name: 'Branch Petty Cash' })
+        .collation({ locale: 'en', strength: 2 })
+        .exec();
+      if (pettyCash) {
+        company.defaultPettyCashAccountId = pettyCash._id;
+        await company.save();
+      }
+    }
 
     // Default units, matched on symbol (ignoring case); existing ones are left as they are.
     const unitModel = app.get<Model<UnitDocument>>(getModelToken(Unit.name));

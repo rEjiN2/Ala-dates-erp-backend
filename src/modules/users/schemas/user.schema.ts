@@ -46,6 +46,10 @@ export class User {
   @Prop({ type: [{ type: Types.ObjectId, ref: 'LedgerAccount' }], default: [] })
   allowedCashAccountIds: Types.ObjectId[];
 
+  /** Stock-holding locations an "own"-scoped user sees stock for. */
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'Location' }], default: [] })
+  allowedLocationIds: Types.ObjectId[];
+
   /**
    * Van salesmen: hands collected cash to the office on a cash handover.
    * Their receipts start unsettled; they appear in the salesman report.

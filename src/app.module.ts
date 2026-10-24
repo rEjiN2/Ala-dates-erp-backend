@@ -15,6 +15,7 @@ import { LocationModule } from './modules/location/location.module.js';
 import { PurchaseModule } from './modules/purchase/purchase.module.js';
 import { SalesModule } from './modules/sales/sales.module.js';
 import { InventoryModule } from './modules/inventory/inventory.module.js';
+import { StockModule } from './modules/stock/stock.module.js';
 import { AccountingModule } from './modules/accounting/accounting.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
 import { FilesModule } from './modules/files/files.module.js';
@@ -60,6 +61,7 @@ import { ReportsModule } from './modules/reports/reports.module.js';
     PurchaseModule,
     SalesModule,
     InventoryModule,
+    StockModule,
     AccountingModule,
     StorageModule,
     FilesModule,
