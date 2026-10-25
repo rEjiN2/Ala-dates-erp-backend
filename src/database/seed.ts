@@ -7,6 +7,7 @@ import {
   LedgerAccount,
   LedgerAccountDocument,
   LedgerAccountType,
+  SYSTEM_ACCOUNTS,
 } from '../modules/accounting/ledger-accounts/schemas/ledger-account.schema.js';
 import { LedgerAccountService } from '../modules/accounting/ledger-accounts/ledger-account.service.js';
 import { Counter, CounterDocument } from '../modules/sequence/schemas/counter.schema.js';
@@ -25,7 +26,13 @@ import {
   UnitDocument,
 } from '../modules/product/units/schemas/unit.schema.js';
 
+import { CASH_CUSTOMER_KEY, Party, PartyDocument, PartyKind } from '../modules/party/schemas/party.schema.js';
+import { PartyService } from '../modules/party/party.service.js';
+
 const CASH_ACCOUNT_NAMES = ['Main Cash Counter', 'Branch Petty Cash'];
+const CASH_CUSTOMER_NAME = 'Cash Customer';
+/** Audit actor for records the seed creates. */
+const SEED_ACTOR_ID = '000000000000000000000000';
 const CHEQUES_IN_HAND_NAME = 'Cheques in Hand';
 
 async function seed(): Promise<void> {
@@ -63,6 +70,14 @@ async function seed(): Promise<void> {
       .updateOne({ key: 'opening-stock' }, { $setOnInsert: { key: 'opening-stock', seq: 0 } }, { upsert: true })
       .exec();
     logger.log('Voucher counter ready: opening-stock');
+    await counterModel
+      .updateOne({ key: 'purchase-invoice' }, { $setOnInsert: { key: 'purchase-invoice', seq: 0 } }, { upsert: true })
+      .exec();
+    logger.log('Voucher counter ready: purchase-invoice');
+    await counterModel
+      .updateOne({ key: 'sales-invoice' }, { $setOnInsert: { key: 'sales-invoice', seq: 0 } }, { upsert: true })
+      .exec();
+    logger.log('Voucher counter ready: sales-invoice');
 
     // Created with the defaults (ALA DATES LLC, Jurf 3, Ajman) only if missing;
     // an edited profile is left as it is.
@@ -90,6 +105,30 @@ async function seed(): Promise<void> {
       LedgerAccountType.OTHER,
     );
     logger.log(`Ledger account ready: ${equity.code} (${equity.name})`);
+
+    // Purchases/VAT Input and Sales/VAT Output: posted by purchase and sales invoices only.
+    for (const system of Object.values(SYSTEM_ACCOUNTS)) {
+      const account = await ledgerAccountService.ensureSystemAccount(system.key, system.name, system.type);
+      logger.log(`Ledger account ready: ${account.code} (${account.name})`);
+    }
+
+    // The walk-in customer: an existing customer of that name is adopted, else one is created.
+    const partyModel = app.get<Model<PartyDocument>>(getModelToken(Party.name));
+    let cashCustomer = await partyModel.findOne({ systemKey: CASH_CUSTOMER_KEY }).exec();
+    if (!cashCustomer) {
+      cashCustomer = await partyModel
+        .findOne({ kind: PartyKind.CUSTOMER, name: CASH_CUSTOMER_NAME })
+        .collation({ locale: 'en', strength: 2 })
+        .exec();
+      if (!cashCustomer) {
+        const view = await app
+          .get(PartyService)
+          .create({ kind: PartyKind.CUSTOMER, name: CASH_CUSTOMER_NAME }, { id: SEED_ACTOR_ID, name: 'System' });
+        cashCustomer = await partyModel.findById(view.id).exec();
+      }
+      await partyModel.updateOne({ _id: cashCustomer!._id }, { $set: { systemKey: CASH_CUSTOMER_KEY } }).exec();
+    }
+    logger.log(`Party ready: ${cashCustomer!.code} (${cashCustomer!.name})`);
 
     // Handover expense claims are paid from petty cash; an existing default is left as it is.
     if (!company.defaultPettyCashAccountId) {

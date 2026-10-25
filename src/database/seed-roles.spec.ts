@@ -127,9 +127,15 @@ describe('role seed', () => {
     });
     await ensureDefaultRoles(roleModel);
     const salesman = await roleModel.findOne({ name: VAN_SALESMAN_ROLE_NAME }).lean().exec();
-    // New: cash-handovers:read/create. Removed by an administrator earlier: cash-receipts:create stays removed.
+    // New: cash-handovers and sales-invoices read/create. Removed by an administrator earlier: cash-receipts:create stays removed.
     expect(sorted(salesman!.permissions)).toEqual(
-      sorted([Permission.CASH_RECEIPTS_READ, Permission.CASH_HANDOVERS_READ, Permission.CASH_HANDOVERS_CREATE]),
+      sorted([
+        Permission.CASH_RECEIPTS_READ,
+        Permission.CASH_HANDOVERS_READ,
+        Permission.CASH_HANDOVERS_CREATE,
+        Permission.SALES_INVOICES_READ,
+        Permission.SALES_INVOICES_CREATE,
+      ]),
     );
 
     await roleModel.updateOne({ name: VAN_SALESMAN_ROLE_NAME }, { permissions: [Permission.CASH_RECEIPTS_READ] }).exec();

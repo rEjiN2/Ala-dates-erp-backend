@@ -309,6 +309,9 @@ export class PartyService {
   async remove(id: string): Promise<{ success: true }> {
     const fileRefs = await this.inTransaction(null, async (session) => {
       const party = await this.getByIdOrThrow(id, session);
+      if (party.systemKey) {
+        throw new ConflictException(`${party.code} (${party.name}) is a system party and cannot be deleted`);
+      }
       const ledgerAccount = await this.ledgerAccountService.findById(party.ledgerAccountId.toString(), session);
 
       const balance = round2(ledgerAccount.balance);

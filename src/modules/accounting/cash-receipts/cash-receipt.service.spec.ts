@@ -55,6 +55,7 @@ import {
   CompanySettingsSchema,
 } from '../../company/schemas/company-settings.schema.js';
 import { FilesService } from '../../files/files.service.js';
+import { AllocationService } from '../allocations/allocation.service.js';
 import { backfillCollectedBy } from '../../../database/backfill-collected-by.js';
 import { backfillRemoveHandovers } from '../../../database/backfill-remove-handovers.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
@@ -159,6 +160,18 @@ describe('CashReceiptService (transactional)', () => {
         VoucherPrintService,
         // No logo is configured in these tests, so storage is never reached.
         { provide: FilesService, useValue: {} },
+        // Allocations are covered by the allocation and sales invoice specs.
+        {
+          provide: AllocationService,
+          useValue: {
+            registerPaymentSource: () => undefined,
+            allocateForPayment: async () => undefined,
+            reverseForPayment: async () => undefined,
+            describePayment: async () => '',
+            describeRequests: async () => '',
+            forPayment: async () => [],
+          },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)

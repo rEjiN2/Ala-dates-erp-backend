@@ -14,6 +14,17 @@ export enum LedgerAccountType {
   OTHER = 'other',
 }
 
+/**
+ * Accounts the system creates (seed, or on first use) and posts to itself;
+ * never chosen on a voucher. Opening Balance Equity is keyed the same way.
+ */
+export const SYSTEM_ACCOUNTS = {
+  PURCHASES: { key: 'purchases', name: 'Purchases', type: LedgerAccountType.EXPENSE },
+  VAT_INPUT: { key: 'vat_input', name: 'VAT Input', type: LedgerAccountType.OTHER },
+  SALES: { key: 'sales', name: 'Sales', type: LedgerAccountType.INCOME },
+  VAT_OUTPUT: { key: 'vat_output', name: 'VAT Output', type: LedgerAccountType.OTHER },
+} as const;
+
 export enum LedgerAccountStatus {
   ACTIVE = 'active',
   INACTIVE = 'inactive',
@@ -127,7 +138,7 @@ export class LedgerAccount {
   bankDetails: BankDetails | null;
 
   /**
-   * Set only on accounts the system creates and owns (Opening Balance Equity):
+   * Set only on accounts the system creates and owns (Opening Balance Equity, SYSTEM_ACCOUNTS):
    * never edited or deleted through the API, never offered or accepted on a voucher.
    */
   @Prop({ type: String, unique: true, sparse: true, immutable: true })

@@ -13,6 +13,8 @@ import {
   UpdateCashPaymentDto,
 } from './dto/cash-payment.dto.js';
 import { voucherView } from '../vouchers/voucher-view.js';
+import { AllocationService } from '../allocations/allocation.service.js';
+import { CASH_PAYMENT_ENTITY_TYPE } from './schemas/cash-payment.schema.js';
 
 /**
  * Every route needs a cash-payments permission; the actor always comes from
@@ -22,7 +24,10 @@ import { voucherView } from '../vouchers/voucher-view.js';
 @Controller('cash-payments')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CashPaymentController {
-  constructor(private readonly cashPaymentService: CashPaymentService) {}
+  constructor(
+    private readonly cashPaymentService: CashPaymentService,
+    private readonly allocationService: AllocationService,
+  ) {}
 
   @Get()
   @RequirePermission(Permission.CASH_PAYMENTS_READ)
@@ -33,7 +38,13 @@ export class CashPaymentController {
   @Get(':id')
   @RequirePermission(Permission.CASH_PAYMENTS_READ)
   async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashPaymentService.findById(id, user), user);
+    const voucher = await this.cashPaymentService.findById(id, user);
+    const view = voucherView(voucher, user);
+    // Active allocations per line: the edit form sends them back, or saving the lines drops them.
+    return {
+      ...(view === voucher ? voucher.toJSON() : view),
+      allocations: await this.allocationService.forPayment(CASH_PAYMENT_ENTITY_TYPE, voucher._id),
+    };
   }
 
   /** The voucher as an A4 PDF, shown inline. Every call is a print: it is audited, and later copies are DUPLICATEs. */

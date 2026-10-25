@@ -8,9 +8,17 @@ import { VouchersModule } from '../vouchers/vouchers.module.js';
 import { CompanyModule } from '../../company/company.module.js';
 import { FilesModule } from '../../files/files.module.js';
 import { AuditModule } from '../../audit/audit.module.js';
+import { AllocationModule } from '../allocations/allocation.module.js';
 
 @Module({
-  imports: [MongooseModule.forFeature([{ name: CashReceipt.name, schema: CashReceiptSchema }]), VouchersModule, CompanyModule, FilesModule, AuditModule],
+  imports: [
+    MongooseModule.forFeature([{ name: CashReceipt.name, schema: CashReceiptSchema }]),
+    VouchersModule,
+    CompanyModule,
+    FilesModule,
+    AuditModule,
+    AllocationModule,
+  ],
   controllers: [CashReceiptController],
   providers: [CashReceiptService, CashReceiptPrintService],
   exports: [CashReceiptService],

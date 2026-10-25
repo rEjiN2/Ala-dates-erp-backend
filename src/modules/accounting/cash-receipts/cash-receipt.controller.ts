@@ -26,6 +26,8 @@ import { CreateCashReceiptDto } from './dto/create-cash-receipt.dto.js';
 import { CancelCashReceiptDto, UpdateCashReceiptDto } from './dto/update-cash-receipt.dto.js';
 import { CashReceiptQueryDto } from './dto/cash-receipt-query.dto.js';
 import { voucherView } from '../vouchers/voucher-view.js';
+import { AllocationService } from '../allocations/allocation.service.js';
+import { CASH_RECEIPT_ENTITY_TYPE } from './schemas/cash-receipt.schema.js';
 
 /**
  * Every route needs a cash-receipts permission; every write takes its actor
@@ -38,6 +40,7 @@ export class CashReceiptController {
   constructor(
     private readonly cashReceiptService: CashReceiptService,
     private readonly printService: CashReceiptPrintService,
+    private readonly allocationService: AllocationService,
   ) {}
 
   @Get()
@@ -49,7 +52,13 @@ export class CashReceiptController {
   @Get(':id')
   @RequirePermission(Permission.CASH_RECEIPTS_READ)
   async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return voucherView(await this.cashReceiptService.findById(id, user), user);
+    const voucher = await this.cashReceiptService.findById(id, user);
+    const view = voucherView(voucher, user);
+    // Active allocations per line: the edit form sends them back, or saving the lines drops them.
+    return {
+      ...(view === voucher ? voucher.toJSON() : view),
+      allocations: await this.allocationService.forPayment(CASH_RECEIPT_ENTITY_TYPE, voucher._id),
+    };
   }
 
   /**

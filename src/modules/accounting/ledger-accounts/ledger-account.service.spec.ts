@@ -20,6 +20,7 @@ import { CreateLedgerAccountDto } from './dto/create-ledger-account.dto.js';
 import { UpdateLedgerAccountDto } from './dto/update-ledger-account.dto.js';
 import { LedgerAccountLookupQueryDto, LedgerAccountQueryDto } from './dto/ledger-account-query.dto.js';
 import { CashReceiptService } from '../cash-receipts/cash-receipt.service.js';
+import { AllocationService } from '../allocations/allocation.service.js';
 import { CompanyService } from '../../company/company.service.js';
 import { FilesService } from '../../files/files.service.js';
 import { CashReceipt, CashReceiptDocument, CashReceiptSchema } from '../cash-receipts/schemas/cash-receipt.schema.js';
@@ -84,6 +85,7 @@ describe('Accounts master (LedgerAccountService)', () => {
         // Receipts read these only for cheques and attachments.
         { provide: CompanyService, useValue: {} },
         { provide: FilesService, useValue: {} },
+        { provide: AllocationService, useValue: { registerPaymentSource: () => undefined } },
       ],
     }).compile();
 

@@ -8,6 +8,7 @@ import { LedgerAccountModule } from '../ledger-accounts/ledger-account.module.js
 import { SequenceModule } from '../../sequence/sequence.module.js';
 import { AuditModule } from '../../audit/audit.module.js';
 import { CommentsModule } from '../../comments/comments.module.js';
+import { AllocationModule } from '../allocations/allocation.module.js';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { CommentsModule } from '../../comments/comments.module.js';
     SequenceModule,
     AuditModule,
     CommentsModule,
+    AllocationModule,
   ],
   controllers: [OpeningBalanceController],
   providers: [OpeningBalanceService],

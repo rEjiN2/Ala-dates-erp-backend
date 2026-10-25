@@ -72,6 +72,8 @@ export interface VoucherCreateInput {
   acknowledgeWarnings?: boolean;
   /** Voucher-specific document fields, already validated by the voucher's own service. */
   extraFields?: Record<string, unknown>;
+  /** Runs in the voucher's transaction right after posting (e.g. payment allocations). */
+  afterPost?: (voucher: VoucherDocument, session: ClientSession) => Promise<void>;
 }
 
 export interface VoucherUpdateInput {
@@ -90,6 +92,8 @@ export interface VoucherUpdateInput {
   /** Voucher-specific fields to set, and their audit changes (they count towards "no changes"). */
   extraFields?: Record<string, unknown>;
   extraChanges?: AuditChange[];
+  /** Runs in the voucher's transaction right after reposting. */
+  afterPost?: (voucher: VoucherDocument, session: ClientSession) => Promise<void>;
 }
 
 export interface VoucherListQuery extends Omit<VoucherQueryDto, never> {
@@ -384,6 +388,8 @@ export class VoucherPostingService {
     model: VoucherModel,
     input: VoucherCreateInput,
     actor: Actor & ScopedUser,
+    /** Joins the caller's transaction instead of starting one (e.g. a sales invoice's pay-at-sale receipt). */
+    outerSession?: ClientSession,
   ): Promise<VoucherDocument> {
     const collectorId = resolveCollectorId(actor, input.collectedById);
     const headerAccount = await this.ledgerAccountService.findActiveReceiptAccount(
@@ -398,7 +404,7 @@ export class VoucherPostingService {
     const pricedLines = this.priceLines(input.lines);
     this.assertHeaderNotOnLines(def, input.headerAccountId, pricedLines);
 
-    return runInTransaction(this.connection, async (session) => {
+    return this.inTransaction(outerSession, async (session) => {
       await this.assertLineAccountTypes(def, pricedLines, session);
       const collector = await this.usersService.findEligibleCollector(collectorId, def.createPermission, session);
       await this.assertChequeUnique(model, cheque, null, session);
@@ -437,6 +443,7 @@ export class VoucherPostingService {
       );
 
       await this.post(def, this.postingOf(def, created), 'created', session);
+      await input.afterPost?.(created, session);
       await this.assertWarningsAcknowledged(def, watch, input.acknowledgeWarnings, session);
 
       await this.auditService.record(
@@ -600,6 +607,7 @@ export class VoucherPostingService {
 
       await existing.save({ session });
       await this.post(def, this.postingOf(def, existing), 'updated', session);
+      await input.afterPost?.(existing, session);
       await this.assertWarningsAcknowledged(def, watch, input.acknowledgeWarnings, session);
       await this.assertNotHandedOver(def, headerBefore, existing.voucherNo, 'edited', session);
 
@@ -627,6 +635,10 @@ export class VoucherPostingService {
     id: string,
     rawReason: unknown,
     actor: Actor & ScopedUser,
+    /** Runs in the cancel's transaction after the reversal (e.g. reversing payment allocations). */
+    afterCancel?: (voucher: VoucherDocument, reason: string, session: ClientSession) => Promise<void>,
+    /** Joins the caller's transaction instead of starting one. */
+    outerSession?: ClientSession,
   ): Promise<VoucherDocument> {
     this.assertValidId(def, id);
     const scope = await this.scopeFilter(actor, def);
@@ -637,7 +649,7 @@ export class VoucherPostingService {
       );
     }
 
-    return runInTransaction(this.connection, async (session) => {
+    return this.inTransaction(outerSession, async (session) => {
       const existing = await model
         .findOne(withScope({ _id: new Types.ObjectId(id) }, scope))
         .session(session)
@@ -650,6 +662,7 @@ export class VoucherPostingService {
 
       const headerBefore = await this.cashLikeBalance(def, this.headerOf(def, existing).toString(), session);
       await this.reverse(def, this.postingOf(def, existing), 'cancelled', session);
+      await afterCancel?.(existing, reason, session);
       await this.assertNotHandedOver(def, headerBefore, existing.voucherNo, 'cancelled', session);
 
       const now = new Date();
@@ -695,6 +708,10 @@ export class VoucherPostingService {
       await model.deleteOne({ _id: existing._id }, { session }).exec();
       return { success: true as const };
     });
+  }
+
+  private inTransaction<T>(outerSession: ClientSession | undefined, work: (session: ClientSession) => Promise<T>): Promise<T> {
+    return outerSession ? work(outerSession) : runInTransaction(this.connection, work);
   }
 
   /** Line amounts rounded to 2dp and totalled server-side; any client-sent total is never read. */

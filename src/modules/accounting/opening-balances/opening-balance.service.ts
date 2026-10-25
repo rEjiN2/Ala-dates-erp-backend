@@ -32,6 +32,8 @@ import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { Permission, hasPermission } from '../../roles/permissions.js';
 import { type Actor, type UserSnapshot, toUserSnapshot, userRefOf } from '../../../common/schemas/user-snapshot.schema.js';
 import { round2, sum2 } from '../../../common/utils/money.util.js';
+import { AllocationService } from '../allocations/allocation.service.js';
+import { AllocationTargetType } from '../allocations/schemas/allocation.schema.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
 type Viewer = Actor & ScopedUser;
@@ -106,6 +108,7 @@ export class OpeningBalanceService {
     private readonly sequenceService: SequenceService,
     private readonly auditService: AuditService,
     private readonly commentsService: CommentsService,
+    private readonly allocations: AllocationService,
     entityAccess: EntityAccessRegistry,
   ) {
     entityAccess.register(OPENING_BALANCE_ENTITY_TYPE, {
@@ -242,6 +245,7 @@ export class OpeningBalanceService {
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scope, session);
       assertNotCancelled(existing, 'edited');
+      await this.allocations.assertNoActive(AllocationTargetType.OPENING_BALANCE, existing._id, `${LABEL} ${existing.voucherNo}`, 'edited', session);
       const nextLines = dto.lines ? await this.checkedLines(dto.lines, existing._id, session) : existing.lines;
       const nextDate = dto.asOfDate !== undefined ? new Date(dto.asOfDate) : existing.asOfDate;
       const nextComments = dto.comments !== undefined ? dto.comments : existing.comments;
@@ -274,6 +278,7 @@ export class OpeningBalanceService {
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scope, session);
       assertNotCancelled(existing, 'cancelled again');
+      await this.allocations.assertNoActive(AllocationTargetType.OPENING_BALANCE, existing._id, `${LABEL} ${existing.voucherNo}`, 'cancelled', session);
       await this.post(existing, LedgerEntryKind.REVERSAL, 'cancelled', session);
       const now = new Date();
       existing.status = VoucherStatus.CANCELLED;

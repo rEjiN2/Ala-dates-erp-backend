@@ -1,10 +1,20 @@
-import { IsEnum, IsMongoId, IsOptional, ValidateIf } from 'class-validator';
+import { OmitType } from '@nestjs/mapped-types';
+import { Type } from 'class-transformer';
+import { ArrayMinSize, IsArray, IsEnum, IsMongoId, IsOptional, ValidateIf, ValidateNested } from 'class-validator';
 import { VoucherFieldsDto, VoucherLineDto } from '../../vouchers/dto/voucher.dto.js';
 import { PaymentMethod } from '../../vouchers/schemas/voucher.schema.js';
+import { AllocationTargetDto } from '../../allocations/dto/allocation.dto.js';
 
-export class CashReceiptLineDto extends VoucherLineDto {}
+/** A receipt line, optionally applied to the customer's bills; any remainder stays on account. */
+export class CashReceiptLineDto extends VoucherLineDto {
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AllocationTargetDto)
+  allocations?: AllocationTargetDto[];
+}
 
-export class CreateCashReceiptDto extends VoucherFieldsDto {
+export class CreateCashReceiptDto extends OmitType(VoucherFieldsDto, ['lines'] as const) {
   /**
    * The account the money is received into: an active cash, wallet or bank
    * account (the name is kept from when only cash was allowed). It may not
@@ -22,4 +32,10 @@ export class CreateCashReceiptDto extends VoucherFieldsDto {
   @IsOptional()
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => CashReceiptLineDto)
+  lines: CashReceiptLineDto[];
 }

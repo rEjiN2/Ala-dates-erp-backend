@@ -24,6 +24,10 @@ import { VoucherStatus } from '../vouchers/schemas/voucher.schema.js';
 import { PaymentMethod } from '../vouchers/schemas/voucher.schema.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
 import type { ScopedUser } from '../vouchers/data-scope.js';
+import type { VoucherUpdateInput } from '../vouchers/voucher-posting.service.js';
+import { AllocationService, type LineAllocation } from '../allocations/allocation.service.js';
+import { PartyKind } from '../../party/schemas/party.schema.js';
+import type { CashReceiptLineDto } from './dto/create-cash-receipt.dto.js';
 
 /** The authenticated user; "own"-scoped users see and post only their own receipts. */
 type Viewer = Actor & ScopedUser;
@@ -48,9 +52,11 @@ export class CashReceiptService {
     private readonly companyService: CompanyService,
     private readonly filesService: FilesService,
     private readonly auditService: AuditService,
+    private readonly allocations: AllocationService,
   ) {
     this.model = cashReceiptModel as unknown as VoucherModel;
     posting.registerVoucherType(CASH_RECEIPT_DEFINITION, this.model);
+    allocations.registerPaymentSource(CASH_RECEIPT_ENTITY_TYPE, this.model, PartyKind.CUSTOMER);
   }
 
   async findAll(query: CashReceiptQueryDto = {}, viewer?: Viewer): Promise<CashReceiptPage> {
@@ -73,40 +79,65 @@ export class CashReceiptService {
     )) as unknown as CashReceiptDocument;
   }
 
-  /** `actor` is the authenticated user; nothing in the DTO can set who created the receipt. */
-  async create(dto: CreateCashReceiptDto, actor: Viewer): Promise<CashReceiptDocument> {
-    const { cashAccountId, ...rest } = dto;
+  /**
+   * `actor` is the authenticated user; nothing in the DTO can set who created
+   * the receipt. With `session` it joins the caller's transaction (pay-at-sale).
+   */
+  async create(dto: CreateCashReceiptDto, actor: Viewer, session?: ClientSession): Promise<CashReceiptDocument> {
+    const { cashAccountId, lines, ...rest } = dto;
+    const requests = allocationsOf(lines);
     return (await this.posting.create(
       CASH_RECEIPT_DEFINITION,
       this.model,
-      { ...rest, headerAccountId: cashAccountId ?? (await this.chequesInHandFor(dto.paymentMethod)) },
+      {
+        ...rest,
+        headerAccountId: cashAccountId ?? (await this.chequesInHandFor(dto.paymentMethod)),
+        lines: lines.map(withoutAllocations),
+        afterPost: (voucher, txn) =>
+          this.allocations.allocateForPayment(CASH_RECEIPT_ENTITY_TYPE, voucher, requests, actor, txn),
+      },
       actor,
+      session,
     )) as unknown as CashReceiptDocument;
   }
 
+  /** Sending lines reverses the receipt's allocations and reposts the ones on those lines. */
   async update(id: string, dto: UpdateCashReceiptDto, actor: Viewer): Promise<CashReceiptDocument> {
-    const { cashAccountId, ...rest } = dto;
+    const { cashAccountId, lines, ...rest } = dto;
     // Switching to cheque without naming an account: the company's cheques in hand.
     const current = !cashAccountId && dto.paymentMethod === PaymentMethod.CHEQUE ? await this.findById(id, actor) : null;
     const headerAccountId =
       current && current.paymentMethod !== PaymentMethod.CHEQUE ? await this.chequesInHandFor(dto.paymentMethod) : cashAccountId;
-    return (await this.posting.update(
-      CASH_RECEIPT_DEFINITION,
-      this.model,
-      id,
-      { ...rest, headerAccountId },
-      actor,
-    )) as unknown as CashReceiptDocument;
+    const input: VoucherUpdateInput = { ...rest, headerAccountId };
+    if (lines) {
+      const requests = allocationsOf(lines);
+      input.lines = lines.map(withoutAllocations);
+      const [from, to] = await Promise.all([
+        this.allocations.describePayment(CASH_RECEIPT_ENTITY_TYPE, id),
+        this.allocations.describeRequests(requests),
+      ]);
+      if (from !== to) {
+        input.extraChanges = [{ field: 'allocations', label: 'Allocations', from: from || null, to: to || null }];
+      }
+      input.afterPost = async (voucher, session) => {
+        await this.allocations.reverseForPayment(CASH_RECEIPT_ENTITY_TYPE, voucher._id, 'Receipt edited', actor, session);
+        await this.allocations.allocateForPayment(CASH_RECEIPT_ENTITY_TYPE, voucher, requests, actor, session);
+      };
+    }
+    return (await this.posting.update(CASH_RECEIPT_DEFINITION, this.model, id, input, actor)) as unknown as CashReceiptDocument;
   }
 
-  /** Reverses the posting and keeps the receipt, marked cancelled, with who/when/why. */
-  async cancel(id: string, dto: CancelCashReceiptDto, actor: Viewer): Promise<CashReceiptDocument> {
+  /** Reverses the posting and its allocations and keeps the receipt, marked cancelled, with who/when/why. */
+  async cancel(id: string, dto: CancelCashReceiptDto, actor: Viewer, session?: ClientSession): Promise<CashReceiptDocument> {
     return (await this.posting.cancel(
       CASH_RECEIPT_DEFINITION,
       this.model,
       id,
       dto?.reason,
       actor,
+      (voucher, reason, txn) =>
+        this.allocations.reverseForPayment(CASH_RECEIPT_ENTITY_TYPE, voucher._id, `Receipt cancelled: ${reason}`, actor, txn),
+      session,
     )) as unknown as CashReceiptDocument;
   }
 
@@ -208,4 +239,12 @@ export class CashReceiptService {
   async remove(id: string, viewer?: Viewer): Promise<{ success: true }> {
     return this.posting.remove(CASH_RECEIPT_DEFINITION, this.model, id, viewer);
   }
+}
+
+function allocationsOf(lines: readonly CashReceiptLineDto[]): LineAllocation[] {
+  return lines.flatMap((line, lineIndex) => (line.allocations ?? []).map((allocation) => ({ lineIndex, ...allocation })));
+}
+
+function withoutAllocations({ allocations: _allocations, ...line }: CashReceiptLineDto) {
+  return line;
 }

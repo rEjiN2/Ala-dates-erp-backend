@@ -38,6 +38,22 @@ export const Permission = {
   OPENING_STOCK_CREATE: 'opening-stock:create',
   OPENING_STOCK_EDIT: 'opening-stock:edit',
   OPENING_STOCK_CANCEL: 'opening-stock:cancel',
+  /** Apply an on-account payment to a bill, or reverse an allocation. Allocating inside a payment needs only cash-payments:create. */
+  ALLOCATIONS_MANAGE: 'allocations:manage',
+  PURCHASE_INVOICES_READ: 'purchase-invoices:read',
+  PURCHASE_INVOICES_CREATE: 'purchase-invoices:create',
+  PURCHASE_INVOICES_EDIT: 'purchase-invoices:edit',
+  PURCHASE_INVOICES_CANCEL: 'purchase-invoices:cancel',
+  SALES_INVOICES_READ: 'sales-invoices:read',
+  SALES_INVOICES_CREATE: 'sales-invoices:create',
+  SALES_INVOICES_EDIT: 'sales-invoices:edit',
+  SALES_INVOICES_CANCEL: 'sales-invoices:cancel',
+  /** Sell at a rate other than the product's sale price. */
+  SALES_OVERRIDE_PRICE: 'sales:override-price',
+  /** Give any discount on a sales invoice line. */
+  SALES_DISCOUNT: 'sales:discount',
+  /** Sell beyond a customer's credit limit (with acknowledgeCredit: true). */
+  SALES_OVERRIDE_CREDIT: 'sales:override-credit',
   COMPANY_MANAGE: 'company:manage',
   LOCATIONS_MANAGE: 'locations:manage',
   PARTIES_MANAGE: 'parties:manage',
@@ -116,6 +132,8 @@ export const VAN_SALESMAN_PERMISSIONS: readonly Permission[] = [
   Permission.CASH_RECEIPTS_CREATE,
   Permission.CASH_HANDOVERS_READ,
   Permission.CASH_HANDOVERS_CREATE,
+  Permission.SALES_INVOICES_READ,
+  Permission.SALES_INVOICES_CREATE,
 ];
 
 export function hasPermission(user: { permissions?: readonly string[] } | undefined, permission: Permission): boolean {

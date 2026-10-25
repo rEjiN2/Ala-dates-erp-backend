@@ -359,6 +359,9 @@ export class LedgerAccountService {
         `${account.code} (${account.name}) is a ${account.type} account. Choose a ${types.length > 1 ? `${types.slice(0, -1).join(', ')} or ` : ''}${types.at(-1)} account.`,
       );
     }
+    if (account.systemKey) {
+      throw new BadRequestException(`${account.code} (${account.name}) is a system account and cannot be chosen`);
+    }
     if (account.status !== LedgerAccountStatus.ACTIVE) {
       throw new BadRequestException(`Ledger account ${account.code} is inactive`);
     }
@@ -465,9 +468,9 @@ export class LedgerAccountService {
       const chargeAccountId = fields.bankDetails.bankChargeAccountId;
       if (chargeAccountId) {
         const chargeAccount = await this.findById(chargeAccountId);
-        if (chargeAccount.type !== LedgerAccountType.EXPENSE) {
+        if (chargeAccount.type !== LedgerAccountType.EXPENSE || chargeAccount.systemKey) {
           throw new BadRequestException(
-            `bankChargeAccountId must be an expense account; ${chargeAccount.code} is a ${chargeAccount.type} account`,
+            `bankChargeAccountId must be an expense account; ${chargeAccount.code} is a ${chargeAccount.systemKey ? 'system' : chargeAccount.type} account`,
           );
         }
       }

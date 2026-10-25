@@ -5,6 +5,7 @@ import { CashPaymentModule } from './cash-payments/cash-payment.module.js';
 import { CashHandoverModule } from './cash-handovers/cash-handover.module.js';
 import { ChequeModule } from './cheques/cheque.module.js';
 import { OpeningBalanceModule } from './opening-balances/opening-balance.module.js';
+import { AllocationModule } from './allocations/allocation.module.js';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { OpeningBalanceModule } from './opening-balances/opening-balance.module.
     CashHandoverModule,
     ChequeModule,
     OpeningBalanceModule,
+    AllocationModule,
   ],
 })
 export class AccountingModule {}

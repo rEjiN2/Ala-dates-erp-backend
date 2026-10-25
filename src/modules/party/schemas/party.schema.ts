@@ -12,6 +12,9 @@ export enum PartyKind {
   SUPPLIER = 'supplier',
 }
 
+/** systemKey of the seeded walk-in customer: holds no credit, every sale to it is paid in full at sale. */
+export const CASH_CUSTOMER_KEY = 'cash_customer';
+
 export enum PartyStatus {
   ACTIVE = 'active',
   INACTIVE = 'inactive',
@@ -143,6 +146,10 @@ export class Party {
 
   @Prop({ type: Types.ObjectId, ref: LedgerAccount.name, required: true, unique: true })
   ledgerAccountId: Types.ObjectId;
+
+  /** Set only on parties the system seeds (Cash Customer); never deleted through the API. */
+  @Prop({ type: String, unique: true, sparse: true, immutable: true })
+  systemKey?: string | null;
 }
 
 export const PartySchema = SchemaFactory.createForClass(Party);

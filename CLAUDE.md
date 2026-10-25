@@ -40,8 +40,12 @@ StockEntry (insert-only) + StockBalance via StockService.post(entries,
 actor, session, {strict}); reversalsOf(); Opening Stock OS-; /stock/summary,
 /stock/history; User.allowedLocationIds scopes stock for own-scoped roles;
 Company.allowNegativeStock (cancel always strict); product type locked once used.
-Planned: purchase invoice, stock
-transfer, sales invoice, allocation, bundling, returns, reports, migration.
+Built: purchase invoice, allocation (payments->supplier bills, receipts->customer
+bills), sales invoice (src/modules/sales/sales-invoices, SI-; payNow = cash
+receipt + allocation in the same txn via optional session on
+VoucherPostingService.create/cancel; Party.systemKey cash_customer;
+/dashboard/sales|purchases).
+Planned: stock transfer, bundling, returns, reports, migration.
 
 ## Conventions
 - Permissions: one PERMISSIONS constant for every @RequirePermission().
