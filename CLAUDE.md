@@ -45,7 +45,9 @@ bills), sales invoice (src/modules/sales/sales-invoices, SI-; payNow = cash
 receipt + allocation in the same txn via optional session on
 VoucherPostingService.create/cancel; Party.systemKey cash_customer;
 /dashboard/sales|purchases).
-Planned: stock transfer, bundling, returns, reports, migration.
+Built: sales/purchase returns (src/modules/accounting/returns, SR-/PR-; ReturnService
+engine + thin services like VoucherPostingService).
+Planned: stock transfer, bundling, reports, migration.
 
 ## Conventions
 - Permissions: one PERMISSIONS constant for every @RequirePermission().
@@ -68,12 +70,22 @@ Planned: stock transfer, bundling, returns, reports, migration.
   (pnpm migrate:collected-by moved vouchers).
 - Codes: SequenceService (atomic $inc, takes a Mongo session). Clients never
   send codes; immutable. BR/WH/ST/VAN, PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CHQ, CR, CP, HO, PRD, OB.
+  CHQ, CR, CP, HO, PRD, OB, SR, PR.
 - Opening balances (src/modules/accounting/opening-balances, OB-): lines
   {accountId, debit|credit}; diff posts to system account "Opening Balance
   Equity" (LedgerAccount.systemKey: not editable, hidden from lookups,
   rejected on voucher lines). One non-cancelled OB per account; no cheque
   accounts. POST /opening-balances/validate (by code, no posting).
+- Returns (credit/debit notes): lines name an invoice line by its _id
+  (invoiceLineId); rate/discount/VAT pro-rata from it. Sales: Dr sales_returns
+  + vat_output, Cr customer, restocked lines in. Purchase: Dr supplier, Cr
+  purchase_returns + vat_input, stock out (negative-stock rule). Saved return
+  auto-allocates to its invoice up to balance (autoAllocationId; AllocationService
+  source with `credit`); invoice.creditedAmount, returnedQty, returnedAmount;
+  balance = net - paid - credited. Invoice edit/cancel blocked while returnedQty
+  > 0. Return edit/cancel only while the auto-allocation is the only active one.
+  Refunds are plain Cash Payment/Receipt vouchers (they do not consume the
+  return's unallocated credit).
 - Money: Balance = debits - credits (customer owing us is positive).
   LedgerEntry insert-only. Every voucher posts via VoucherPostingService in
   ONE Mongo transaction (number, entries, balances, audit). Totals computed

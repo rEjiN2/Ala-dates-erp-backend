@@ -213,6 +213,9 @@ export class SalesInvoiceService {
         totalTax: doc.totalTax,
         netTotal: doc.netTotal,
         paidAmount: doc.paidAmount,
+        creditedAmount: doc.creditedAmount ?? 0,
+        returnedQty: doc.returnedQty ?? 0,
+        returnedAmount: doc.returnedAmount ?? 0,
         balance: doc.balance,
         paymentStatus: doc.paymentStatus,
         overdue: doc.status === VoucherStatus.POSTED && isOverdue(doc.dueDate, doc.balance),
@@ -337,6 +340,7 @@ export class SalesInvoiceService {
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scopeOf(actor), session);
       assertNotCancelled(existing, 'edited');
+      assertNoReturns(existing, 'edited');
       await this.allocations.assertNoActive(
         AllocationTargetType.SALES_INVOICE,
         existing._id,
@@ -409,6 +413,7 @@ export class SalesInvoiceService {
     return runInTransaction(this.connection, async (session) => {
       const found = await this.load(id, scopeOf(actor), session);
       assertNotCancelled(found, 'cancelled again');
+      assertNoReturns(found, 'cancelled');
       if (found.paymentReceiptId) {
         const receipt = await this.receiptModel.findById(found.paymentReceiptId).session(session).exec();
         if (receipt && receipt.status !== VoucherStatus.CANCELLED) {
@@ -890,6 +895,15 @@ function asId(id: string, what: string): Types.ObjectId {
 function assertNotCancelled(doc: SalesInvoiceDocument, action: string): void {
   if (doc.status === VoucherStatus.CANCELLED) {
     throw new BadRequestException(`${LABEL} ${doc.voucherNo} is cancelled and cannot be ${action}`);
+  }
+}
+
+/** An invoice with active returns is locked: cancel the returns first. */
+function assertNoReturns(doc: SalesInvoiceDocument, action: string): void {
+  if ((doc.returnedQty ?? 0) > 0) {
+    throw new ConflictException(
+      `${LABEL} ${doc.voucherNo} has sales returns (${doc.returnedQty} returned); cancel those before it can be ${action}`,
+    );
   }
 }
 

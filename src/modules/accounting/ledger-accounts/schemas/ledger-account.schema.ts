@@ -23,6 +23,10 @@ export const SYSTEM_ACCOUNTS = {
   VAT_INPUT: { key: 'vat_input', name: 'VAT Input', type: LedgerAccountType.OTHER },
   SALES: { key: 'sales', name: 'Sales', type: LedgerAccountType.INCOME },
   VAT_OUTPUT: { key: 'vat_output', name: 'VAT Output', type: LedgerAccountType.OTHER },
+  /** Contra income: debited by sales returns. */
+  SALES_RETURNS: { key: 'sales_returns', name: 'Sales Returns', type: LedgerAccountType.INCOME },
+  /** Contra expense: credited by purchase returns. */
+  PURCHASE_RETURNS: { key: 'purchase_returns', name: 'Purchase Returns', type: LedgerAccountType.EXPENSE },
 } as const;
 
 export enum LedgerAccountStatus {

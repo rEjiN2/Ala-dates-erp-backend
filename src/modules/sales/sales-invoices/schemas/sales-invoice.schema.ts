@@ -9,9 +9,11 @@ export type SalesInvoiceDocument = HydratedDocument<SalesInvoice>;
 /** Entity type under which sales invoices appear in audit logs, comments, the activity timeline, ledger and stock entries. */
 export const SALES_INVOICE_ENTITY_TYPE = 'sales-invoice';
 
-/** One product sold. All amounts are computed server-side. */
-@Schema({ _id: false })
+/** One product sold. All amounts are computed server-side. The line's _id is what a sales return names. */
+@Schema()
 export class SalesInvoiceLine {
+  _id?: Types.ObjectId;
+
   @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
   productId: Types.ObjectId;
 
@@ -43,6 +45,10 @@ export class SalesInvoiceLine {
   /** The product's purchase price when sold; returned only with products:view-cost. */
   @Prop({ required: true, default: 0 })
   unitCost: number;
+
+  /** Quantity on active sales returns; moved only by the returns service. */
+  @Prop({ default: 0 })
+  returnedQty?: number;
 }
 
 export const SalesInvoiceLineSchema = SchemaFactory.createForClass(SalesInvoiceLine);
@@ -105,12 +111,23 @@ export class SalesInvoice {
   @Prop({ required: true, default: 0 })
   netTotal: number;
 
-  /** Sum of active allocations; balance = netTotal - paidAmount. Moved only by AllocationService. */
+  /** Active payment allocations; balance = netTotal - paidAmount - creditedAmount. Moved only by AllocationService. */
   @Prop({ required: true, default: 0 })
   paidAmount: number;
 
+  /** Active credit-note (sales return) allocations. */
+  @Prop({ default: 0 })
+  creditedAmount?: number;
+
   @Prop({ required: true, default: 0 })
   balance: number;
+
+  /** On active sales returns: total quantity and net amount (incl. VAT). Moved only by the returns service. */
+  @Prop({ default: 0 })
+  returnedQty?: number;
+
+  @Prop({ default: 0 })
+  returnedAmount?: number;
 
   @Prop({ type: String, enum: PaymentStatus, default: PaymentStatus.UNPAID, index: true })
   paymentStatus: PaymentStatus;

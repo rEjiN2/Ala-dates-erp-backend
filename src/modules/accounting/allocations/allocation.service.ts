@@ -23,6 +23,7 @@ import {
   SalesInvoiceDocument,
 } from '../../sales/sales-invoices/schemas/sales-invoice.schema.js';
 import { OpeningBalance, OpeningBalanceDocument } from '../opening-balances/schemas/opening-balance.schema.js';
+import { CREDIT_NOTE_TYPES } from '../returns/schemas/return.schema.js';
 import { VoucherStatus, type VoucherDocument } from '../vouchers/schemas/voucher.schema.js';
 import { Party, PartyDocument, PartyKind } from '../../party/schemas/party.schema.js';
 import { AuditService } from '../../audit/audit.service.js';
@@ -48,11 +49,26 @@ interface Target {
   invoice: InvoiceDocument | null;
 }
 
+/**
+ * A credit note (sales or purchase return) as a payment source: it has no
+ * cash-voucher lines, so it names where the party's account sits and its one
+ * "line" (the party's side of the note).
+ */
+export interface CreditSource {
+  /** Mongo path of the party's ledger account on the document. */
+  accountField: string;
+  linesOf: (voucher: VoucherDocument) => { accountId: Types.ObjectId; netAmount: number }[];
+}
+
 /** A payment voucher type and the side it settles: payments pay suppliers' bills, receipts settle customers'. */
 interface PaymentSource {
   model: Model<VoucherDocument>;
   partyKind: PartyKind;
+  credit?: CreditSource;
 }
+
+const linesOf = (source: PaymentSource, voucher: VoucherDocument) =>
+  source.credit ? source.credit.linesOf(voucher) : voucher.lines;
 
 const TOLERANCE = 0.001;
 
@@ -81,9 +97,14 @@ export class AllocationService {
     private readonly auditService: AuditService,
   ) {}
 
-  /** Called once by each payment voucher service, e.g. ("cash-payment", its model, supplier). */
-  registerPaymentSource(paymentVoucherType: string, model: Model<VoucherDocument>, partyKind: PartyKind): void {
-    this.sources.set(paymentVoucherType, { model, partyKind });
+  /** Called once by each payment voucher service, e.g. ("cash-payment", its model, supplier). Returns pass `credit`. */
+  registerPaymentSource(
+    paymentVoucherType: string,
+    model: Model<VoucherDocument>,
+    partyKind: PartyKind,
+    credit?: CreditSource,
+  ): void {
+    this.sources.set(paymentVoucherType, { model, partyKind, credit });
   }
 
   /** The party's bills with money still owed, oldest due first. */
@@ -179,18 +200,19 @@ export class AllocationService {
       allocated: number;
       unallocated: number;
     }[] = [];
-    for (const [paymentVoucherType, { model, partyKind }] of this.sources) {
+    for (const [paymentVoucherType, source] of this.sources) {
+      const { model, partyKind } = source;
       if (partyKind !== party.kind) continue;
       const vouchers = await model
         .find({
           status: VoucherStatus.POSTED,
-          'lines.accountId': party.ledgerAccountId,
+          [source.credit?.accountField ?? 'lines.accountId']: party.ledgerAccountId,
         })
         .sort({ voucherDate: 1, voucherNo: 1 })
         .lean<VoucherDocument[]>()
         .exec();
       for (const voucher of vouchers) {
-        voucher.lines.forEach((line, paymentLineIndex) => {
+        linesOf(source, voucher).forEach((line, paymentLineIndex) => {
           if (!line.accountId.equals(party.ledgerAccountId)) return;
           const done = allocated.get(`${paymentVoucherType}:${voucher._id.toString()}:${paymentLineIndex}`) ?? 0;
           const unallocated = round2(line.netAmount - done);
@@ -253,6 +275,32 @@ export class AllocationService {
     for (const request of requests) {
       await this.allocate(paymentVoucherType, voucher._id, request, actor, session);
     }
+  }
+
+  /** One allocation inside the caller's transaction, returning the row (a return keeps its id as its auto-allocation). */
+  allocateLine(
+    paymentVoucherType: string,
+    paymentVoucherId: Types.ObjectId,
+    request: LineAllocation,
+    actor: Actor,
+    session: ClientSession,
+  ): Promise<AllocationDocument> {
+    return this.allocate(paymentVoucherType, paymentVoucherId, request, actor, session);
+  }
+
+  /** Ids and bill numbers of a payment's active allocations, read inside the caller's transaction. */
+  async activeForPayment(
+    paymentVoucherType: string,
+    paymentVoucherId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<{ id: string; targetNo: string }[]> {
+    const rows = await this.model
+      .find({ paymentVoucherType, paymentVoucherId, status: AllocationStatus.ACTIVE })
+      .select('targetNo')
+      .session(session)
+      .lean()
+      .exec();
+    return rows.map((row) => ({ id: row._id.toString(), targetNo: row.targetNo }));
   }
 
   /** Inside a payment's edit/cancel transaction: reverses every active allocation of the payment. */
@@ -388,7 +436,7 @@ export class AllocationService {
       throw new BadRequestException(`${voucher.voucherNo} is cancelled; its lines can't be allocated`);
     }
     const lineLabel = `Line ${request.lineIndex + 1} of ${voucher.voucherNo}`;
-    const line = voucher.lines[request.lineIndex];
+    const line = linesOf(source, voucher)[request.lineIndex];
     if (!line) throw new BadRequestException(`${voucher.voucherNo} has no line ${request.lineIndex + 1}`);
     const party = await this.partyModel.findOne({ ledgerAccountId: line.accountId }).session(session).exec();
     if (!party) throw new BadRequestException(`${lineLabel} is not to a customer or supplier and can't be allocated`);
@@ -475,11 +523,14 @@ export class AllocationService {
     session: ClientSession,
     reason?: string,
   ) {
-    const from = invoice.paidAmount ?? 0;
+    // A credit note settles the bill as "credited"; both reduce what is still owed.
+    const field = CREDIT_NOTE_TYPES.includes(allocation.paymentVoucherType) ? 'creditedAmount' : 'paidAmount';
+    const from = invoice[field] ?? 0;
     const paid = round2(from + delta);
-    invoice.paidAmount = paid;
-    invoice.balance = round2(invoice.netTotal - paid);
-    invoice.paymentStatus = paymentStatusOf(invoice.netTotal, paid);
+    invoice[field] = paid;
+    const settled = round2((invoice.paidAmount ?? 0) + (invoice.creditedAmount ?? 0));
+    invoice.balance = round2(invoice.netTotal - settled);
+    invoice.paymentStatus = paymentStatusOf(invoice.netTotal, settled);
     await invoice.save({ session });
     await this.auditService.record(
       {
@@ -489,7 +540,7 @@ export class AllocationService {
         action: AuditAction.UPDATED,
         actor,
         at,
-        changes: [{ field: 'paidAmount', label: 'Paid', from, to: paid }],
+        changes: [{ field, label: field === 'creditedAmount' ? 'Credited' : 'Paid', from, to: paid }],
         reason: `${delta > 0 ? 'Allocated from' : 'Allocation reversed:'} ${allocation.paymentVoucherNo}${reason ? ` (${reason})` : ''}`,
       },
       session,

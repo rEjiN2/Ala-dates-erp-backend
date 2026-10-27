@@ -9,9 +9,11 @@ export type PurchaseInvoiceDocument = HydratedDocument<PurchaseInvoice>;
 /** Entity type under which purchase invoices appear in audit logs, comments, the activity timeline, ledger and stock entries. */
 export const PURCHASE_INVOICE_ENTITY_TYPE = 'purchase-invoice';
 
-/** One product bought. All amounts are computed server-side. */
-@Schema({ _id: false })
+/** One product bought. All amounts are computed server-side. The line's _id is what a purchase return names. */
+@Schema()
 export class PurchaseInvoiceLine {
+  _id?: Types.ObjectId;
+
   @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
   productId: Types.ObjectId;
 
@@ -39,6 +41,10 @@ export class PurchaseInvoiceLine {
   /** amount + vat. */
   @Prop({ required: true })
   netAmount: number;
+
+  /** Quantity on active purchase returns; moved only by the returns service. */
+  @Prop({ default: 0 })
+  returnedQty?: number;
 }
 
 export const PurchaseInvoiceLineSchema = SchemaFactory.createForClass(PurchaseInvoiceLine);
@@ -108,12 +114,23 @@ export class PurchaseInvoice {
   @Prop({ required: true, default: 0 })
   netTotal: number;
 
-  /** Sum of active allocations; balance = netTotal - paidAmount. Moved only by AllocationService. */
+  /** Active payment allocations; balance = netTotal - paidAmount - creditedAmount. Moved only by AllocationService. */
   @Prop({ required: true, default: 0 })
   paidAmount: number;
 
+  /** Active credit-note (purchase return) allocations. */
+  @Prop({ default: 0 })
+  creditedAmount?: number;
+
   @Prop({ required: true, default: 0 })
   balance: number;
+
+  /** On active purchase returns: total quantity and net amount (incl. VAT). Moved only by the returns service. */
+  @Prop({ default: 0 })
+  returnedQty?: number;
+
+  @Prop({ default: 0 })
+  returnedAmount?: number;
 
   /** Overdue is derived from dueDate and balance, never stored. */
   @Prop({ type: String, enum: PaymentStatus, default: PaymentStatus.UNPAID, index: true })

@@ -48,6 +48,14 @@ export const Permission = {
   SALES_INVOICES_CREATE: 'sales-invoices:create',
   SALES_INVOICES_EDIT: 'sales-invoices:edit',
   SALES_INVOICES_CANCEL: 'sales-invoices:cancel',
+  PURCHASE_RETURNS_READ: 'purchase-returns:read',
+  PURCHASE_RETURNS_CREATE: 'purchase-returns:create',
+  PURCHASE_RETURNS_EDIT: 'purchase-returns:edit',
+  PURCHASE_RETURNS_CANCEL: 'purchase-returns:cancel',
+  SALES_RETURNS_READ: 'sales-returns:read',
+  SALES_RETURNS_CREATE: 'sales-returns:create',
+  SALES_RETURNS_EDIT: 'sales-returns:edit',
+  SALES_RETURNS_CANCEL: 'sales-returns:cancel',
   /** Sell at a rate other than the product's sale price. */
   SALES_OVERRIDE_PRICE: 'sales:override-price',
   /** Give any discount on a sales invoice line. */
@@ -134,6 +142,7 @@ export const VAN_SALESMAN_PERMISSIONS: readonly Permission[] = [
   Permission.CASH_HANDOVERS_CREATE,
   Permission.SALES_INVOICES_READ,
   Permission.SALES_INVOICES_CREATE,
+  Permission.SALES_RETURNS_READ,
 ];
 
 export function hasPermission(user: { permissions?: readonly string[] } | undefined, permission: Permission): boolean {

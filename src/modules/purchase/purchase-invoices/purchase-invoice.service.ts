@@ -197,6 +197,9 @@ export class PurchaseInvoiceService {
         totalTax: doc.totalTax,
         netTotal: doc.netTotal,
         paidAmount: doc.paidAmount,
+        creditedAmount: doc.creditedAmount ?? 0,
+        returnedQty: doc.returnedQty ?? 0,
+        returnedAmount: doc.returnedAmount ?? 0,
         balance: doc.balance,
         paymentStatus: doc.paymentStatus,
         overdue: doc.status === VoucherStatus.POSTED && isOverdue(doc.dueDate, doc.balance),
@@ -262,6 +265,7 @@ export class PurchaseInvoiceService {
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scopeOf(actor), session);
       assertNotCancelled(existing, 'edited');
+      assertNoReturns(existing, 'edited');
       await this.allocations.assertNoActive(
         AllocationTargetType.PURCHASE_INVOICE,
         existing._id,
@@ -321,6 +325,7 @@ export class PurchaseInvoiceService {
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scopeOf(actor), session);
       assertNotCancelled(existing, 'cancelled again');
+      assertNoReturns(existing, 'cancelled');
       await this.allocations.assertNoActive(
         AllocationTargetType.PURCHASE_INVOICE,
         existing._id,
@@ -765,6 +770,15 @@ function asId(id: string, what: string): Types.ObjectId {
 function assertNotCancelled(doc: PurchaseInvoiceDocument, action: string): void {
   if (doc.status === VoucherStatus.CANCELLED) {
     throw new BadRequestException(`${LABEL} ${doc.voucherNo} is cancelled and cannot be ${action}`);
+  }
+}
+
+/** An invoice with active returns is locked: cancel the returns first. */
+function assertNoReturns(doc: PurchaseInvoiceDocument, action: string): void {
+  if ((doc.returnedQty ?? 0) > 0) {
+    throw new ConflictException(
+      `${LABEL} ${doc.voucherNo} has purchase returns (${doc.returnedQty} returned); cancel those before it can be ${action}`,
+    );
   }
 }
 
