@@ -6,7 +6,7 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator.j
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { Permission } from '../../roles/permissions.js';
 import { PurchaseReturnService } from './purchase-return.service.js';
-import { CancelReturnDto, CreatePurchaseReturnDto, ReturnQueryDto, UpdatePurchaseReturnDto } from './dto/return.dto.js';
+import { RefundReturnDto, CancelReturnDto, CreatePurchaseReturnDto, ReturnQueryDto, UpdatePurchaseReturnDto } from './dto/return.dto.js';
 
 /** Every route needs a purchase-returns permission; the actor always comes from the token. "own"-scoped users see only their allowed locations. */
 @Controller('purchase-returns')
@@ -49,6 +49,24 @@ export class PurchaseReturnController {
   @RequirePermission(Permission.PURCHASE_RETURNS_EDIT)
   async update(@Param('id') id: string, @Body() dto: UpdatePurchaseReturnDto, @CurrentUser() user: AuthenticatedUser) {
     return this.purchaseReturnService.view(await this.purchaseReturnService.update(id, dto, user), user);
+  }
+
+  /** Takes the credit left on account in cash from the supplier (posts a Cash Receipt). */
+  @Post(':id/refund')
+  @RequirePermission(Permission.PURCHASE_RETURNS_EDIT)
+  async refund(@Param('id') id: string, @Body() dto: RefundReturnDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.purchaseReturnService.view(await this.purchaseReturnService.refund(id, dto, user), user);
+  }
+
+  @Post(':id/refunds/:voucherId/cancel')
+  @RequirePermission(Permission.PURCHASE_RETURNS_EDIT)
+  async cancelRefund(
+    @Param('id') id: string,
+    @Param('voucherId') voucherId: string,
+    @Body() dto: CancelReturnDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.purchaseReturnService.view(await this.purchaseReturnService.cancelRefund(id, voucherId, dto, user), user);
   }
 
   @Post(':id/cancel')

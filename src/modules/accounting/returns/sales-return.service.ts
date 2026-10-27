@@ -4,7 +4,7 @@ import type { Model } from 'mongoose';
 import { SalesReturn, type ReturnDocument } from './schemas/return.schema.js';
 import { SALES_RETURN_DEFINITION as DEF } from './return-definition.js';
 import { ReturnService, type ReturnModel } from './return.service.js';
-import type { CancelReturnDto, CreateSalesReturnDto, ReturnQueryDto, UpdateSalesReturnDto } from './dto/return.dto.js';
+import type { RefundReturnDto, CancelReturnDto, CreateSalesReturnDto, ReturnQueryDto, UpdateSalesReturnDto } from './dto/return.dto.js';
 import type { PrintedVoucher } from '../vouchers/voucher-print.service.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 
@@ -48,6 +48,14 @@ export class SalesReturnService {
 
   cancel(id: string, dto: CancelReturnDto, actor: AuthenticatedUser) {
     return this.engine.cancel(DEF, this.model, id, dto.reason, actor);
+  }
+
+  refund(id: string, dto: RefundReturnDto, actor: AuthenticatedUser) {
+    return this.engine.refund(DEF, this.model, id, dto, actor);
+  }
+
+  cancelRefund(id: string, voucherId: string, dto: CancelReturnDto, actor: AuthenticatedUser) {
+    return this.engine.cancelRefund(DEF, this.model, id, voucherId, dto.reason, actor);
   }
 
   /** CREDIT NOTE, ORIGINAL then DUPLICATEs; every call is audited as a print. */

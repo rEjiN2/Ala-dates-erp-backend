@@ -1,6 +1,9 @@
 import { Types } from 'mongoose';
 import { AllocationTargetType } from '../allocations/schemas/allocation.schema.js';
 import { SYSTEM_ACCOUNTS } from '../ledger-accounts/schemas/ledger-account.schema.js';
+import { CASH_PAYMENT_DEFINITION } from '../cash-payments/cash-payment.definition.js';
+import { CASH_RECEIPT_DEFINITION } from '../cash-receipts/cash-receipt.definition.js';
+import type { VoucherDefinition } from '../vouchers/voucher-definition.js';
 import { isOwnScope } from '../vouchers/data-scope.js';
 import { PURCHASE_RETURN_ENTITY_TYPE, SALES_RETURN_ENTITY_TYPE } from './schemas/return.schema.js';
 import { PURCHASE_INVOICE_ENTITY_TYPE } from '../../purchase/purchase-invoices/schemas/purchase-invoice.schema.js';
@@ -42,6 +45,8 @@ export interface ReturnDefinition {
   /** The cost snapshot is shown only with products:view-cost. */
   hidesCost: boolean;
   readPermission: Permission;
+  /** The voucher that pays the credit out: a Cash Payment to the customer, or a Cash Receipt from the supplier. */
+  refund: { voucher: VoucherDefinition; createPermission: Permission; cancelPermission: Permission };
   /**
    * What a scoped user may see; null = everything. Returns and the invoices
    * they name share these fields, so the same filter serves both.
@@ -85,6 +90,11 @@ export const SALES_RETURN_DEFINITION: ReturnDefinition = {
   stockDirection: 'in',
   hidesCost: true,
   readPermission: Permission.SALES_RETURNS_READ,
+  refund: {
+    voucher: CASH_PAYMENT_DEFINITION,
+    createPermission: Permission.CASH_PAYMENTS_CREATE,
+    cancelPermission: Permission.CASH_PAYMENTS_CANCEL,
+  },
   scope: salesScope,
   pdf: {
     title: 'CREDIT NOTE',
@@ -111,6 +121,11 @@ export const PURCHASE_RETURN_DEFINITION: ReturnDefinition = {
   stockDirection: 'out',
   hidesCost: false,
   readPermission: Permission.PURCHASE_RETURNS_READ,
+  refund: {
+    voucher: CASH_RECEIPT_DEFINITION,
+    createPermission: Permission.CASH_RECEIPTS_CREATE,
+    cancelPermission: Permission.CASH_RECEIPTS_CANCEL,
+  },
   scope: locationScope,
   pdf: {
     title: 'DEBIT NOTE',

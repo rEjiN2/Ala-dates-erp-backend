@@ -3,8 +3,10 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { type ReturnDefinition } from './return-definition.js';
-import { type ReturnDocument, type ReturnLine } from './schemas/return.schema.js';
-import type { ReturnQueryDto } from './dto/return.dto.js';
+import { PURCHASE_RETURN_ENTITY_TYPE, SALES_RETURN_ENTITY_TYPE, type ReturnDocument, type ReturnLine } from './schemas/return.schema.js';
+import type { RefundReturnDto, ReturnQueryDto } from './dto/return.dto.js';
+import { CashPayment } from '../cash-payments/schemas/cash-payment.schema.js';
+import { CashReceipt } from '../cash-receipts/schemas/cash-receipt.schema.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../../stock/stock.service.js';
 import { Product, ProductDocument } from '../../product/products/schemas/product.schema.js';
 import { Party, PartyDocument } from '../../party/schemas/party.schema.js';
@@ -107,11 +109,14 @@ interface Prepared {
 @Injectable()
 export class ReturnService {
   private readonly invoiceModels: Record<string, Model<unknown>>;
+  private readonly refundModels: Record<string, Model<unknown>>;
 
   constructor(
     @InjectConnection() private readonly connection: Connection,
     @InjectModel(SalesInvoice.name) salesInvoiceModel: Model<unknown>,
     @InjectModel(PurchaseInvoice.name) purchaseInvoiceModel: Model<unknown>,
+    @InjectModel(CashPayment.name) cashPaymentModel: Model<unknown>,
+    @InjectModel(CashReceipt.name) cashReceiptModel: Model<unknown>,
     @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
     @InjectModel(Party.name) private readonly partyModel: Model<PartyDocument>,
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
@@ -129,6 +134,7 @@ export class ReturnService {
       [SALES_INVOICE_ENTITY_TYPE]: salesInvoiceModel,
       [PURCHASE_INVOICE_ENTITY_TYPE]: purchaseInvoiceModel,
     };
+    this.refundModels = { [SALES_RETURN_ENTITY_TYPE]: cashPaymentModel, [PURCHASE_RETURN_ENTITY_TYPE]: cashReceiptModel };
   }
 
   /** Hooks a return type into allocations (its credit is a "payment line"), comments and activity. Call once, from its service. */
@@ -136,8 +142,9 @@ export class ReturnService {
     this.allocations.registerPaymentSource(def.entityType, model as unknown as Model<VoucherDocument>, def.partyKind, {
       accountField: 'partyAccountId',
       linesOf: (voucher) => {
-        const note = voucher as unknown as { partyAccountId: Types.ObjectId; netTotal: number };
-        return [{ accountId: note.partyAccountId, netAmount: note.netTotal }];
+        const note = voucher as unknown as { partyAccountId: Types.ObjectId; netTotal: number; refundedAmount?: number };
+        // What was refunded in cash is no longer credit to apply to a bill.
+        return [{ accountId: note.partyAccountId, netAmount: round2(note.netTotal - (note.refundedAmount ?? 0)) }];
       },
     });
     this.entityAccess.register(def.entityType, {
@@ -241,7 +248,7 @@ export class ReturnService {
       ...this.view(def, doc, viewer),
       allocations,
       creditApplied: applied,
-      onAccount: doc.status === VoucherStatus.CANCELLED ? 0 : round2(doc.netTotal - applied),
+      onAccount: doc.status === VoucherStatus.CANCELLED ? 0 : round2(doc.netTotal - applied - (doc.refundedAmount ?? 0)),
     };
   }
 
@@ -396,6 +403,98 @@ export class ReturnService {
         reason,
       });
       return existing;
+    });
+  }
+
+  /**
+   * Settles part or all of the credit left on account in cash: a Cash Payment
+   * to the customer (sales return) or a Cash Receipt from the supplier
+   * (purchase return), posted in this transaction with its ledger entries.
+   */
+  async refund(def: ReturnDefinition, model: ReturnModel, id: string, input: RefundReturnDto, actor: Viewer): Promise<ReturnDocument> {
+    if (!hasPermission(actor, def.refund.createPermission)) {
+      throw new ForbiddenException(`You need the ${def.refund.createPermission} permission to refund a ${def.label.toLowerCase()}`);
+    }
+    return runInTransaction(this.connection, async (session) => {
+      const doc = await this.load(def, model, id, def.scope(actor), session);
+      assertNotCancelled(def, doc, 'refunded');
+      const active = await this.allocations.activeForPayment(def.entityType, doc._id, session);
+      const available = round2(doc.netTotal - sum2(active.map((allocation) => allocation.amount)) - (doc.refundedAmount ?? 0));
+      const amount = round2(input.amount ?? available);
+      if (!(amount > 0)) {
+        throw new BadRequestException(`${def.label} ${doc.voucherNo} has no credit left on account to refund`);
+      }
+      if (amount > available) {
+        throw new BadRequestException(`Only ${available.toFixed(2)} is left on account on ${doc.voucherNo}; it cannot refund ${amount.toFixed(2)}`);
+      }
+      const voucher = await this.posting.create(
+        def.refund.voucher,
+        this.refundModels[def.entityType] as never,
+        {
+          voucherDate: input.voucherDate,
+          headerAccountId: input.accountId,
+          paymentReference: input.paymentReference,
+          comments: input.comments ?? `Refund of ${def.label.toLowerCase()} ${doc.voucherNo}`,
+          acknowledgeWarnings: input.acknowledgeWarnings,
+          lines: [{ accountId: doc.partyAccountId.toString(), amount, narration: `${doc.voucherNo} refund` }],
+        },
+        actor,
+        session,
+      );
+      const now = new Date();
+      doc.refunds.push({
+        voucherId: voucher._id,
+        voucherNo: voucher.voucherNo,
+        amount,
+        date: new Date(input.voucherDate),
+        by: toUserSnapshot(actor),
+        cancelledAt: null,
+      });
+      const before = doc.refundedAmount ?? 0;
+      doc.refundedAmount = round2(before + amount);
+      await doc.save({ session });
+      await this.record(def, doc, AuditAction.UPDATED, actor, now, session, {
+        changes: [{ field: 'refundedAmount', label: 'Refunded', from: before.toFixed(2), to: `${doc.refundedAmount.toFixed(2)} (${voucher.voucherNo})` }],
+      });
+      return doc;
+    });
+  }
+
+  /** Cancels a refund voucher (reversing its ledger entries); its amount is back on account. */
+  async cancelRefund(
+    def: ReturnDefinition,
+    model: ReturnModel,
+    id: string,
+    voucherId: string,
+    reason: string,
+    actor: Viewer,
+  ): Promise<ReturnDocument> {
+    if (!hasPermission(actor, def.refund.cancelPermission)) {
+      throw new ForbiddenException(`You need the ${def.refund.cancelPermission} permission to cancel a refund`);
+    }
+    return runInTransaction(this.connection, async (session) => {
+      const doc = await this.load(def, model, id, def.scope(actor), session);
+      const refund = doc.refunds.find((candidate) => candidate.voucherId.toString() === voucherId && !candidate.cancelledAt);
+      if (!refund) throw new NotFoundException(`${def.label} ${doc.voucherNo} has no active refund ${voucherId}`);
+      await this.posting.cancel(
+        def.refund.voucher,
+        this.refundModels[def.entityType] as never,
+        voucherId,
+        reason,
+        actor,
+        undefined,
+        session,
+      );
+      const now = new Date();
+      const before = doc.refundedAmount ?? 0;
+      refund.cancelledAt = now;
+      doc.refundedAmount = round2(before - refund.amount);
+      await doc.save({ session });
+      await this.record(def, doc, AuditAction.UPDATED, actor, now, session, {
+        changes: [{ field: 'refundedAmount', label: 'Refunded', from: before.toFixed(2), to: `${doc.refundedAmount.toFixed(2)} (${refund.voucherNo} cancelled)` }],
+        reason: reason.trim(),
+      });
+      return doc;
     });
   }
 
@@ -632,6 +731,11 @@ export class ReturnService {
   /** The credit may be edited or cancelled only while nothing but the auto-allocation is applied. */
   private async assertOnlyAutoAllocation(def: ReturnDefinition, doc: ReturnDocument, action: string, session: ClientSession) {
     const active = await this.allocations.activeForPayment(def.entityType, doc._id, session);
+    if ((doc.refundedAmount ?? 0) > 0) {
+      throw new ConflictException(
+        `${def.label} ${doc.voucherNo} has been refunded in cash; cancel the refund before it can be ${action}`,
+      );
+    }
     const manual = active.filter((allocation) => allocation.id !== doc.autoAllocationId?.toString());
     if (manual.length > 0) {
       throw new ConflictException(

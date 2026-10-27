@@ -106,3 +106,34 @@ export class ReturnQueryDto extends PickType(VoucherQueryDto, ['dateFrom', 'date
   @MaxLength(100)
   q?: string;
 }
+
+/** Pays out (sales return) or takes in (purchase return) cash against the credit left on account. */
+export class RefundReturnDto {
+  @IsDateString()
+  voucherDate: string;
+
+  /** The cash, wallet or bank account the money leaves (sales return) or enters (purchase return). */
+  @IsMongoId()
+  accountId: string;
+
+  /** Defaults to everything left on account. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  amount?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  paymentReference?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  comments?: string;
+
+  /** Needed when the payment would take a cash or wallet account below zero. */
+  @IsOptional()
+  @IsBoolean()
+  acknowledgeWarnings?: boolean;
+}

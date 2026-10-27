@@ -8,6 +8,8 @@ import { SalesReturnController } from './sales-return.controller.js';
 import { PurchaseReturnController } from './purchase-return.controller.js';
 import { PurchaseInvoice, PurchaseInvoiceSchema } from '../../purchase/purchase-invoices/schemas/purchase-invoice.schema.js';
 import { SalesInvoice, SalesInvoiceSchema } from '../../sales/sales-invoices/schemas/sales-invoice.schema.js';
+import { CashPayment, CashPaymentSchema } from '../cash-payments/schemas/cash-payment.schema.js';
+import { CashReceipt, CashReceiptSchema } from '../cash-receipts/schemas/cash-receipt.schema.js';
 import { Product, ProductSchema } from '../../product/products/schemas/product.schema.js';
 import { Party, PartySchema } from '../../party/schemas/party.schema.js';
 import { Location, LocationSchema } from '../../location/schemas/location.schema.js';
@@ -28,6 +30,8 @@ import { CommentsModule } from '../../comments/comments.module.js';
       { name: PurchaseReturn.name, schema: PurchaseReturnSchema },
       { name: SalesInvoice.name, schema: SalesInvoiceSchema },
       { name: PurchaseInvoice.name, schema: PurchaseInvoiceSchema },
+      { name: CashPayment.name, schema: CashPaymentSchema },
+      { name: CashReceipt.name, schema: CashReceiptSchema },
       { name: Product.name, schema: ProductSchema },
       { name: Party.name, schema: PartySchema },
       { name: Location.name, schema: LocationSchema },

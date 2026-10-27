@@ -293,14 +293,14 @@ export class AllocationService {
     paymentVoucherType: string,
     paymentVoucherId: Types.ObjectId,
     session: ClientSession,
-  ): Promise<{ id: string; targetNo: string }[]> {
+  ): Promise<{ id: string; targetNo: string; amount: number }[]> {
     const rows = await this.model
       .find({ paymentVoucherType, paymentVoucherId, status: AllocationStatus.ACTIVE })
-      .select('targetNo')
+      .select('targetNo amount')
       .session(session)
       .lean()
       .exec();
-    return rows.map((row) => ({ id: row._id.toString(), targetNo: row.targetNo }));
+    return rows.map((row) => ({ id: row._id.toString(), targetNo: row.targetNo, amount: row.amount }));
   }
 
   /** Inside a payment's edit/cancel transaction: reverses every active allocation of the payment. */

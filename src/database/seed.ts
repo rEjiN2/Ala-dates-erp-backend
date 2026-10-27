@@ -71,6 +71,14 @@ async function seed(): Promise<void> {
       .exec();
     logger.log('Voucher counter ready: opening-stock');
     await counterModel
+      .updateOne({ key: 'stock-count' }, { $setOnInsert: { key: 'stock-count', seq: 0 } }, { upsert: true })
+      .exec();
+    logger.log('Voucher counter ready: stock-count');
+    await counterModel
+      .updateOne({ key: 'bundling' }, { $setOnInsert: { key: 'bundling', seq: 0 } }, { upsert: true })
+      .exec();
+    logger.log('Voucher counter ready: bundling');
+    await counterModel
       .updateOne({ key: 'purchase-invoice' }, { $setOnInsert: { key: 'purchase-invoice', seq: 0 } }, { upsert: true })
       .exec();
     logger.log('Voucher counter ready: purchase-invoice');

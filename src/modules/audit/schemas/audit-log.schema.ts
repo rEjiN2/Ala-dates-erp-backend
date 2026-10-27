@@ -8,6 +8,7 @@ export enum AuditAction {
   CREATED = 'created',
   UPDATED = 'updated',
   CANCELLED = 'cancelled',
+  SUBMITTED = 'submitted',
   /** A submitted document (cash handover) was approved or rejected. */
   APPROVED = 'approved',
   REJECTED = 'rejected',

@@ -6,7 +6,7 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator.j
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { Permission } from '../../roles/permissions.js';
 import { SalesReturnService } from './sales-return.service.js';
-import { CancelReturnDto, CreateSalesReturnDto, ReturnQueryDto, UpdateSalesReturnDto } from './dto/return.dto.js';
+import { RefundReturnDto, CancelReturnDto, CreateSalesReturnDto, ReturnQueryDto, UpdateSalesReturnDto } from './dto/return.dto.js';
 
 /** Every route needs a sales-returns permission; the actor always comes from the token. "own"-scoped users see only returns of their invoices. */
 @Controller('sales-returns')
@@ -49,6 +49,24 @@ export class SalesReturnController {
   @RequirePermission(Permission.SALES_RETURNS_EDIT)
   async update(@Param('id') id: string, @Body() dto: UpdateSalesReturnDto, @CurrentUser() user: AuthenticatedUser) {
     return this.salesReturnService.view(await this.salesReturnService.update(id, dto, user), user);
+  }
+
+  /** Pays the credit left on account out in cash (posts a Cash Payment). */
+  @Post(':id/refund')
+  @RequirePermission(Permission.SALES_RETURNS_EDIT)
+  async refund(@Param('id') id: string, @Body() dto: RefundReturnDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.salesReturnService.view(await this.salesReturnService.refund(id, dto, user), user);
+  }
+
+  @Post(':id/refunds/:voucherId/cancel')
+  @RequirePermission(Permission.SALES_RETURNS_EDIT)
+  async cancelRefund(
+    @Param('id') id: string,
+    @Param('voucherId') voucherId: string,
+    @Body() dto: CancelReturnDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.salesReturnService.view(await this.salesReturnService.cancelRefund(id, voucherId, dto, user), user);
   }
 
   @Post(':id/cancel')

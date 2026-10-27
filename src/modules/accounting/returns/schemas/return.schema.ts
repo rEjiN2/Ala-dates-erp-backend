@@ -11,6 +11,31 @@ export const PURCHASE_RETURN_ENTITY_TYPE = 'purchase-return';
 /** Credit documents that settle an invoice through an allocation: that credit counts as "credited", not "paid". */
 export const CREDIT_NOTE_TYPES: readonly string[] = [SALES_RETURN_ENTITY_TYPE, PURCHASE_RETURN_ENTITY_TYPE];
 
+/** Cash paid back to the customer (sales return) or received from the supplier (purchase return) against the credit left on account. */
+@Schema({ _id: false })
+export class ReturnRefund {
+  @Prop({ type: Types.ObjectId, required: true })
+  voucherId: Types.ObjectId;
+
+  /** The Cash Payment (sales return) or Cash Receipt (purchase return). */
+  @Prop({ required: true })
+  voucherNo: string;
+
+  @Prop({ required: true })
+  amount: number;
+
+  @Prop({ required: true })
+  date: Date;
+
+  @Prop({ type: UserSnapshotSchema, default: null })
+  by: UserSnapshot | null;
+
+  @Prop({ type: Date, default: null })
+  cancelledAt: Date | null;
+}
+
+export const ReturnRefundSchema = SchemaFactory.createForClass(ReturnRefund);
+
 /** One invoice line (part of it) returned. Rate, discount and VAT are the invoice line's, pro-rata. */
 @Schema({ _id: false })
 export class ReturnLine {
@@ -113,6 +138,14 @@ export abstract class ReturnBase {
   /** The allocation made when the return was saved; edit and cancel are allowed only while it is the only active one. */
   @Prop({ type: Types.ObjectId, default: null })
   autoAllocationId: Types.ObjectId | null;
+
+  /** Refund vouchers; each takes its amount out of the credit left on account. */
+  @Prop({ type: [ReturnRefundSchema], default: [] })
+  refunds: ReturnRefund[];
+
+  /** Sum of the refunds not cancelled. */
+  @Prop({ default: 0 })
+  refundedAmount: number;
 
   @Prop({ type: String, enum: [VoucherStatus.POSTED, VoucherStatus.CANCELLED], default: VoucherStatus.POSTED, index: true })
   status: VoucherStatus;

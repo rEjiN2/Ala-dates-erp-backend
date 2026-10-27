@@ -25,6 +25,7 @@
     "migrate:remove-handovers": "nest build && node dist/database/migrate-remove-handovers.js",
     "migrate:collected-by": "nest build && node dist/database/migrate-collected-by.js",
     "migrate:receipt-methods": "nest build && node dist/database/migrate-receipt-methods.js",
+    "migrate:invoice-line-ids": "nest build && node dist/database/migrate-invoice-line-ids.js",
     "lint": "oxlint --type-aware src/ test/",
     "test": "vitest run",
     "test:watch": "vitest",

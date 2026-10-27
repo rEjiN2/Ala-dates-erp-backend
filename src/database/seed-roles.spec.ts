@@ -136,6 +136,8 @@ describe('role seed', () => {
         Permission.SALES_INVOICES_READ,
         Permission.SALES_INVOICES_CREATE,
         Permission.SALES_RETURNS_READ,
+        Permission.STOCK_COUNTS_READ,
+        Permission.STOCK_COUNTS_CREATE,
       ]),
     );
 

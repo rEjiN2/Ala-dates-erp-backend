@@ -34,10 +34,25 @@ export const Permission = {
   OPENING_BALANCES_CANCEL: 'opening-balances:cancel',
   /** Stock summary and history; "own"-scoped users only for their allowedLocationIds. */
   STOCK_READ: 'stock:read',
+  /** See the system (book) quantity and difference on a stock count; without it counts are blind. */
+  STOCK_VIEW_SYSTEM_QTY: 'stock:view-system-qty',
+  STOCK_COUNTS_READ: 'stock-counts:read',
+  /** Create, edit and submit your own draft counts. */
+  STOCK_COUNTS_CREATE: 'stock-counts:create',
+  /** Approve (posts the differences) or reject a submitted count. Never your own. */
+  STOCK_COUNTS_APPROVE: 'stock-counts:approve',
+  /** Cancel a count, an approved one included (reverses its entries). */
+  STOCK_COUNTS_CANCEL: 'stock-counts:cancel',
   OPENING_STOCK_READ: 'opening-stock:read',
   OPENING_STOCK_CREATE: 'opening-stock:create',
   OPENING_STOCK_EDIT: 'opening-stock:edit',
   OPENING_STOCK_CANCEL: 'opening-stock:cancel',
+  /** Define and change bundle recipes (PUT /products/:id/recipe). */
+  BUNDLES_MANAGE: 'bundles:manage',
+  BUNDLING_READ: 'bundling:read',
+  BUNDLING_CREATE: 'bundling:create',
+  /** Undo a bundling (reverses its stock entries). */
+  BUNDLING_CANCEL: 'bundling:cancel',
   /** Apply an on-account payment to a bill, or reverse an allocation. Allocating inside a payment needs only cash-payments:create. */
   ALLOCATIONS_MANAGE: 'allocations:manage',
   PURCHASE_INVOICES_READ: 'purchase-invoices:read',
@@ -143,6 +158,8 @@ export const VAN_SALESMAN_PERMISSIONS: readonly Permission[] = [
   Permission.SALES_INVOICES_READ,
   Permission.SALES_INVOICES_CREATE,
   Permission.SALES_RETURNS_READ,
+  Permission.STOCK_COUNTS_READ,
+  Permission.STOCK_COUNTS_CREATE,
 ];
 
 export function hasPermission(user: { permissions?: readonly string[] } | undefined, permission: Permission): boolean {

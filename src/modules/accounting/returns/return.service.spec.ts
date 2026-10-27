@@ -13,6 +13,7 @@ import { PurchaseReturnController } from './purchase-return.controller.js';
 import {
   PurchaseReturn,
   PurchaseReturnSchema,
+  PURCHASE_RETURN_ENTITY_TYPE,
   SALES_RETURN_ENTITY_TYPE,
   SalesReturn,
   SalesReturnSchema,
@@ -43,6 +44,7 @@ import {
   SYSTEM_ACCOUNTS,
 } from '../ledger-accounts/schemas/ledger-account.schema.js';
 import { CashReceiptService } from '../cash-receipts/cash-receipt.service.js';
+import { CashPayment, CashPaymentSchema } from '../cash-payments/schemas/cash-payment.schema.js';
 import { CashReceipt, CashReceiptSchema } from '../cash-receipts/schemas/cash-receipt.schema.js';
 import { VoucherStatus } from '../vouchers/schemas/voucher.schema.js';
 import { AllocationService } from '../allocations/allocation.service.js';
@@ -106,6 +108,7 @@ describe('Sales and purchase returns', () => {
     SalesReturn,
     PurchaseReturn,
     CashReceipt,
+    CashPayment,
     Allocation,
     StockEntry,
     StockBalance,
@@ -623,6 +626,55 @@ describe('Sales and purchase returns', () => {
     expect((await reload<{ status: string }>(SalesReturn.name, credit._id)).status).toBe(VoucherStatus.POSTED);
   });
 
+  it('refunds the credit left on account in cash, and cancelling the refund puts it back', async () => {
+    const f = await fixtures();
+    const invoice = await sale(f, { payNow: { method: 'cash', accountId: f.cash._id.toString(), amount: 200 } });
+    const credit = await giveBack(invoice, 3); // 63 credit, 10 cleared the invoice, 53 on account
+    const id = credit._id.toString();
+    const cashBefore = await balanceOf(f.cash._id);
+
+    await expect(
+      salesReturns.refund(id, { voucherDate: '2026-03-12', accountId: f.cash._id.toString(), amount: 60, acknowledgeWarnings: true }, admin),
+    ).rejects.toThrow(/Only 53.00 is left/);
+    const refunded = await salesReturns.refund(
+      id,
+      { voucherDate: '2026-03-12', accountId: f.cash._id.toString(), acknowledgeWarnings: true },
+      admin,
+    );
+    expect(refunded).toMatchObject({ refundedAmount: 53 });
+    expect(refunded.refunds[0].voucherNo).toBe('CP-0001');
+    expect(await balanceOf(f.shop.account._id)).toBe(0);
+    expect(await balanceOf(f.cash._id)).toBe(cashBefore - 53);
+    expect(await salesReturns.detail(id, admin)).toMatchObject({ onAccount: 0, refundedAmount: 53 });
+    expect(await allocations.unallocatedPayments(f.shop.party._id.toString())).toEqual([]);
+    await expect(salesReturns.cancel(id, { reason: 'Customer kept it' }, admin)).rejects.toThrow(/refunded in cash/);
+
+    const undone = await salesReturns.cancelRefund(id, refunded.refunds[0].voucherId.toString(), { reason: 'Paid by mistake' }, admin);
+    expect(undone.refundedAmount).toBe(0);
+    expect(await balanceOf(f.shop.account._id)).toBe(-53);
+    expect(await balanceOf(f.cash._id)).toBe(cashBefore);
+    expect(await salesReturns.detail(id, admin)).toMatchObject({ onAccount: 53 });
+    await expectBalancesMatchEntries();
+  });
+
+  it('a purchase return refund is a cash receipt from the supplier', async () => {
+    const f = await fixtures();
+    const invoice = await purchase(f);
+    const debit = await sendBack(invoice, 3); // 18.90
+    const auto = (await allocations.forPayment(PURCHASE_RETURN_ENTITY_TYPE, debit._id))[0];
+    await allocations.reverse(auto.id, 'Supplier already paid', admin);
+
+    const refunded = await purchaseReturns.refund(
+      debit._id.toString(),
+      { voucherDate: '2026-03-12', accountId: f.cash._id.toString(), amount: 18.9 },
+      admin,
+    );
+    expect(refunded.refunds[0].voucherNo).toBe('CR000001');
+    expect(await balanceOf(f.cash._id)).toBe(18.9);
+    expect(await purchaseReturns.detail(debit._id.toString(), admin)).toMatchObject({ onAccount: 0 });
+    await expectBalancesMatchEntries();
+  });
+
   it("an invoice with active returns can't be edited or cancelled", async () => {
     const f = await fixtures();
     const invoice = await sale(f);
@@ -717,6 +769,7 @@ const SCHEMAS = new Map<string, unknown>([
   [SalesReturn.name, SalesReturnSchema],
   [PurchaseReturn.name, PurchaseReturnSchema],
   [CashReceipt.name, CashReceiptSchema],
+  [CashPayment.name, CashPaymentSchema],
   [Allocation.name, AllocationSchema],
   [StockEntry.name, StockEntrySchema],
   [StockBalance.name, StockBalanceSchema],
