@@ -10,6 +10,10 @@ export const Permission = {
   CASH_RECEIPTS_CREATE: 'cash-receipts:create',
   CASH_RECEIPTS_EDIT: 'cash-receipts:edit',
   CASH_RECEIPTS_CANCEL: 'cash-receipts:cancel',
+  REFERENCE_RECEIPTS_READ: 'reference-receipts:read',
+  REFERENCE_RECEIPTS_CREATE: 'reference-receipts:create',
+  REFERENCE_RECEIPTS_EDIT: 'reference-receipts:edit',
+  REFERENCE_RECEIPTS_CANCEL: 'reference-receipts:cancel',
   CASH_PAYMENTS_READ: 'cash-payments:read',
   CASH_PAYMENTS_CREATE: 'cash-payments:create',
   CASH_PAYMENTS_EDIT: 'cash-payments:edit',
@@ -87,6 +91,8 @@ export const Permission = {
   UNITS_MANAGE: 'units:manage',
   /** The salesman collections report (cash collected vs handed over, per user who settles with the office). */
   REPORTS_SALESMAN: 'reports:salesman',
+  /** Ledger, day book, cash and bank book, trial balance. */
+  REPORTS_ACCOUNTING: 'reports:accounting',
   ROLES_MANAGE: 'roles:manage',
   USERS_MANAGE: 'users:manage',
   /** Record a voucher as collected (receipt) or paid (payment) by another user; without it, always yourself. */

@@ -33,6 +33,8 @@ import { Party, PartySchema } from '../src/modules/party/schemas/party.schema.js
 import { SalesInvoice, SalesInvoiceSchema } from '../src/modules/sales/sales-invoices/schemas/sales-invoice.schema.js';
 import { ChequeService } from '../src/modules/accounting/cheques/cheque.service.js';
 import { ChequeController } from '../src/modules/accounting/cheques/cheque.controller.js';
+import { AccountingReportsService } from '../src/modules/reports/accounting-reports.service.js';
+import { ReportService } from '../src/modules/reports/report.service.js';
 import { SalesmanCollectionsService } from '../src/modules/reports/salesman-collections.service.js';
 import { ReportsController } from '../src/modules/reports/reports.controller.js';
 import { VoucherPostingService } from '../src/modules/accounting/vouchers/voucher-posting.service.js';
@@ -134,6 +136,8 @@ export async function createVoucherHarness(dbName: string) {
       AllocationService,
       ChequeService,
       SalesmanCollectionsService,
+      ReportService,
+      AccountingReportsService,
       VoucherPostingService,
       VoucherPrintService,
       LedgerAccountService,
@@ -247,6 +251,7 @@ export async function createVoucherHarness(dbName: string) {
     allocations: moduleRef.get(AllocationService),
     cheques: moduleRef.get(ChequeService),
     collections: moduleRef.get(SalesmanCollectionsService),
+    accountingReports: moduleRef.get(AccountingReportsService),
     posting: moduleRef.get(VoucherPostingService),
     audit: moduleRef.get(AuditService),
     users: moduleRef.get(UsersService),

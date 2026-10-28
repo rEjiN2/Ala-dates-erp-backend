@@ -61,6 +61,8 @@ export const LedgerEntrySchema = SchemaFactory.createForClass(LedgerEntry);
 
 // Account statements, and the per-account reconciliation.
 LedgerEntrySchema.index({ accountId: 1, voucherDate: 1 });
+// The day book.
+LedgerEntrySchema.index({ voucherType: 1, voucherDate: 1 });
 // Everything one voucher posted.
 LedgerEntrySchema.index({ voucherType: 1, voucherId: 1 });
 LedgerEntrySchema.plugin(insertOnlyPlugin, { modelName: LedgerEntry.name });

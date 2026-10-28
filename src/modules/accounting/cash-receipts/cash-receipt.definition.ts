@@ -51,4 +51,20 @@ export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
   },
 };
 
+/** Same posting as a cash receipt, own CRV- numbers, own permissions, plain print. */
+export const REFERENCE_RECEIPT_DEFINITION: VoucherDefinition = {
+  ...CASH_RECEIPT_DEFINITION,
+  label: 'Reference receipt',
+  sequence: { key: 'CRV', prefix: 'CRV-', width: 4 },
+  usageSource: 'reference receipts',
+  readPermission: Permission.REFERENCE_RECEIPTS_READ,
+  createPermission: Permission.REFERENCE_RECEIPTS_CREATE,
+  pdf: {
+    ...CASH_RECEIPT_DEFINITION.pdf,
+    titles: { cash: 'RECEIPT', bank: 'RECEIPT', cheque: 'RECEIPT' },
+    documentTitle: 'Receipt',
+    plain: true,
+  },
+};
+
 export const CASH_RECEIPT_VOUCHER_SEQUENCE = CASH_RECEIPT_DEFINITION.sequence;

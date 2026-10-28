@@ -89,6 +89,12 @@ export class UpdateCompanySettingsDto {
   @MaxLength(500)
   receiptFooterText?: string | null;
 
+  @IsOptional()
+  @Transform(trimToNull)
+  @IsString()
+  @MaxLength(500)
+  referenceReceiptHeaderText?: string | null;
+
   /** Omitted means off, like every other field of this PUT. */
   @IsOptional()
   @IsBoolean()

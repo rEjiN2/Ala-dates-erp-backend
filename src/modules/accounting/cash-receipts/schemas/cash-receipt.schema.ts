@@ -19,6 +19,12 @@ export type CashReceiptDocument = HydratedDocument<CashReceipt>;
 /** Entity type under which receipts appear in audit logs, comments, the activity timeline and ledger entries. */
 export const CASH_RECEIPT_ENTITY_TYPE = 'cash-receipt';
 
+/** A reference receipt is a plain slip: own CRV- number series, VAT always 0. Everything else is a receipt. */
+export enum ReceiptKind {
+  STANDARD = 'standard',
+  REFERENCE = 'reference',
+}
+
 export const CashReceiptStatus = VoucherStatus;
 export type CashReceiptStatus = VoucherStatus;
 
@@ -74,6 +80,9 @@ export class CashReceipt extends VoucherBase {
   /** "Received into": an active cash, wallet or bank account (named from when only cash was allowed). */
   @Prop({ type: Types.ObjectId, ref: LedgerAccount.name, required: true, index: true })
   cashAccountId: Types.ObjectId;
+
+  @Prop({ type: String, enum: ReceiptKind, default: ReceiptKind.STANDARD, index: true })
+  receiptKind: ReceiptKind;
 
   @Prop({ type: ChequeStepSchema, default: null })
   chequeDeposit: ChequeStep | null;

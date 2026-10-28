@@ -21,6 +21,8 @@ export interface VoucherPdfData {
     phone: string | null;
     trn: string | null;
     footerText: string | null;
+    /** Plain slips only: printed on top when set (Company.referenceReceiptHeaderText). */
+    plainHeaderText?: string | null;
     currencyCode: string;
     /** PNG/JPEG as a data URL; pdfmake is never given a URL or path to fetch. */
     logoDataUrl: string | null;
@@ -88,6 +90,90 @@ export function formatDubaiTime(value: Date): string {
 
 const GREY = '#666666';
 const BORDER = '#999999';
+
+/**
+ * Plain slip (reference receipts): no logo, company name, address or TRN.
+ * Number, date, received from, amount and words, method, collected by, a
+ * comment line and signature boxes; the ORIGINAL/DUPLICATE marker stays.
+ */
+export function buildPlainReceiptPdf(data: VoucherPdfData, labels: VoucherPdfLabels): TDocumentDefinitions {
+  const { company, voucher: receipt } = data;
+  const cheque = receipt.extraInfo?.filter((row) => row.label !== 'Cheque Status') ?? [];
+  const row = (label: string, value: string) => [{ text: label, style: 'label' }, { text: value, colSpan: 3 }, '', ''];
+  const signatureBox = (label: string): Column => ({
+    width: '*',
+    stack: [
+      { canvas: [{ type: 'rect', x: 0, y: 0, w: 220, h: 55, lineColor: BORDER }] },
+      { text: label, style: 'small', margin: [0, 4, 0, 0] },
+    ],
+  });
+
+  return {
+    pageSize: 'A4',
+    pageMargins: [40, 40, 40, 60],
+    info: { title: `${labels.documentTitle} ${receipt.voucherNo}` },
+    ...(receipt.cancelled
+      ? { watermark: { text: 'CANCELLED', color: '#b00020', opacity: 0.15, bold: true, angle: -45, fontSize: 90 } }
+      : {}),
+    content: [
+      {
+        columns: [
+          { text: company.plainHeaderText ?? '', width: '*' },
+          {
+            width: 'auto',
+            table: { body: [[{ text: copyLabel(data.copyNumber), style: 'copyLabel' }]] },
+            layout: { hLineColor: BORDER, vLineColor: BORDER },
+          },
+        ],
+      },
+      { text: labels.titles[receipt.paymentMethod] ?? labels.titles.cash, style: 'title' },
+      {
+        table: {
+          widths: [90, '*', 90, '*'],
+          body: [
+            [
+              { text: 'Receipt No', style: 'label' },
+              { text: receipt.voucherNo, bold: true },
+              { text: 'Date', style: 'label' },
+              formatVoucherDate(receipt.voucherDate),
+            ],
+            row('Received From', receipt.lines.map((line) => line.counterparty).join(', ')),
+            row('Amount', `${company.currencyCode} ${formatMoney(receipt.grandTotal)}`),
+            row('Amount in words', amountInWords(receipt.grandTotal)),
+            row('Method', receipt.paymentMethod.toUpperCase()),
+            ...cheque.map((info) => row(info.label, info.value)),
+            row(labels.collectorLabel, receipt.collectedByName ?? '-'),
+            row('Comment', receipt.comments ?? ''),
+          ],
+        },
+        layout: { hLineColor: BORDER, vLineColor: BORDER },
+        margin: [0, 0, 0, 12],
+      },
+      ...(receipt.cancelled
+        ? [{ text: `CANCELLED: ${receipt.cancelled.reason ?? '-'}`, bold: true, color: '#b00020' } as Content]
+        : []),
+      {
+        columns: [signatureBox(labels.signatures[0]), signatureBox(labels.signatures[1])],
+        columnGap: 20,
+        margin: [0, 30, 0, 0],
+      },
+    ],
+    footer: (currentPage, pageCount) => ({
+      margin: [40, 10, 40, 0],
+      columns: [
+        { text: `Printed by ${data.printedBy} on ${formatDubaiTime(data.printedAt)}`, style: 'small' },
+        { text: `Page ${currentPage} of ${pageCount}`, style: 'small', alignment: 'right', width: 'auto' },
+      ],
+    }),
+    styles: {
+      title: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 16, 0, 12] },
+      copyLabel: { fontSize: 10, bold: true, margin: [6, 3, 6, 3] },
+      label: { color: GREY },
+      small: { fontSize: 8, color: GREY },
+    },
+    defaultStyle: { fontSize: 10 },
+  };
+}
 
 /** A4 voucher layout. Pure: the same data always gives the same definition. */
 export function buildVoucherPdf(data: VoucherPdfData, labels: VoucherPdfLabels): TDocumentDefinitions {

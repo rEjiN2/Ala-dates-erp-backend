@@ -12,6 +12,7 @@ import {
   CashReceipt,
   CashReceiptDocument,
   CashReceiptSchema,
+  ReceiptKind,
 } from './schemas/cash-receipt.schema.js';
 import { CancelCashReceiptDto, UpdateCashReceiptDto } from './dto/update-cash-receipt.dto.js';
 import { CashReceiptQueryDto } from './dto/cash-receipt-query.dto.js';
@@ -65,6 +66,7 @@ const RECEIPT_PERMISSIONS: string[] = [
   Permission.CASH_RECEIPTS_CREATE,
   Permission.CASH_RECEIPTS_EDIT,
   Permission.CASH_RECEIPTS_CANCEL,
+  Permission.REFERENCE_RECEIPTS_CREATE,
   Permission.BALANCES_VIEW,
 ];
 
@@ -1645,6 +1647,66 @@ describe('CashReceiptService (transactional)', () => {
       // A receipt posted before the rule existed, with a bank account on a line:
       await cashReceiptModel.updateOne({ _id: receipt._id }, { $set: { 'lines.0.accountId': otherBank._id } }).exec();
       await expect(service.update(receipt.id, { comments: 'Checked' }, sachin)).resolves.toBeDefined();
+    });
+  });
+
+  describe('reference receipt', () => {
+    it('gets CRV-0001, keeps CR numbering for standard receipts, posts with VAT 0 and is listed only under kind=reference', async () => {
+      const { cash, party } = await postedReceipt();
+      const ref = await createReceipt(
+        {
+          voucherDate: '2026-09-21',
+          cashAccountId: cash._id.toString(),
+          receiptKind: ReceiptKind.REFERENCE,
+          lines: [{ accountId: party._id.toString(), amount: 40 }],
+        },
+        sachin,
+      );
+      const standard = await createReceipt(
+        { voucherDate: '2026-09-21', cashAccountId: cash._id.toString(), lines: [{ accountId: party._id.toString(), amount: 10 }] },
+        sachin,
+      );
+
+      expect([ref.voucherNo, standard.voucherNo]).toEqual(['CRV-0001', 'CR000002']);
+      expect([ref.totalTax, ref.grandTotal]).toEqual([0, 40]);
+      expect(await balanceOf(cash)).toBe(1000 + 105 + 40 + 10);
+      expect((await service.findAll({})).items.map((row) => row.voucherNo).sort()).toEqual(['CR000001', 'CR000002']);
+      expect((await service.findAll({ kind: ReceiptKind.REFERENCE })).items.map((row) => row.voucherNo)).toEqual(['CRV-0001']);
+      expect((await service.findAll({ kind: 'all' })).items).toHaveLength(3);
+
+      await service.cancel(ref.id, { reason: 'Entered by mistake' }, sachin);
+      expect(await balanceOf(cash)).toBe(1000 + 105 + 10);
+    });
+
+    it('rejects a non-zero VAT on create and on edit', async () => {
+      const { cash, party } = await postedReceipt();
+      const line = { accountId: party._id.toString(), amount: 40 };
+      const body = { voucherDate: '2026-09-21', cashAccountId: cash._id.toString(), receiptKind: ReceiptKind.REFERENCE };
+      await expect(createReceipt({ ...body, lines: [{ ...line, vat: 2 }] }, sachin)).rejects.toThrow('no VAT');
+
+      const ref = await createReceipt({ ...body, lines: [line] }, sachin);
+      await expect(service.update(ref.id, { lines: [{ ...line, vat: 2 }] }, sachin)).rejects.toThrow('no VAT');
+    });
+
+    it('prints a plain slip without company details', async () => {
+      const { cash, party } = await postedReceipt();
+      const ref = await createReceipt(
+        {
+          voucherDate: '2026-09-21',
+          cashAccountId: cash._id.toString(),
+          receiptKind: ReceiptKind.REFERENCE,
+          lines: [{ accountId: party._id.toString(), amount: 40 }],
+        },
+        sachin,
+      );
+      const printed = await printService.print(ref.id, sachin);
+      const text = JSON.stringify(printed.definition);
+      expect(text).toContain('"RECEIPT"');
+      expect(text).toContain('CRV-0001');
+      expect(text).toContain('ORIGINAL');
+      expect(text).not.toContain('ALA DATES');
+      expect(text).not.toContain('TRN');
+      expect(text).not.toContain('logo');
     });
   });
 

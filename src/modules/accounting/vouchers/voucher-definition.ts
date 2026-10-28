@@ -61,6 +61,8 @@ export interface VoucherDefinition {
     titles: { cash: string; bank: string; cheque?: string };
     /** Header row value when the voucher has no single header account (handovers); defaults to headerField's name. */
     headerAccountName?: (voucher: VoucherDocument) => string;
+    /** Print as a plain slip: no logo, company name, address or TRN (see buildPlainReceiptPdf). */
+    plain?: boolean;
     /** PDF metadata title prefix, e.g. "Cash Receipt". */
     documentTitle: string;
     /** Column heading for the line account, e.g. "Received From" / "Paid To". */

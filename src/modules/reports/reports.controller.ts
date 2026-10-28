@@ -5,14 +5,44 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 import { Permission } from '../roles/permissions.js';
+import { AccountingReportsService } from './accounting-reports.service.js';
 import { SalesmanCollectionsService } from './salesman-collections.service.js';
+import { CashBookQueryDto, DayBookQueryDto, LedgerReportQueryDto, TrialBalanceQueryDto } from './dto/accounting-reports.dto.js';
 import { SalesmanCollectionDetailsQueryDto, SalesmanCollectionsQueryDto } from './dto/salesman-collections.dto.js';
 
 /** reports:salesman; "own"-scoped users see only their own row. */
 @Controller('reports')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ReportsController {
-  constructor(private readonly salesmanCollections: SalesmanCollectionsService) {}
+  constructor(
+    private readonly salesmanCollections: SalesmanCollectionsService,
+    private readonly accounting: AccountingReportsService,
+  ) {}
+
+  /** Accounting reports (reports:accounting); ?format=csv|pdf downloads the whole report. */
+  @Get('ledger')
+  @RequirePermission(Permission.REPORTS_ACCOUNTING)
+  ledger(@Query() query: LedgerReportQueryDto) {
+    return this.accounting.ledger(query);
+  }
+
+  @Get('day-book')
+  @RequirePermission(Permission.REPORTS_ACCOUNTING)
+  dayBook(@Query() query: DayBookQueryDto) {
+    return this.accounting.dayBook(query);
+  }
+
+  @Get('cash-book')
+  @RequirePermission(Permission.REPORTS_ACCOUNTING)
+  cashBook(@Query() query: CashBookQueryDto) {
+    return this.accounting.cashBook(query);
+  }
+
+  @Get('trial-balance')
+  @RequirePermission(Permission.REPORTS_ACCOUNTING)
+  trialBalance(@Query() query: TrialBalanceQueryDto) {
+    return this.accounting.trialBalance(query);
+  }
 
   @Get('salesman-collections')
   @RequirePermission(Permission.REPORTS_SALESMAN)

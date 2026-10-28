@@ -37,6 +37,7 @@ const EDITABLE_FIELDS = [
   'trn',
   'currencyCode',
   'receiptFooterText',
+  'referenceReceiptHeaderText',
 ] as const;
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -85,6 +86,7 @@ const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'logo', label: 'Logo' },
   { key: 'currencyCode', label: 'Currency' },
   { key: 'receiptFooterText', label: 'Receipt footer text' },
+  { key: 'referenceReceiptHeaderText', label: 'Reference receipt header text' },
   { key: 'allowSelfApproval', label: 'Allow self-approval of handovers' },
   { key: 'allowNegativeStock', label: 'Allow negative stock' },
   { key: 'defaultCashInHandAccount', label: 'Default cash in hand account' },

@@ -28,6 +28,11 @@ import {
 
 import { CASH_CUSTOMER_KEY, Party, PartyDocument, PartyKind } from '../modules/party/schemas/party.schema.js';
 import { PartyService } from '../modules/party/party.service.js';
+import {
+  CashReceipt,
+  CashReceiptDocument,
+  ReceiptKind,
+} from '../modules/accounting/cash-receipts/schemas/cash-receipt.schema.js';
 
 const CASH_ACCOUNT_NAMES = ['Main Cash Counter', 'Branch Petty Cash'];
 const CASH_CUSTOMER_NAME = 'Cash Customer';
@@ -86,10 +91,16 @@ async function seed(): Promise<void> {
       .updateOne({ key: 'sales-invoice' }, { $setOnInsert: { key: 'sales-invoice', seq: 0 } }, { upsert: true })
       .exec();
     logger.log('Voucher counter ready: sales-invoice');
-    for (const key of ['sales-return', 'purchase-return']) {
+    for (const key of ['sales-return', 'purchase-return', 'CRV']) {
       await counterModel.updateOne({ key }, { $setOnInsert: { key, seq: 0 } }, { upsert: true }).exec();
       logger.log(`Voucher counter ready: ${key}`);
     }
+
+    // Receipts from before receiptKind existed are standard receipts.
+    const backfilled = await app
+      .get<Model<CashReceiptDocument>>(getModelToken(CashReceipt.name))
+      .collection.updateMany({ receiptKind: { $exists: false } }, { $set: { receiptKind: ReceiptKind.STANDARD } });
+    logger.log(`Receipts backfilled with receiptKind: ${backfilled.modifiedCount}`);
 
     // Created with the defaults (ALA DATES LLC, Jurf 3, Ajman) only if missing;
     // an edited profile is left as it is.

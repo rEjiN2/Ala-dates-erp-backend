@@ -65,6 +65,10 @@ export class CompanySettings {
   @Prop({ type: String, trim: true, default: null })
   receiptFooterText: string | null;
 
+  /** Printed on top of a reference receipt when set; empty by default. */
+  @Prop({ type: String, trim: true, default: null })
+  referenceReceiptHeaderText: string | null;
+
   /** Lets a user approve a cash handover they submitted themselves. Off by default. */
   @Prop({ type: Boolean, default: false })
   allowSelfApproval: boolean;

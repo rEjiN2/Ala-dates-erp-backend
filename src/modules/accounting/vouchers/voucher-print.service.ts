@@ -6,7 +6,7 @@ import type { TDocumentDefinitions } from 'pdfmake/interfaces.js';
 import { VoucherStatus } from './schemas/voucher.schema.js';
 import type { VoucherDefinition } from './voucher-definition.js';
 import type { VoucherModel } from './voucher-posting.service.js';
-import { buildVoucherPdf, copyLabel } from './voucher-pdf.js';
+import { buildPlainReceiptPdf, buildVoucherPdf, copyLabel } from './voucher-pdf.js';
 import { withScope } from './data-scope.js';
 import { LedgerAccountService } from '../ledger-accounts/ledger-account.service.js';
 import { CompanyService } from '../../company/company.service.js';
@@ -76,7 +76,7 @@ export class VoucherPrintService {
       const printedAt = new Date();
       const copyNumber = voucher.printCount;
 
-      const definition = buildVoucherPdf(
+      const definition = (def.pdf.plain ? buildPlainReceiptPdf : buildVoucherPdf)(
         {
           company: {
             legalName: settings.legalName,
@@ -88,6 +88,7 @@ export class VoucherPrintService {
             phone: settings.phone,
             trn: settings.trn,
             footerText: settings.receiptFooterText,
+            plainHeaderText: settings.referenceReceiptHeaderText,
             currencyCode: settings.currencyCode,
             logoDataUrl,
           },

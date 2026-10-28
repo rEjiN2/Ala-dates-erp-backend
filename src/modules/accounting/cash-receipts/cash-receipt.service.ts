@@ -7,7 +7,7 @@ import { CashReceipt, CashReceiptDocument } from './schemas/cash-receipt.schema.
 import { CreateCashReceiptDto } from './dto/create-cash-receipt.dto.js';
 import { CancelCashReceiptDto, UpdateCashReceiptDto } from './dto/update-cash-receipt.dto.js';
 import { CashReceiptQueryDto } from './dto/cash-receipt-query.dto.js';
-import { CASH_RECEIPT_DEFINITION } from './cash-receipt.definition.js';
+import { CASH_RECEIPT_DEFINITION, REFERENCE_RECEIPT_DEFINITION } from './cash-receipt.definition.js';
 import {
   VoucherPostingService,
   type VoucherListRow,
@@ -19,7 +19,7 @@ import { FilesService } from '../../files/files.service.js';
 import { FileOwnerType } from '../../files/schemas/file-attachment.schema.js';
 import { AuditService } from '../../audit/audit.service.js';
 import { AuditAction, type AuditChange } from '../../audit/schemas/audit-log.schema.js';
-import { CASH_RECEIPT_ENTITY_TYPE } from './schemas/cash-receipt.schema.js';
+import { CASH_RECEIPT_ENTITY_TYPE, ReceiptKind } from './schemas/cash-receipt.schema.js';
 import { VoucherStatus } from '../vouchers/schemas/voucher.schema.js';
 import { PaymentMethod } from '../vouchers/schemas/voucher.schema.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
@@ -59,13 +59,17 @@ export class CashReceiptService {
     allocations.registerPaymentSource(CASH_RECEIPT_ENTITY_TYPE, this.model, PartyKind.CUSTOMER);
   }
 
+  /** Receipts without a receiptKind (before it existed) are standard. */
   async findAll(query: CashReceiptQueryDto = {}, viewer?: Viewer): Promise<CashReceiptPage> {
-    const { cashAccountId, ...rest } = query;
+    const { cashAccountId, kind = ReceiptKind.STANDARD, ...rest } = query;
+    const kindFilter =
+      kind === 'all' ? null : { receiptKind: kind === ReceiptKind.REFERENCE ? kind : { $ne: ReceiptKind.REFERENCE } };
     const page = await this.posting.list(
       CASH_RECEIPT_DEFINITION,
       this.model,
       { ...rest, headerAccountId: cashAccountId },
       viewer,
+      kindFilter,
     );
     return { ...page, items: page.items.map(({ header, ...row }) => ({ ...row, cashAccount: header })) };
   }
@@ -84,14 +88,16 @@ export class CashReceiptService {
    * the receipt. With `session` it joins the caller's transaction (pay-at-sale).
    */
   async create(dto: CreateCashReceiptDto, actor: Viewer, session?: ClientSession): Promise<CashReceiptDocument> {
-    const { cashAccountId, lines, ...rest } = dto;
+    const { cashAccountId, lines, receiptKind = ReceiptKind.STANDARD, ...rest } = dto;
+    if (receiptKind === ReceiptKind.REFERENCE) assertNoVat(lines);
     const requests = allocationsOf(lines);
     return (await this.posting.create(
-      CASH_RECEIPT_DEFINITION,
+      definitionOf(receiptKind),
       this.model,
       {
         ...rest,
         headerAccountId: cashAccountId ?? (await this.chequesInHandFor(dto.paymentMethod)),
+        extraFields: { receiptKind },
         lines: lines.map(withoutAllocations),
         afterPost: (voucher, txn) =>
           this.allocations.allocateForPayment(CASH_RECEIPT_ENTITY_TYPE, voucher, requests, actor, txn),
@@ -105,11 +111,15 @@ export class CashReceiptService {
   async update(id: string, dto: UpdateCashReceiptDto, actor: Viewer): Promise<CashReceiptDocument> {
     const { cashAccountId, lines, ...rest } = dto;
     // Switching to cheque without naming an account: the company's cheques in hand.
-    const current = !cashAccountId && dto.paymentMethod === PaymentMethod.CHEQUE ? await this.findById(id, actor) : null;
+    const current = await this.findById(id, actor);
+    const def = definitionOf(current.receiptKind);
     const headerAccountId =
-      current && current.paymentMethod !== PaymentMethod.CHEQUE ? await this.chequesInHandFor(dto.paymentMethod) : cashAccountId;
+      !cashAccountId && dto.paymentMethod === PaymentMethod.CHEQUE && current.paymentMethod !== PaymentMethod.CHEQUE
+        ? await this.chequesInHandFor(dto.paymentMethod)
+        : cashAccountId;
     const input: VoucherUpdateInput = { ...rest, headerAccountId };
     if (lines) {
+      if (current.receiptKind === ReceiptKind.REFERENCE) assertNoVat(lines);
       const requests = allocationsOf(lines);
       input.lines = lines.map(withoutAllocations);
       const [from, to] = await Promise.all([
@@ -124,13 +134,13 @@ export class CashReceiptService {
         await this.allocations.allocateForPayment(CASH_RECEIPT_ENTITY_TYPE, voucher, requests, actor, session);
       };
     }
-    return (await this.posting.update(CASH_RECEIPT_DEFINITION, this.model, id, input, actor)) as unknown as CashReceiptDocument;
+    return (await this.posting.update(def, this.model, id, input, actor)) as unknown as CashReceiptDocument;
   }
 
   /** Reverses the posting and its allocations and keeps the receipt, marked cancelled, with who/when/why. */
   async cancel(id: string, dto: CancelCashReceiptDto, actor: Viewer, session?: ClientSession): Promise<CashReceiptDocument> {
     return (await this.posting.cancel(
-      CASH_RECEIPT_DEFINITION,
+      definitionOf((await this.findById(id, actor)).receiptKind),
       this.model,
       id,
       dto?.reason,
@@ -237,7 +247,17 @@ export class CashReceiptService {
   }
 
   async remove(id: string, viewer?: Viewer): Promise<{ success: true }> {
-    return this.posting.remove(CASH_RECEIPT_DEFINITION, this.model, id, viewer);
+    return this.posting.remove(definitionOf((await this.findById(id, viewer)).receiptKind), this.model, id, viewer);
+  }
+}
+
+function definitionOf(kind: ReceiptKind | undefined) {
+  return kind === ReceiptKind.REFERENCE ? REFERENCE_RECEIPT_DEFINITION : CASH_RECEIPT_DEFINITION;
+}
+
+function assertNoVat(lines: readonly CashReceiptLineDto[]): void {
+  if (lines.some((line) => line.vat)) {
+    throw new BadRequestException('A reference receipt has no VAT: every line must have VAT 0');
   }
 }
 

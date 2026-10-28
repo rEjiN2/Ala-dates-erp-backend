@@ -1,4 +1,5 @@
-import { IsEnum, IsMongoId, IsOptional } from 'class-validator';
+import { IsEnum, IsIn, IsMongoId, IsOptional } from 'class-validator';
+import { ReceiptKind } from '../schemas/cash-receipt.schema.js';
 import { VoucherQueryDto } from '../../vouchers/dto/voucher.dto.js';
 import { ChequeStatus } from '../../vouchers/schemas/voucher.schema.js';
 
@@ -12,6 +13,11 @@ export class CashReceiptQueryDto extends VoucherQueryDto {
   @IsOptional()
   @IsMongoId()
   cashAccountId?: string;
+
+  /** Default standard, so the Receipts list is unchanged. */
+  @IsOptional()
+  @IsIn([...Object.values(ReceiptKind), 'all'])
+  kind?: ReceiptKind | 'all';
 
   @IsOptional()
   @IsEnum(ChequeStatus)
