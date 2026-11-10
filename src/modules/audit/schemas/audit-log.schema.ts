@@ -12,6 +12,8 @@ export enum AuditAction {
   /** A submitted document (cash handover) was approved or rejected. */
   APPROVED = 'approved',
   REJECTED = 'rejected',
+  /** A pending receipt (stock transfer) was received at its destination. */
+  RECEIVED = 'received',
   /** A master record (party, cashier, ...) was switched to inactive; the changes list everything else edited with it. */
   DEACTIVATED = 'deactivated',
   /** A document (e.g. a voucher PDF) was generated. */

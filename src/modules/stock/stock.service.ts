@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Model } from 'mongoose';
@@ -15,6 +15,7 @@ import { CompanyService } from '../company/company.service.js';
 import { DataScope, Permission, hasPermission } from '../roles/permissions.js';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 import { escapeRegExp } from '../sequence/code-sequence.js';
+import { InTransitRegistry } from './pending-receipt.js';
 import { type Actor, toUserSnapshot, userRefOf } from '../../common/schemas/user-snapshot.schema.js';
 import { round2 } from '../../common/utils/money.util.js';
 
@@ -43,7 +44,12 @@ export interface StockSummaryRow {
   name: string;
   group: { id: string; name: string } | null;
   unit: { id: string; name: string; symbol: string } | null;
+  /** On hand. */
   total: number;
+  /** Sent in open transfers, not yet received (toward the viewed locations). */
+  inTransit: number;
+  /** total + inTransit. */
+  grandTotal: number;
   byLocation: { locationId: string; name: string | null; qty: number }[];
   status: StockStatus;
   /** total x purchasePrice; only with products:view-cost. */
@@ -78,6 +84,7 @@ export class StockService {
     private readonly companyService: CompanyService,
     private readonly productService: ProductService,
     productUsage: ProductUsageRegistry,
+    @Optional() private readonly inTransit?: InTransitRegistry,
   ) {
     productUsage.register('stock entries', async (productId, session) =>
       Boolean(
@@ -270,6 +277,12 @@ export class StockService {
       units.map((unit) => [unit._id.toString(), { id: unit._id.toString(), name: unit.name, symbol: unit.symbol }]),
     );
     const canViewCost = hasPermission(viewer, Permission.PRODUCTS_VIEW_COST);
+    const transit = this.inTransit
+      ? await this.inTransit.quantities(
+          products.map((product) => product._id),
+          locationIds ? locationIds.map((id) => new Types.ObjectId(id)) : null,
+        )
+      : new Map<string, number>();
 
     let rows: StockSummaryRow[] = products.map((product) => {
       const byLocation = held
@@ -280,6 +293,7 @@ export class StockService {
           qty: roundQty(balance.qty),
         }));
       const total = roundQty(byLocation.reduce((sum, row) => sum + row.qty, 0));
+      const inTransit = transit.get(product._id.toString()) ?? 0;
       return {
         productId: product._id.toString(),
         code: product.code,
@@ -289,6 +303,8 @@ export class StockService {
           : null,
         unit: unitById.get(product.unitId.toString()) ?? null,
         total,
+        inTransit,
+        grandTotal: roundQty(total + inTransit),
         byLocation,
         status: levelStatus(total, product),
         ...(canViewCost ? { value: round2(total * (product.purchasePrice ?? 0)) } : {}),

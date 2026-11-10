@@ -309,7 +309,7 @@ describe('CashPaymentService', () => {
       for (const from of [customer, expense, supplier]) {
         await expect(
           pay(from, [
-            { account: expense === from ? customer : expense, amount: 1 },
+            { account: expense === from ? supplier : expense, amount: 1 },
           ]),
         ).rejects.toThrow(
           `${from.code} (${from.name}) is a ${from.type} account. Choose a cash, wallet or bank account.`,
@@ -323,21 +323,29 @@ describe('CashPaymentService', () => {
         LedgerAccountStatus.INACTIVE,
       );
       await expect(
-        pay(closed, [{ account: customer, amount: 1 }]),
+        pay(closed, [{ account: supplier, amount: 1 }]),
       ).rejects.toThrow(/inactive/);
     });
 
-    it('accepts supplier, customer, expense, income and other lines', async () => {
-      const { cash, supplier, customer, expense, income, other } =
-        await accounts();
+    it('accepts supplier, expense and other lines', async () => {
+      const { cash, supplier, expense, other } = await accounts();
       const payment = await pay(
         cash,
-        [supplier, customer, expense, income, other].map((account) => ({
+        [supplier, expense, other].map((account) => ({
           account,
           amount: 10,
         })),
       );
-      expect(payment.grandTotal).toBe(50);
+      expect(payment.grandTotal).toBe(30);
+    });
+
+    it('rejects customer and income lines', async () => {
+      const { cash, customer, income } = await accounts();
+      await expect(pay(cash, [{ account: customer, amount: 5 }])).rejects.toThrow(
+        'Line 1: CUS-0001 (Ali Traders) is a party account. A payment line must be a supplier, expense or other account; customer refunds go through a sales return.',
+      );
+      await expect(pay(cash, [{ account: income, amount: 5 }])).rejects.toThrow(/Line 1: INC-0001 \(Scrap Sales\) is a income account/);
+      expect(await h.models.payment.countDocuments().exec()).toBe(0);
     });
 
     it('rejects cash, wallet and bank lines, and the paid-from account on a line', async () => {
@@ -349,7 +357,7 @@ describe('CashPaymentService', () => {
           { account: bank, amount: 5 },
         ]),
       ).rejects.toThrow(
-        "Line 2: BNK-0001 (ADCB) is a bank account. Money can't be paid to the company's own cash, wallet or bank accounts; choose a supplier, customer, expense, income or other account.",
+        "Line 2: BNK-0001 (ADCB) is a bank account. A payment line must be a supplier, expense or other account; customer refunds go through a sales return.",
       );
       await expect(pay(bank, [{ account: wallet, amount: 5 }])).rejects.toThrow(
         /Line 1: WAL-0001 \(STC Pay\) is a wallet account/,

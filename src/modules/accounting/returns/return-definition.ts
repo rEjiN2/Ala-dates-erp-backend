@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 import { AllocationTargetType } from '../allocations/schemas/allocation.schema.js';
 import { SYSTEM_ACCOUNTS } from '../ledger-accounts/schemas/ledger-account.schema.js';
-import { CASH_PAYMENT_DEFINITION } from '../cash-payments/cash-payment.definition.js';
+import { SALES_RETURN_REFUND_PAYMENT_DEFINITION } from '../cash-payments/cash-payment.definition.js';
 import { CASH_RECEIPT_DEFINITION } from '../cash-receipts/cash-receipt.definition.js';
 import type { VoucherDefinition } from '../vouchers/voucher-definition.js';
 import { isOwnScope } from '../vouchers/data-scope.js';
@@ -91,7 +91,7 @@ export const SALES_RETURN_DEFINITION: ReturnDefinition = {
   hidesCost: true,
   readPermission: Permission.SALES_RETURNS_READ,
   refund: {
-    voucher: CASH_PAYMENT_DEFINITION,
+    voucher: SALES_RETURN_REFUND_PAYMENT_DEFINITION,
     createPermission: Permission.CASH_PAYMENTS_CREATE,
     cancelPermission: Permission.CASH_PAYMENTS_CANCEL,
   },

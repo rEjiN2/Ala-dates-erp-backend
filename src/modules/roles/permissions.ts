@@ -51,6 +51,13 @@ export const Permission = {
   OPENING_STOCK_CREATE: 'opening-stock:create',
   OPENING_STOCK_EDIT: 'opening-stock:edit',
   OPENING_STOCK_CANCEL: 'opening-stock:cancel',
+  STOCK_TRANSFERS_READ: 'stock-transfers:read',
+  /** Send (and, as the sender, edit) a transfer. */
+  STOCK_TRANSFERS_CREATE: 'stock-transfers:create',
+  /** Confirm what arrived at the destination. */
+  STOCK_TRANSFERS_RECEIVE: 'stock-transfers:receive',
+  /** Cancel a transfer still in transit. */
+  STOCK_TRANSFERS_CANCEL: 'stock-transfers:cancel',
   /** Define and change bundle recipes (PUT /products/:id/recipe). */
   BUNDLES_MANAGE: 'bundles:manage',
   BUNDLING_READ: 'bundling:read',
@@ -166,6 +173,9 @@ export const VAN_SALESMAN_PERMISSIONS: readonly Permission[] = [
   Permission.SALES_RETURNS_READ,
   Permission.STOCK_COUNTS_READ,
   Permission.STOCK_COUNTS_CREATE,
+  Permission.STOCK_TRANSFERS_READ,
+  Permission.STOCK_TRANSFERS_CREATE,
+  Permission.STOCK_TRANSFERS_RECEIVE,
 ];
 
 export function hasPermission(user: { permissions?: readonly string[] } | undefined, permission: Permission): boolean {

@@ -4,14 +4,13 @@ import { VoucherDirection, type VoucherDefinition } from '../vouchers/voucher-de
 import { CASH_PAYMENT_ENTITY_TYPE } from './schemas/cash-payment.schema.js';
 
 /**
- * Accounts money can be paid to on a payment line. Never the company's own
- * cash, wallet or bank accounts: that would be a transfer, not a payment.
+ * Accounts money can be paid to on a manual payment line. Never the company's
+ * own cash, wallet or bank accounts (a transfer), nor customers or income
+ * (customer refunds go through a sales return).
  */
 export const PAYMENT_LINE_ACCOUNT_TYPES: readonly LedgerAccountType[] = [
   LedgerAccountType.SUPPLIER,
-  LedgerAccountType.PARTY,
   LedgerAccountType.EXPENSE,
-  LedgerAccountType.INCOME,
   LedgerAccountType.OTHER,
 ];
 
@@ -29,7 +28,7 @@ export const CASH_PAYMENT_DEFINITION: VoucherDefinition = {
   headerLabel: 'Paid from',
   lineAccountTypes: PAYMENT_LINE_ACCOUNT_TYPES,
   lineTypeHint:
-    "Money can't be paid to the company's own cash, wallet or bank accounts; choose a supplier, customer, expense, income or other account.",
+    "A payment line must be a supplier, expense or other account; customer refunds go through a sales return.",
   warnOnOverdraw: true,
   usageSource: 'cash payments',
   readPermission: Permission.CASH_PAYMENTS_READ,
@@ -41,4 +40,10 @@ export const CASH_PAYMENT_DEFINITION: VoucherDefinition = {
     counterpartyColumn: 'Paid To',
     signatures: ['Cashier Signature', 'Received by'],
   },
+};
+
+/** Internal only: the refund ReturnService posts for a sales return pays the customer. */
+export const SALES_RETURN_REFUND_PAYMENT_DEFINITION: VoucherDefinition = {
+  ...CASH_PAYMENT_DEFINITION,
+  lineAccountTypes: [LedgerAccountType.PARTY],
 };

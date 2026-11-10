@@ -18,6 +18,10 @@ import { StockCountService } from './stock-count/stock-count.service.js';
 import { StockCountController } from './stock-count/stock-count.controller.js';
 import { BundlingService } from './bundling/bundling.service.js';
 import { BundlingController } from './bundling/bundling.controller.js';
+import { StockTransfer, StockTransferSchema } from './transfers/schemas/stock-transfer.schema.js';
+import { StockTransferService } from './transfers/stock-transfer.service.js';
+import { StockTransferController } from './transfers/stock-transfer.controller.js';
+import { InTransitRegistry } from './pending-receipt.js';
 import { ProductsModule } from '../product/products/products.module.js';
 import { CompanyModule } from '../company/company.module.js';
 import { SequenceModule } from '../sequence/sequence.module.js';
@@ -34,6 +38,7 @@ import { CommentsModule } from '../comments/comments.module.js';
       { name: StockCount.name, schema: StockCountSchema },
       { name: BundleRecipe.name, schema: BundleRecipeSchema },
       { name: Bundling.name, schema: BundlingSchema },
+      { name: StockTransfer.name, schema: StockTransferSchema },
       { name: Product.name, schema: ProductSchema },
       { name: Unit.name, schema: UnitSchema },
       { name: ProductGroup.name, schema: ProductGroupSchema },
@@ -45,8 +50,8 @@ import { CommentsModule } from '../comments/comments.module.js';
     AuditModule,
     CommentsModule,
   ],
-  controllers: [StockController, OpeningStockController, StockCountController, BundlingController],
-  providers: [StockService, OpeningStockService, StockCountService, BundlingService],
-  exports: [StockService],
+  controllers: [StockController, OpeningStockController, StockCountController, BundlingController, StockTransferController],
+  providers: [StockService, OpeningStockService, StockCountService, BundlingService, StockTransferService, InTransitRegistry],
+  exports: [StockService, InTransitRegistry],
 })
 export class StockModule {}
