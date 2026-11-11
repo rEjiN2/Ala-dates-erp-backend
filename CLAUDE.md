@@ -48,6 +48,7 @@ VoucherPostingService.create/cancel; Party.systemKey cash_customer;
 Built: sales/purchase returns (src/modules/accounting/returns, SR-/PR-; ReturnService
 engine + thin services like VoucherPostingService).
 Built: FIFO costing core (src/modules/stock/costing: CostLayer, LayerConsumption, CostService; PI/OS add layers, SI consumes, `pnpm migrate:fifo`). Returns, bundling, counts also on layers; every StockService.post entry declares costing (layer-add|consume|restore|none; transfers exempt); GET /reports/batch-expiry.
+Built: non-VAT invoices (invoiceKind on sales invoice, SNV-, sales_non_vat account, non-vat-invoices:* perms, plain INVOICE/RETURN NOTE print, `pnpm migrate:invoice-kind`, SalesInvoiceService.nonVatSalesTotal).
 Planned: reports, migration.
 
 ## Conventions
@@ -71,7 +72,7 @@ Planned: reports, migration.
   (pnpm migrate:collected-by moved vouchers).
 - Codes: SequenceService (atomic $inc, takes a Mongo session). Clients never
   send codes; immutable. BR/WH/ST/VAN, PG, CUS/SUP, CASH/BNK/WAL/INC/EXP/OTH,
-  CHQ, CR, CP, HO, PRD, OB, SR, PR.
+  CHQ, CR, CP, HO, PRD, OB, SR, PR, SNV.
 - Opening balances (src/modules/accounting/opening-balances, OB-): lines
   {accountId, debit|credit}; diff posts to system account "Opening Balance
   Equity" (LedgerAccount.systemKey: not editable, hidden from lookups,

@@ -9,6 +9,7 @@ import { SalesInvoiceService } from './sales-invoice.service.js';
 import {
   CancelSalesInvoiceDto,
   CreateSalesInvoiceDto,
+  PreviewSalesInvoiceDto,
   SalesInvoiceQueryDto,
   UpdateSalesInvoiceDto,
 } from './dto/sales-invoice.dto.js';
@@ -35,13 +36,24 @@ export class SalesInvoiceController {
   @Get(':id/pdf')
   @RequirePermission(Permission.SALES_INVOICES_READ)
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
-    const printed = await this.salesInvoiceService.print(id, user);
+  async pdf(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('size') size?: string,
+  ): Promise<StreamableFile> {
+    const printed = await this.salesInvoiceService.print(id, user, size);
     return new StreamableFile(printed.buffer, {
       type: 'application/pdf',
       length: printed.buffer.length,
       disposition: `inline; filename="${printed.filename}"`,
     });
+  }
+
+  /** The computed line and invoice totals of a draft, exactly as a save would store them. Nothing is saved. */
+  @Post('preview')
+  @RequirePermission(Permission.SALES_INVOICES_CREATE)
+  preview(@Body() dto: PreviewSalesInvoiceDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.salesInvoiceService.preview(dto, user);
   }
 
   @Post()

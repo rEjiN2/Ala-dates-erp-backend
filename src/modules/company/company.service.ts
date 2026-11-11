@@ -20,6 +20,7 @@ import { LedgerAccountUsageRegistry } from '../accounting/ledger-accounts/ledger
 import { LedgerAccountType } from '../accounting/ledger-accounts/schemas/ledger-account.schema.js';
 import { type Actor, toUserSnapshot, userRefOf } from '../../common/schemas/user-snapshot.schema.js';
 import { runInTransaction } from '../../common/utils/transaction.util.js';
+import { DEFAULT_PRINT_DEFAULTS, PRINT_DOC_TYPES, type PrintDefaults } from '../../common/pdf/print-layout.js';
 
 /** Image types pdfmake can embed. */
 const LOGO_MIME_TYPES = new Set(['image/png', 'image/jpeg']);
@@ -38,6 +39,7 @@ const EDITABLE_FIELDS = [
   'currencyCode',
   'receiptFooterText',
   'referenceReceiptHeaderText',
+  'nonVatHeaderText',
 ] as const;
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -50,6 +52,7 @@ export interface CompanySettingsView extends Record<EditableField, string | null
   logo: { id: string; url: string } | null;
   allowSelfApproval: boolean;
   allowNegativeStock: boolean;
+  printDefaults: PrintDefaults;
   defaultCashInHandAccountId: string | null;
   defaultChequesInHandAccountId: string | null;
   defaultPettyCashAccountId: string | null;
@@ -58,7 +61,7 @@ export interface CompanySettingsView extends Record<EditableField, string | null
 }
 
 type DisplayRecord = Record<
-  EditableField | 'logo' | 'allowSelfApproval' | 'allowNegativeStock' |'defaultCashInHandAccount' | 'defaultChequesInHandAccount' | 'defaultPettyCashAccount',
+  EditableField | 'logo' | 'allowSelfApproval' | 'allowNegativeStock' | 'printDefaults' |'defaultCashInHandAccount' | 'defaultChequesInHandAccount' | 'defaultPettyCashAccount',
   string | null
 >;
 
@@ -87,8 +90,10 @@ const AUDITED_FIELDS: readonly DiffField<DisplayRecord>[] = [
   { key: 'currencyCode', label: 'Currency' },
   { key: 'receiptFooterText', label: 'Receipt footer text' },
   { key: 'referenceReceiptHeaderText', label: 'Reference receipt header text' },
+  { key: 'nonVatHeaderText', label: 'Non-VAT invoice header text' },
   { key: 'allowSelfApproval', label: 'Allow self-approval of handovers' },
   { key: 'allowNegativeStock', label: 'Allow negative stock' },
+  { key: 'printDefaults', label: 'Default print sizes' },
   { key: 'defaultCashInHandAccount', label: 'Default cash in hand account' },
   { key: 'defaultChequesInHandAccount', label: 'Default cheques in hand account' },
   { key: 'defaultPettyCashAccount', label: 'Default petty cash account' },
@@ -175,6 +180,10 @@ export class CompanyService {
       settings.logoFileRef = dto.logoFileRef ? new Types.ObjectId(dto.logoFileRef) : null;
       settings.allowSelfApproval = dto.allowSelfApproval ?? false;
       settings.allowNegativeStock = dto.allowNegativeStock ?? false;
+      settings.printDefaults = {
+        ...DEFAULT_PRINT_DEFAULTS,
+        ...Object.fromEntries(Object.entries(dto.printDefaults ?? {}).filter(([, size]) => size !== undefined)),
+      };
       for (const { field } of DEFAULT_ACCOUNT_FIELDS) {
         settings.set(field, dto[field] ? new Types.ObjectId(dto[field]) : null);
       }
@@ -254,10 +263,18 @@ export class CompanyService {
       logo,
       allowSelfApproval: settings.allowSelfApproval ? 'Yes' : 'No',
       allowNegativeStock: settings.allowNegativeStock ? 'Yes' : 'No',
+      printDefaults: PRINT_DOC_TYPES.map((type) => `${type} ${this.printDefaultsOf(settings)[type]}`).join(', '),
       defaultCashInHandAccount: accountLabel('defaultCashInHandAccountId'),
       defaultChequesInHandAccount: accountLabel('defaultChequesInHandAccountId'),
       defaultPettyCashAccount: accountLabel('defaultPettyCashAccountId'),
     };
+  }
+
+  private printDefaultsOf(settings: CompanySettingsDocument): PrintDefaults {
+    const stored = settings.printDefaults as Partial<PrintDefaults> | undefined;
+    return Object.fromEntries(
+      PRINT_DOC_TYPES.map((type) => [type, stored?.[type] ?? DEFAULT_PRINT_DEFAULTS[type]]),
+    ) as PrintDefaults;
   }
 
   private toView(settings: CompanySettingsDocument): CompanySettingsView {
@@ -274,6 +291,7 @@ export class CompanyService {
       logo: logoId ? { id: logoId, url: `/files/${logoId}` } : null,
       allowSelfApproval: settings.allowSelfApproval ?? false,
       allowNegativeStock: settings.allowNegativeStock ?? false,
+      printDefaults: this.printDefaultsOf(settings),
       defaultCashInHandAccountId: settings.defaultCashInHandAccountId?.toString() ?? null,
       defaultChequesInHandAccountId: settings.defaultChequesInHandAccountId?.toString() ?? null,
       defaultPettyCashAccountId: settings.defaultPettyCashAccountId?.toString() ?? null,

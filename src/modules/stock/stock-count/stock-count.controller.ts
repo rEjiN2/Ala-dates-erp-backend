@@ -53,16 +53,16 @@ export class StockCountController {
   @Get(':id/pdf')
   @RequirePermission(Permission.STOCK_COUNTS_READ)
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return asPdf(await this.stockCountService.sheetPdf(id, user));
+  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Query('size') size?: string) {
+    return asPdf(await this.stockCountService.sheetPdf(id, user, size));
   }
 
   /** Adjustment summary of an approved count; needs stock:view-system-qty. */
   @Get(':id/adjustment-pdf')
   @RequirePermission(Permission.STOCK_COUNTS_READ)
   @Header('Cache-Control', 'private, no-store')
-  async adjustmentPdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return asPdf(await this.stockCountService.adjustmentPdf(id, user));
+  async adjustmentPdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Query('size') size?: string) {
+    return asPdf(await this.stockCountService.adjustmentPdf(id, user, size));
   }
 
   @Post()

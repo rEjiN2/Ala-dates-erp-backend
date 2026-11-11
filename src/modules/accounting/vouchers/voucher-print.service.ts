@@ -14,6 +14,7 @@ import { AuditService } from '../../audit/audit.service.js';
 import { AuditAction } from '../../audit/schemas/audit-log.schema.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
 import { renderPdf } from '../../../common/pdf/pdf-renderer.js';
+import { printLayout } from '../../../common/pdf/print-layout.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
 export interface PrintedVoucher {
@@ -46,12 +47,14 @@ export class VoucherPrintService {
     id: string,
     actor: Actor,
     scope: Record<string, unknown> | null = null,
+    requestedSize?: string,
   ): Promise<PrintedVoucher> {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException(`${def.label} id "${id}" is not a valid id`);
     }
     // Fetched before the transaction: it may call out to file storage.
     const { settings, logoDataUrl } = await this.companyService.getForPrinting();
+    const size = printLayout.resolveSize(requestedSize, def.pdf.printType ?? 'other', settings.printDefaults);
 
     return runInTransaction(this.connection, async (session) => {
       const voucher = await model
@@ -122,6 +125,7 @@ export class VoucherPrintService {
           copyNumber,
           printedBy: actor.name,
           printedAt,
+          size,
         },
         {
           titles: def.pdf.titles,
@@ -141,7 +145,10 @@ export class VoucherPrintService {
           entityRef: voucher.voucherNo,
           action: AuditAction.PRINTED,
           actor,
-          changes: [{ field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) }],
+          changes: [
+            { field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) },
+            { field: 'size', label: 'Size', from: null, to: size },
+          ],
           at: printedAt,
         },
         session,

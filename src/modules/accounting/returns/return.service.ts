@@ -17,7 +17,8 @@ import { SalesInvoice, SALES_INVOICE_ENTITY_TYPE } from '../../sales/sales-invoi
 import { VoucherStatus, type VoucherDocument } from '../vouchers/schemas/voucher.schema.js';
 import { LedgerEntryKind } from '../vouchers/schemas/ledger-entry.schema.js';
 import { VoucherPostingService } from '../vouchers/voucher-posting.service.js';
-import { buildVoucherPdf, copyLabel, formatMoney } from '../vouchers/voucher-pdf.js';
+import { buildPlainInvoicePdf, buildVoucherPdf, copyLabel, itemDocument } from '../vouchers/voucher-pdf.js';
+import { printLayout } from '../../../common/pdf/print-layout.js';
 import type { PrintedVoucher } from '../vouchers/voucher-print.service.js';
 import { withScope } from '../vouchers/data-scope.js';
 import { LedgerAccountService } from '../ledger-accounts/ledger-account.service.js';
@@ -93,6 +94,7 @@ interface Prepared {
   partyAccountId: Types.ObjectId;
   locationId: Types.ObjectId;
   soldById: Types.ObjectId | null;
+  invoiceKind: 'tax' | 'non_vat';
   reason: string;
   lines: ReturnLine[];
   taxableTotal: number;
@@ -504,11 +506,19 @@ export class ReturnService {
     });
   }
 
-  /** CREDIT NOTE / DEBIT NOTE as an A4 PDF: ORIGINAL then DUPLICATEs, every print audited. */
-  async print(def: ReturnDefinition, model: ReturnModel, id: string, actor: Viewer): Promise<PrintedVoucher> {
+  /** CREDIT NOTE / DEBIT NOTE PDF (?size, else the company default): ORIGINAL then DUPLICATEs, every print audited. */
+  async print(
+    def: ReturnDefinition,
+    model: ReturnModel,
+    id: string,
+    actor: Viewer,
+    requestedSize?: string,
+  ): Promise<PrintedVoucher> {
     assertValidId(def, id);
     // Fetched before the transaction: it may call out to file storage.
     const { settings, logoDataUrl } = await this.companyService.getForPrinting();
+    // Validated before any print side effect; a non-VAT return's default size is chosen once it is loaded.
+    const defaultSize = printLayout.resolveSize(requestedSize, 'other', settings.printDefaults);
 
     return runInTransaction(this.connection, async (session) => {
       const doc = await model
@@ -524,9 +534,9 @@ export class ReturnService {
       const party = await this.partyModel.findById(doc.partyId).select('code name vatNumber').session(session).lean().exec();
       const invoice = await this.invoiceModels[def.invoiceEntityType]
         .findById(doc.invoiceId)
-        .select('voucherNo billNo')
+        .select('voucherNo billNo invoiceKind')
         .session(session)
-        .lean<{ voucherNo: string; billNo?: string }>()
+        .lean<{ voucherNo: string; billNo?: string; invoiceKind?: string }>()
         .exec();
       const locations = await this.namesOf(this.locationModel, [doc.locationId], session);
       const products = await this.productModel
@@ -539,53 +549,64 @@ export class ReturnService {
         const product = products.find((candidate) => candidate._id.equals(productId));
         return product ? `${product.code} ${product.name}` : productId.toString();
       };
-      const vatSummary = new Map<number, { taxable: number; vat: number }>();
-      for (const line of doc.lines) {
-        const row = vatSummary.get(line.vatRate) ?? { taxable: 0, vat: 0 };
-        vatSummary.set(line.vatRate, { taxable: round2(row.taxable + line.amount), vat: round2(row.vat + line.vat) });
-      }
       const printedAt = new Date();
       const copyNumber = doc.printCount;
+      // A return against a non-VAT invoice prints as a plain RETURN NOTE: no company details.
+      const nonVat = doc.invoiceKind === 'non_vat';
+      const size = nonVat ? printLayout.resolveSize(requestedSize, 'nonVatInvoice', settings.printDefaults) : defaultSize;
 
-      const definition = buildVoucherPdf(
+      const definition = (nonVat ? buildPlainInvoicePdf : buildVoucherPdf)(
         {
-          company: {
-            legalName: settings.legalName,
-            addressLines: [
-              settings.addressLine1,
-              settings.addressLine2,
-              [settings.city, settings.country].filter(Boolean).join(', '),
-            ].filter((line): line is string => Boolean(line)),
-            phone: settings.phone,
-            trn: settings.trn,
-            footerText: settings.receiptFooterText,
-            currencyCode: settings.currencyCode,
-            logoDataUrl,
-          },
+          company: nonVat
+            ? {
+                legalName: '',
+                addressLines: [],
+                phone: null,
+                trn: null,
+                footerText: null,
+                plainHeaderText: settings.nonVatHeaderText,
+                currencyCode: settings.currencyCode,
+                logoDataUrl: null,
+              }
+            : {
+                legalName: settings.legalName,
+                addressLines: [
+                  settings.addressLine1,
+                  settings.addressLine2,
+                  [settings.city, settings.country].filter(Boolean).join(', '),
+                ].filter((line): line is string => Boolean(line)),
+                phone: settings.phone,
+                trn: settings.trn,
+                footerText: settings.receiptFooterText,
+                currencyCode: settings.currencyCode,
+                logoDataUrl,
+              },
           voucher: {
             voucherNo: doc.voucherNo,
             voucherDate: doc.voucherDate,
-            headerAccountName: party ? `${party.code} ${party.name}` : doc.partyId.toString(),
+            headerAccountName: party ? (nonVat ? party.name : `${party.code} ${party.name}`) : doc.partyId.toString(),
             collectedByName: locations.get(doc.locationId.toString()) ?? null,
             extraInfo: [
               { label: `Original ${def.invoiceLabel.toLowerCase()}`, value: doc.invoiceNo },
               ...(invoice?.billNo ? [{ label: 'Supplier Bill No', value: invoice.billNo }] : []),
-              { label: def.pdf.partyTrnLabel, value: party?.vatNumber ?? '-' },
+              ...(nonVat ? [] : [{ label: def.pdf.partyTrnLabel, value: party?.vatNumber ?? '-' }]),
               { label: 'Reason', value: doc.reason },
-              ...[...vatSummary].map(([rate, row]) => ({
-                label: `VAT ${rate}%`,
-                value: `${formatMoney(row.vat)} on ${formatMoney(row.taxable)}`,
-              })),
             ],
             paymentMethod: 'cash',
             paymentReference: null,
-            lines: doc.lines.map((line) => ({
-              counterparty: productName(line.productId),
-              narration: `${line.qty} x ${line.rate}${line.discount > 0 ? ` less ${line.discount.toFixed(2)}` : ''}, VAT ${line.vatRate}%`,
-              amount: line.amount,
-              vat: line.vat,
-              netAmount: line.netAmount,
-            })),
+            lines: [],
+            items: itemDocument(
+              doc.lines.map((line) => ({
+                product: productName(line.productId),
+                qty: line.qty,
+                rate: line.rate,
+                discount: line.discount,
+                vatRate: line.vatRate,
+                amount: line.amount,
+                vat: line.vat,
+              })),
+              false,
+            ),
             grossTotal: doc.taxableTotal,
             totalTax: doc.totalTax,
             grandTotal: doc.netTotal,
@@ -599,10 +620,11 @@ export class ReturnService {
           copyNumber,
           printedBy: actor.name,
           printedAt,
+          size,
         },
         {
-          titles: { cash: def.pdf.title, bank: def.pdf.title },
-          documentTitle: def.pdf.documentTitle,
+          titles: nonVat ? { cash: 'RETURN NOTE', bank: 'RETURN NOTE' } : { cash: def.pdf.title, bank: def.pdf.title },
+          documentTitle: nonVat ? 'Return Note' : def.pdf.documentTitle,
           headerLabel: def.pdf.partyLabel,
           counterpartyColumn: 'Product',
           signatures: def.pdf.signatures,
@@ -617,7 +639,10 @@ export class ReturnService {
           entityRef: doc.voucherNo,
           action: AuditAction.PRINTED,
           actor,
-          changes: [{ field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) }],
+          changes: [
+            { field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) },
+            { field: 'size', label: 'Size', from: null, to: size },
+          ],
           at: printedAt,
         },
         session,
@@ -650,6 +675,7 @@ export class ReturnService {
       partyAccountId: invoice.get(def.invoicePartyAccountField) as Types.ObjectId,
       locationId: new Types.ObjectId(input.locationId),
       soldById: (invoice.get('soldById') as Types.ObjectId | undefined) ?? null,
+      invoiceKind: invoice.get('invoiceKind') === 'non_vat' ? 'non_vat' : 'tax',
       reason: input.reason.trim(),
       lines,
       taxableTotal,
@@ -708,7 +734,8 @@ export class ReturnService {
         qty,
         restock: def.stockDirection === 'in' ? (request.restock ?? true) : true,
         rate: source.rate,
-        discount: share(source.discount),
+        // Line discount plus its share of the invoice discount: amount + discount = the line's gross share.
+        discount: share(round2(source.discount + ((source as { allocatedDiscount?: number }).allocatedDiscount ?? 0))),
         amount,
         vatRate: source.vatRate,
         vat,

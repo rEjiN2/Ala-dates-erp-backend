@@ -91,7 +91,7 @@ async function seed(): Promise<void> {
       .updateOne({ key: 'sales-invoice' }, { $setOnInsert: { key: 'sales-invoice', seq: 0 } }, { upsert: true })
       .exec();
     logger.log('Voucher counter ready: sales-invoice');
-    for (const key of ['sales-return', 'purchase-return', 'CRV', 'stock-transfer']) {
+    for (const key of ['sales-return', 'purchase-return', 'CRV', 'stock-transfer', 'SNV']) {
       await counterModel.updateOne({ key }, { $setOnInsert: { key, seq: 0 } }, { upsert: true }).exec();
       logger.log(`Voucher counter ready: ${key}`);
     }

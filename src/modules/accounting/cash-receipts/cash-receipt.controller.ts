@@ -95,9 +95,13 @@ export class CashReceiptController {
    */
   @Get(':id/pdf')
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
+  async pdf(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('size') size?: string,
+  ): Promise<StreamableFile> {
     await this.authorize(user, 'read', id);
-    const printed = await this.printService.print(id, user);
+    const printed = await this.printService.print(id, user, size);
     return new StreamableFile(printed.buffer, {
       type: 'application/pdf',
       length: printed.buffer.length,

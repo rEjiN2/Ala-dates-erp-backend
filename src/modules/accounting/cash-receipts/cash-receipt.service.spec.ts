@@ -1761,12 +1761,23 @@ describe('CashReceiptService (transactional)', () => {
       expect(prints[0].actorId.toString()).toBe(omar.id);
     });
 
+    it('uses the company default size (receipt: A5), honours ?size, rejects unknown sizes without counting a print', async () => {
+      const { receipt } = await postedReceipt();
+
+      expect((await printService.print(receipt.id, omar)).definition.pageSize).toBe('A5');
+      const thermal = await printService.print(receipt.id, omar, 'thermal80');
+      expect(thermal.definition.pageSize).toMatchObject({ width: expect.any(Number) });
+      expect(JSON.stringify(thermal.definition)).not.toContain('"rect"');
+      await expect(printService.print(receipt.id, omar, 'a3')).rejects.toThrow('size must be one of');
+      expect((await printService.print(receipt.id, omar)).copyNumber).toBe(3);
+    });
+
     it('shows company details, voucher contents, totals in words and who printed it', async () => {
       const { receipt } = await postedReceipt({ comments: 'Settled invoice 7' });
       await moduleRef.get(CompanyService).ensure();
       await companyModel.updateOne({}, { $set: { phone: '+971 6 555 0000', trn: '100234567800003' } }).exec();
 
-      const { definition } = await printService.print(receipt.id, omar);
+      const { definition } = await printService.print(receipt.id, omar, 'a4');
       const text = textOf(definition);
 
       expect(definition.pageSize).toBe('A4');

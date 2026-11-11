@@ -35,6 +35,7 @@ export const CASH_RECEIPT_DEFINITION: VoucherDefinition = {
   collectorLabel: 'Collected By',
   pdf: {
     titles: { cash: 'CASH RECEIPT VOUCHER', bank: 'BANK RECEIPT VOUCHER', cheque: 'CHEQUE RECEIPT VOUCHER' },
+    printType: 'receipt',
     documentTitle: 'Cash Receipt',
     counterpartyColumn: 'Received From',
     signatures: ['Cashier Signature', 'Payer Signature'],
@@ -63,6 +64,7 @@ export const REFERENCE_RECEIPT_DEFINITION: VoucherDefinition = {
     ...CASH_RECEIPT_DEFINITION.pdf,
     titles: { cash: 'RECEIPT', bank: 'RECEIPT', cheque: 'RECEIPT' },
     documentTitle: 'Receipt',
+    printType: 'referenceReceipt',
     plain: true,
   },
 };

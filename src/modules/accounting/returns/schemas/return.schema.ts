@@ -118,6 +118,10 @@ export abstract class ReturnBase {
   @Prop({ type: Types.ObjectId, ref: 'User', default: null, index: true })
   soldById: Types.ObjectId | null;
 
+  /** Sales returns inherit the invoice's kind: non_vat has VAT 0 and a plain RETURN NOTE print. */
+  @Prop({ type: String, enum: ['tax', 'non_vat'], default: 'tax' })
+  invoiceKind?: 'tax' | 'non_vat';
+
   @Prop({ required: true, trim: true })
   reason: string;
 

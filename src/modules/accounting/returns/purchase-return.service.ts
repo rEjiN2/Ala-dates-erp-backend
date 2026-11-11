@@ -65,7 +65,7 @@ export class PurchaseReturnService {
   }
 
   /** DEBIT NOTE, ORIGINAL then DUPLICATEs; every call is audited as a print. */
-  print(id: string, actor: AuthenticatedUser): Promise<PrintedVoucher> {
-    return this.engine.print(DEF, this.model, id, actor);
+  print(id: string, actor: AuthenticatedUser, requestedSize?: string): Promise<PrintedVoucher> {
+    return this.engine.print(DEF, this.model, id, actor, requestedSize);
   }
 }

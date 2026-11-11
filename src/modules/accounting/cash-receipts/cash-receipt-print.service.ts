@@ -20,7 +20,7 @@ export class CashReceiptPrintService {
   ) {}
 
   /** CASH or BANK RECEIPT VOUCHER, ORIGINAL then DUPLICATEs; every call is audited as a print. */
-  async print(id: string, actor: Actor & ScopedUser): Promise<PrintedCashReceipt> {
+  async print(id: string, actor: Actor & ScopedUser, requestedSize?: string): Promise<PrintedCashReceipt> {
     const kind = Types.ObjectId.isValid(id)
       ? (await this.cashReceiptModel.findById(id).select('receiptKind').lean().exec())?.receiptKind
       : undefined;
@@ -30,6 +30,7 @@ export class CashReceiptPrintService {
       id,
       actor,
       await this.posting.scopeFilter(actor, CASH_RECEIPT_DEFINITION),
+      requestedSize,
     );
   }
 }

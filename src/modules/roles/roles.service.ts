@@ -18,6 +18,7 @@ export interface RoleView {
   description: string | null;
   permissions: string[];
   dataScope: DataScope;
+  maxDiscountPercent: number | null;
   isSystem: boolean;
   /** Users holding this role, inactive ones included. */
   userCount: number;
@@ -28,6 +29,7 @@ interface RoleDisplay extends Record<string, unknown> {
   description: string | null;
   permissions: string;
   dataScope: string;
+  maxDiscountPercent: number | null;
 }
 
 const AUDITED_FIELDS: readonly DiffField<RoleDisplay>[] = [
@@ -35,6 +37,7 @@ const AUDITED_FIELDS: readonly DiffField<RoleDisplay>[] = [
   { key: 'description', label: 'Description' },
   { key: 'permissions', label: 'Permissions' },
   { key: 'dataScope', label: 'Data scope' },
+  { key: 'maxDiscountPercent', label: 'Max discount %' },
 ];
 
 /**
@@ -103,6 +106,7 @@ export class RolesService {
             description: dto.description ?? undefined,
             permissions: [...dto.permissions],
             dataScope: dto.dataScope,
+            maxDiscountPercent: dto.maxDiscountPercent ?? null,
             isSystem: false,
           },
         ],
@@ -131,6 +135,7 @@ export class RolesService {
       if (provided('description')) role.description = dto.description ?? undefined;
       if (provided('permissions')) role.permissions = [...(dto.permissions ?? [])];
       if (provided('dataScope')) role.dataScope = dto.dataScope!;
+      if (provided('maxDiscountPercent')) role.maxDiscountPercent = dto.maxDiscountPercent ?? null;
 
       const changes = diffFields(before, this.display(role), AUDITED_FIELDS);
       if (changes.length === 0) {
@@ -211,6 +216,7 @@ export class RolesService {
       description: role.description ?? null,
       permissions: [...role.permissions].sort().join(', '),
       dataScope: role.dataScope ?? DataScope.ALL,
+      maxDiscountPercent: role.maxDiscountPercent ?? null,
     };
   }
 
@@ -221,6 +227,7 @@ export class RolesService {
       description: role.description ?? null,
       permissions: [...role.permissions],
       dataScope: role.dataScope ?? DataScope.ALL,
+      maxDiscountPercent: role.maxDiscountPercent ?? null,
       isSystem: Boolean(role.isSystem),
       userCount,
     };

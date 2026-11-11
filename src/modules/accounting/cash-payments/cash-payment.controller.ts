@@ -51,8 +51,12 @@ export class CashPaymentController {
   @Get(':id/pdf')
   @RequirePermission(Permission.CASH_PAYMENTS_READ)
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
-    const printed = await this.cashPaymentService.print(id, user);
+  async pdf(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('size') size?: string,
+  ): Promise<StreamableFile> {
+    const printed = await this.cashPaymentService.print(id, user, size);
     return new StreamableFile(printed.buffer, {
       type: 'application/pdf',
       length: printed.buffer.length,

@@ -126,13 +126,14 @@ export class CashPaymentService {
   }
 
   /** CASH or BANK PAYMENT VOUCHER, ORIGINAL then DUPLICATEs; every call is audited as a print. */
-  async print(id: string, actor: Viewer): Promise<PrintedVoucher> {
+  async print(id: string, actor: Viewer, requestedSize?: string): Promise<PrintedVoucher> {
     return this.printService.print(
       CASH_PAYMENT_DEFINITION,
       this.model,
       id,
       actor,
       await this.posting.scopeFilter(actor, CASH_PAYMENT_DEFINITION),
+      requestedSize,
     );
   }
 }

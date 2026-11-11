@@ -8,7 +8,16 @@
       "Bash(cat > *)",
       "Bash(grep -vE \"^\\\\s*$|plugin\")",
       "Bash(grep -viE \"^\\\\s*$\")",
-      "Bash(grep -vE \"^\\\\s*$|Nest\\\\]\")"
+      "Bash(grep -vE \"^\\\\s*$|Nest\\\\]\")",
+      "Bash(sed -i \"s/^const copyBox = \\(data: VoucherPdfData\\): Column => \\({/const copyBox = \\(data: VoucherPdfData\\) => \\({/; s/^  width: 'auto',\\\\n  table: { body: \\\\[\\\\[{ text: copyLabel/&/; s/  const value = \\(pair: InfoPair\\): TableCell => \\({ text: pair.value, bold: pair.bold }\\);/  const value = \\(pair: InfoPair\\) => \\({ text: pair.value, bold: pair.bold }\\);/\" src/modules/accounting/vouchers/voucher-pdf.ts)",
+      "Bash(sed -i \"/^const copyBox/,/^}\\);/ s/  width: 'auto',/  width: 'auto' as const,/\" src/modules/accounting/vouchers/voucher-pdf.ts)",
+      "PowerShell(python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch_service.py\")",
+      "Bash(python \"C:/Users/HP/AppData/Local/Temp/claude/69b03aad8f5ffe9f/1804143e-e86c-4b31-af95-fdd9ea989eab/scratchpad/patch_pdf.py\")",
+      "Bash(python \"C:/Users/HP/AppData/Local/Temp/claude/69b03aad8f5ffe9f/1804143e-e86c-4b31-af95-fdd9ea989eab/scratchpad/patch_test.py\")",
+      "Bash(sed -n 15,40p src/modules/accounting/returns/schemas/../../ledger-accounts/schemas/ledger-account.schema.ts; sed -n 15,40p src/modules/reports/accounting-reports.service.ts; grep -n \"referenceReceipt\\\\|printType\\\\|logo\\\\|trn\\\\|company\\\\.\" src/modules/accounting/vouchers/voucher-pdf.ts | head -60)",
+      "Read(//c/Users/HP/Desktop/RJ-TEST-CODE/Ala-Dates-Backend/src/modules/accounting/ledger-accounts/schemas/**)",
+      "PowerShell(python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch1.py\")",
+      "PowerShell(Set-Location c:\\\\Users\\\\HP\\\\Desktop\\\\RJ-TEST-CODE\\\\Ala-Dates-Backend; \\(Get-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Raw -Encoding utf8\\).Replace\\(\"import { buildVoucherPdf, copyLabel, itemDocument }\", \"import { buildPlainInvoicePdf, buildVoucherPdf, copyLabel, itemDocument }\"\\) | Set-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Encoding utf8 -NoNewline; python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch3.py\"; git diff --stat src/modules/accounting/returns/return.service.ts)"
     ],
     "additionalDirectories": [
       "\\tmp"

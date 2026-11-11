@@ -24,7 +24,8 @@ import { Location, LocationDocument } from '../../location/schemas/location.sche
 import { VoucherStatus } from '../../accounting/vouchers/schemas/voucher.schema.js';
 import { LedgerEntryKind } from '../../accounting/vouchers/schemas/ledger-entry.schema.js';
 import { VoucherPostingService } from '../../accounting/vouchers/voucher-posting.service.js';
-import { buildVoucherPdf, copyLabel, formatVoucherDate } from '../../accounting/vouchers/voucher-pdf.js';
+import { buildVoucherPdf, copyLabel, formatVoucherDate, itemDocument } from '../../accounting/vouchers/voucher-pdf.js';
+import { printLayout } from '../../../common/pdf/print-layout.js';
 import type { PrintedVoucher } from '../../accounting/vouchers/voucher-print.service.js';
 import { withScope } from '../../accounting/vouchers/data-scope.js';
 import { LedgerAccountService } from '../../accounting/ledger-accounts/ledger-account.service.js';
@@ -360,11 +361,12 @@ export class PurchaseInvoiceService {
     });
   }
 
-  /** PURCHASE INVOICE as an A4 PDF: ORIGINAL then DUPLICATEs, every print audited. */
-  async print(id: string, actor: Viewer): Promise<PrintedVoucher> {
+  /** PURCHASE INVOICE PDF (?size, else the company default): ORIGINAL then DUPLICATEs, every print audited. */
+  async print(id: string, actor: Viewer, requestedSize?: string): Promise<PrintedVoucher> {
     assertValidId(id);
     // Fetched before the transaction: it may call out to file storage.
     const { settings, logoDataUrl } = await this.companyService.getForPrinting();
+    const size = printLayout.resolveSize(requestedSize, 'other', settings.printDefaults);
 
     return runInTransaction(this.connection, async (session) => {
       const doc = await this.model
@@ -419,13 +421,19 @@ export class PurchaseInvoiceService {
             ],
             paymentMethod: 'cash',
             paymentReference: null,
-            lines: doc.lines.map((line) => ({
-              counterparty: productName(line.productId),
-              narration: `${line.qty} x ${line.rate}${line.discount > 0 ? ` less ${line.discount.toFixed(2)}` : ''}, VAT ${line.vatRate}%`,
-              amount: line.amount,
-              vat: line.vat,
-              netAmount: line.netAmount,
-            })),
+            lines: [],
+            items: itemDocument(
+              doc.lines.map((line) => ({
+                product: productName(line.productId),
+                qty: line.qty,
+                rate: line.rate,
+                discount: line.discount,
+                vatRate: line.vatRate,
+                amount: line.amount,
+                vat: line.vat,
+              })),
+              true,
+            ),
             grossTotal: doc.taxableTotal,
             totalTax: doc.totalTax,
             grandTotal: doc.netTotal,
@@ -439,6 +447,7 @@ export class PurchaseInvoiceService {
           copyNumber,
           printedBy: actor.name,
           printedAt,
+          size,
         },
         {
           titles: { cash: 'PURCHASE INVOICE', bank: 'PURCHASE INVOICE' },
@@ -457,7 +466,10 @@ export class PurchaseInvoiceService {
           entityRef: doc.voucherNo,
           action: AuditAction.PRINTED,
           actor,
-          changes: [{ field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) }],
+          changes: [
+            { field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) },
+            { field: 'size', label: 'Size', from: null, to: size },
+          ],
           at: printedAt,
         },
         session,

@@ -74,6 +74,11 @@ export const Permission = {
   SALES_INVOICES_CREATE: 'sales-invoices:create',
   SALES_INVOICES_EDIT: 'sales-invoices:edit',
   SALES_INVOICES_CANCEL: 'sales-invoices:cancel',
+  /** Non-VAT invoices (sales invoice routes with kind non_vat). Admin and Accountant only by default. */
+  NON_VAT_INVOICES_READ: 'non-vat-invoices:read',
+  NON_VAT_INVOICES_CREATE: 'non-vat-invoices:create',
+  NON_VAT_INVOICES_EDIT: 'non-vat-invoices:edit',
+  NON_VAT_INVOICES_CANCEL: 'non-vat-invoices:cancel',
   PURCHASE_RETURNS_READ: 'purchase-returns:read',
   PURCHASE_RETURNS_CREATE: 'purchase-returns:create',
   PURCHASE_RETURNS_EDIT: 'purchase-returns:edit',

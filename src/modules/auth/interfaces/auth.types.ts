@@ -34,6 +34,8 @@ export interface AuthenticatedUser {
   /** Locations an "own"-scoped user sees stock for. */
   allowedLocationIds?: string[];
   mustChangePassword?: boolean;
+  /** Highest total sales discount, % of gross, the role may give; null/absent = unlimited. */
+  maxDiscountPercent?: number | null;
 }
 
 /** GET /auth/me (and the login response). */

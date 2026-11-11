@@ -61,8 +61,12 @@ export class CashHandoverController {
   @Get(':id/pdf')
   @RequirePermission(Permission.CASH_HANDOVERS_READ)
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
-    const printed = await this.cashHandoverService.print(id, user);
+  async pdf(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('size') size?: string,
+  ): Promise<StreamableFile> {
+    const printed = await this.cashHandoverService.print(id, user, size);
     return new StreamableFile(printed.buffer, {
       type: 'application/pdf',
       length: printed.buffer.length,

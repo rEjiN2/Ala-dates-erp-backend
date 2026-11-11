@@ -1,5 +1,18 @@
-import { Transform } from 'class-transformer';
-import { IsBoolean, IsEmail, IsMongoId, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, MaxLength } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsMongoId,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUrl,
+  Matches,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
+import { PRINT_SIZES, type PrintSize } from '../../../common/pdf/print-layout.js';
 
 /** Trims strings and turns a blank one into null, so "" clears an optional field. */
 const trimToNull = ({ value }: { value: unknown }) => {
@@ -7,6 +20,29 @@ const trimToNull = ({ value }: { value: unknown }) => {
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
 };
+
+/** Default print size per document type; an omitted type keeps its built-in default. */
+export class PrintDefaultsDto {
+  @IsOptional()
+  @IsIn(PRINT_SIZES)
+  receipt?: PrintSize;
+
+  @IsOptional()
+  @IsIn(PRINT_SIZES)
+  referenceReceipt?: PrintSize;
+
+  @IsOptional()
+  @IsIn(PRINT_SIZES)
+  taxInvoice?: PrintSize;
+
+  @IsOptional()
+  @IsIn(PRINT_SIZES)
+  nonVatInvoice?: PrintSize;
+
+  @IsOptional()
+  @IsIn(PRINT_SIZES)
+  other?: PrintSize;
+}
 
 /**
  * PUT body: the whole profile. An optional field that is omitted, null or
@@ -94,6 +130,17 @@ export class UpdateCompanySettingsDto {
   @IsString()
   @MaxLength(500)
   referenceReceiptHeaderText?: string | null;
+
+  @IsOptional()
+  @Transform(trimToNull)
+  @IsString()
+  @MaxLength(500)
+  nonVatHeaderText?: string | null;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PrintDefaultsDto)
+  printDefaults?: PrintDefaultsDto;
 
   /** Omitted means off, like every other field of this PUT. */
   @IsOptional()

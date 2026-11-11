@@ -40,6 +40,8 @@ import { type UserSnapshot, toUserSnapshot, userRefOf } from '../../../common/sc
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 import { round2 } from '../../../common/utils/money.util.js';
 import { renderPdf } from '../../../common/pdf/pdf-renderer.js';
+import { printLayout } from '../../../common/pdf/print-layout.js';
+import { CompanyService } from '../../company/company.service.js';
 
 type Viewer = AuthenticatedUser;
 
@@ -106,6 +108,7 @@ export class StockCountService {
     private readonly auditService: AuditService,
     private readonly commentsService: CommentsService,
     entityAccess: EntityAccessRegistry,
+    private readonly companyService: CompanyService,
   ) {
     entityAccess.register(STOCK_COUNT_ENTITY_TYPE, {
       exists: async (id, user) => Boolean(await this.model.exists(withScope({ _id: id }, scopeOf(user))).exec()),
@@ -421,8 +424,8 @@ export class StockCountService {
   }
 
   /** STOCK COUNT SHEET: always blind (product, unit, blank count column). */
-  sheetPdf(id: string, viewer: Viewer) {
-    return this.print(id, viewer, false, (doc, info, location) => ({
+  sheetPdf(id: string, viewer: Viewer, size?: string) {
+    return this.print(id, viewer, false, size, (doc, info, location) => ({
       title: 'STOCK COUNT SHEET',
       header: [`No: ${doc.voucherNo}`, `Date: ${doc.date.toISOString().slice(0, 10)}`, `Location: ${location}`],
       widths: [24, 70, '*', 50, 90],
@@ -435,12 +438,12 @@ export class StockCountService {
   }
 
   /** Adjustment summary of an approved count; needs stock:view-system-qty, values also products:view-cost. */
-  adjustmentPdf(id: string, viewer: Viewer) {
+  adjustmentPdf(id: string, viewer: Viewer, size?: string) {
     if (!hasPermission(viewer, Permission.STOCK_VIEW_SYSTEM_QTY)) {
       throw new ForbiddenException('You may not see system quantities');
     }
     const canCost = hasPermission(viewer, Permission.PRODUCTS_VIEW_COST);
-    return this.print(id, viewer, true, (doc, info, location) => ({
+    return this.print(id, viewer, true, size, (doc, info, location) => ({
       title: 'STOCK ADJUSTMENT SUMMARY',
       header: [`No: ${doc.voucherNo}`, `Date: ${doc.date.toISOString().slice(0, 10)}`, `Location: ${location}`],
       widths: canCost ? [70, '*', 45, 45, 45, 55] : [70, '*', 55, 55, 55],
@@ -465,9 +468,11 @@ export class StockCountService {
     id: string,
     viewer: Viewer,
     approvedOnly: boolean,
+    requestedSize: string | undefined,
     build: (doc: StockCountDocument, info: Map<string, ProductInfo>, location: string) => Sheet,
   ): Promise<{ buffer: Buffer; filename: string }> {
     assertValidId(id);
+    const size = printLayout.resolveSize(requestedSize, 'other', (await this.companyService.ensure()).printDefaults);
     return runInTransaction(this.connection, async (session) => {
       const doc = await this.model
         .findOneAndUpdate(
@@ -483,7 +488,7 @@ export class StockCountService {
       const info = await this.productInfo(doc.lines.map((line) => line.productId), session);
       const location = (await this.locationNames([doc.locationId], session)).get(doc.locationId.toString()) ?? '';
       const sheet = build(doc, info, location);
-      const definition: TDocumentDefinitions = {
+      const definition: TDocumentDefinitions = printLayout.apply({
         info: { title: `${sheet.title} ${doc.voucherNo}` },
         pageSize: 'A4',
         content: [
@@ -498,9 +503,11 @@ export class StockCountService {
           },
         ] as Content[],
         defaultStyle: { fontSize: 9 },
-      };
+      }, size);
       const buffer = await renderPdf(definition);
-      await this.record(doc, AuditAction.PRINTED, viewer, new Date(), session);
+      await this.record(doc, AuditAction.PRINTED, viewer, new Date(), session, {
+        changes: [{ field: 'size', label: 'Size', from: null, to: size }],
+      });
       return { buffer, filename: `${doc.voucherNo}.pdf` };
     });
   }

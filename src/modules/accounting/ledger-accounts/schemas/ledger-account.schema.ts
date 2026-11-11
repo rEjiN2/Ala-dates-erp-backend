@@ -23,6 +23,8 @@ export const SYSTEM_ACCOUNTS = {
   VAT_INPUT: { key: 'vat_input', name: 'VAT Input', type: LedgerAccountType.OTHER },
   SALES: { key: 'sales', name: 'Sales', type: LedgerAccountType.INCOME },
   VAT_OUTPUT: { key: 'vat_output', name: 'VAT Output', type: LedgerAccountType.OTHER },
+  /** Credited by non-VAT invoices (SNV-) for their net; never VAT Output. */
+  SALES_NON_VAT: { key: 'sales_non_vat', name: 'Sales (Non-VAT)', type: LedgerAccountType.INCOME },
   /** Contra income: debited by sales returns. */
   SALES_RETURNS: { key: 'sales_returns', name: 'Sales Returns', type: LedgerAccountType.INCOME },
   /** Contra expense: credited by purchase returns. */

@@ -58,8 +58,8 @@ export class BundlingController {
   @Get('bundlings/:id/pdf')
   @RequirePermission(Permission.BUNDLING_READ)
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    const printed = await this.bundlingService.pdf(id, user);
+  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Query('size') size?: string) {
+    const printed = await this.bundlingService.pdf(id, user, size);
     return new StreamableFile(printed.buffer, {
       type: 'application/pdf',
       length: printed.buffer.length,

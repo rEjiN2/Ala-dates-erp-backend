@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { DEFAULT_PRINT_DEFAULTS, type PrintDefaults } from '../../../common/pdf/print-layout.js';
 import { UserSnapshot, UserSnapshotSchema } from '../../../common/schemas/user-snapshot.schema.js';
 
 export type CompanySettingsDocument = HydratedDocument<CompanySettings>;
@@ -68,6 +69,18 @@ export class CompanySettings {
   /** Printed on top of a reference receipt when set; empty by default. */
   @Prop({ type: String, trim: true, default: null })
   referenceReceiptHeaderText: string | null;
+
+  /** Printed on top of a non-VAT invoice when set; empty by default (no company details on it). */
+  @Prop({ type: String, trim: true, default: null })
+  nonVatHeaderText: string | null;
+
+  /** Default PDF print size per document type (see PrintLayoutService). */
+  @Prop({
+    type: { receipt: String, referenceReceipt: String, taxInvoice: String, nonVatInvoice: String, other: String },
+    _id: false,
+    default: () => ({ ...DEFAULT_PRINT_DEFAULTS }),
+  })
+  printDefaults: PrintDefaults;
 
   /** Lets a user approve a cash handover they submitted themselves. Off by default. */
   @Prop({ type: Boolean, default: false })

@@ -35,8 +35,12 @@ export class PurchaseInvoiceController {
   @Get(':id/pdf')
   @RequirePermission(Permission.PURCHASE_INVOICES_READ)
   @Header('Cache-Control', 'private, no-store')
-  async pdf(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
-    const printed = await this.purchaseInvoiceService.print(id, user);
+  async pdf(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('size') size?: string,
+  ): Promise<StreamableFile> {
+    const printed = await this.purchaseInvoiceService.print(id, user, size);
     return new StreamableFile(printed.buffer, {
       type: 'application/pdf',
       length: printed.buffer.length,

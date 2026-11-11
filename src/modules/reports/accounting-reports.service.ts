@@ -206,7 +206,12 @@ export class AccountingReportsService {
         const shown = (parties.length ? parties : named).map((a) => a.name);
         return {
           date: day(voucher.date),
-          type: info?.receiptKind === 'reference' ? 'reference-receipt' : voucher.type,
+          type:
+            info?.receiptKind === 'reference'
+              ? 'reference-receipt'
+              : info?.invoiceKind === 'non_vat'
+                ? 'non-vat-invoice'
+                : voucher.type,
           no: voucher.no,
           voucherId: voucher.id,
           summary: shown.length > 3 ? `${shown.slice(0, 3).join(', ')} +${shown.length - 3}` : shown.join(', '),
@@ -400,7 +405,7 @@ export class AccountingReportsService {
     for (const { type, id } of vouchers) byType.set(type, [...(byType.get(type) ?? []), new Types.ObjectId(id)]);
     const meta = new Map<
       string,
-      { status: string; createdBy: { id: string; name: string } | null; receiptKind?: string }
+      { status: string; createdBy: { id: string; name: string } | null; receiptKind?: string; invoiceKind?: string }
     >();
     for (const [type, ids] of byType) {
       const collection = VOUCHER_COLLECTIONS[type];
@@ -410,13 +415,15 @@ export class AccountingReportsService {
           _id: Types.ObjectId;
           status?: string;
           receiptKind?: string;
+          invoiceKind?: string;
           createdBy?: { id: Types.ObjectId; name: string } | null;
         }>(collection)
-        .find({ _id: { $in: ids } }, { projection: { status: 1, createdBy: 1, receiptKind: 1 } })
+        .find({ _id: { $in: ids } }, { projection: { status: 1, createdBy: 1, receiptKind: 1, invoiceKind: 1 } })
         .toArray();
       for (const doc of docs) {
         meta.set(doc._id.toString(), {
           receiptKind: doc.receiptKind,
+          invoiceKind: doc.invoiceKind,
           status: doc.status ?? 'posted',
           createdBy: doc.createdBy ? { id: doc.createdBy.id.toString(), name: doc.createdBy.name } : null,
         });

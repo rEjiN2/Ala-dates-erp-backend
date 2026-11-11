@@ -117,6 +117,7 @@ export class UsersService {
       role: { id: role.id as string, name: role.name },
       permissions: role.permissions,
       dataScope: role.dataScope ?? DataScope.ALL,
+      maxDiscountPercent: role.maxDiscountPercent ?? null,
       allowedCashAccountIds: (user.allowedCashAccountIds ?? []).map((id) => id.toString()),
       allowedLocationIds: (user.allowedLocationIds ?? []).map((id) => id.toString()),
       mustChangePassword: Boolean(user.mustChangePassword),

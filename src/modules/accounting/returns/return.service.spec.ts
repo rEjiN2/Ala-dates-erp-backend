@@ -767,6 +767,26 @@ describe('Sales and purchase returns', () => {
     expect(debitText).toContain('INV-77');
     expect(debitText).toContain('100888888800003');
   });
+
+  it('a return against a non-VAT invoice inherits the kind: VAT 0, SR- number, plain RETURN NOTE print', async () => {
+    const f = await fixtures();
+    const invoice = await sale(f, { invoiceKind: 'non_vat' });
+    expect(invoice).toMatchObject({ voucherNo: 'SNV-0001', netTotal: 200 });
+    const credit = await giveBack(invoice, 3);
+
+    expect(credit.voucherNo).toBe('SR-0001');
+    expect(credit).toMatchObject({ invoiceKind: 'non_vat', taxableTotal: 60, totalTax: 0, netTotal: 60 });
+    expect(await balanceOf(f.shop.account._id)).toBe(140);
+    expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.VAT_OUTPUT.key))).toBe(0);
+    await expectBalancesMatchEntries();
+
+    const { definition } = await salesReturns.print(credit._id.toString(), admin);
+    const text = JSON.stringify(definition);
+    expect(text).toContain('RETURN NOTE');
+    for (const forbidden of ['ALA DATES LLC', '100123456700003', 'VAT', 'CREDIT NOTE']) {
+      expect(text).not.toContain(forbidden);
+    }
+  });
 });
 
 const SCHEMAS = new Map<string, unknown>([

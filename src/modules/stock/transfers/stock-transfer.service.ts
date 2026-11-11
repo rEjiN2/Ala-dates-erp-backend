@@ -34,6 +34,8 @@ import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { type UserSnapshot, toUserSnapshot, userRefOf } from '../../../common/schemas/user-snapshot.schema.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 import { renderPdf } from '../../../common/pdf/pdf-renderer.js';
+import { printLayout } from '../../../common/pdf/print-layout.js';
+import { CompanyService } from '../../company/company.service.js';
 
 type Viewer = AuthenticatedUser;
 
@@ -62,6 +64,7 @@ export class StockTransferService {
     entityAccess: EntityAccessRegistry,
     productUsage: ProductUsageRegistry,
     inTransit: InTransitRegistry,
+    private readonly companyService: CompanyService,
   ) {
     entityAccess.register(STOCK_TRANSFER_ENTITY_TYPE, {
       exists: async (id, user) => Boolean(await this.model.exists(withScope({ _id: id }, scopeOf(user))).exec()),
@@ -338,8 +341,9 @@ export class StockTransferService {
   }
 
   /** STOCK TRANSFER NOTE with sent/received columns and signature boxes. Every call is audited. */
-  async pdf(id: string, viewer: Viewer): Promise<{ buffer: Buffer; filename: string }> {
+  async pdf(id: string, viewer: Viewer, requestedSize?: string): Promise<{ buffer: Buffer; filename: string }> {
     assertValidId(id);
+    const size = printLayout.resolveSize(requestedSize, 'other', (await this.companyService.ensure()).printDefaults);
     return runInTransaction(this.connection, async (session) => {
       const doc = await this.model
         .findOneAndUpdate(
@@ -367,7 +371,7 @@ export class StockTransferService {
       const signature = (title: string, name?: string | null, at?: Date | null): Content => ({
         stack: [{ text: title, bold: true }, { text: name ? `${name}${at ? `  ${day(at)}` : ''}` : '', margin: [0, 28, 0, 0] }],
       });
-      const definition: TDocumentDefinitions = {
+      const definition: TDocumentDefinitions = printLayout.apply({
         info: { title: `STOCK TRANSFER NOTE ${doc.voucherNo}` },
         pageSize: 'A4',
         content: [
@@ -401,9 +405,11 @@ export class StockTransferService {
           },
         ],
         defaultStyle: { fontSize: 9 },
-      };
+      }, size);
       const buffer = await renderPdf(definition);
-      await this.record(doc, AuditAction.PRINTED, viewer, new Date(), session);
+      await this.record(doc, AuditAction.PRINTED, viewer, new Date(), session, {
+        changes: [{ field: 'size', label: 'Size', from: null, to: size }],
+      });
       return { buffer, filename: `${doc.voucherNo}.pdf` };
     });
   }

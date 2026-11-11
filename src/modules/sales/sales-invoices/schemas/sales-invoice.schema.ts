@@ -24,10 +24,22 @@ export class SalesInvoiceLine {
   @Prop({ required: true })
   rate: number;
 
+  /** The line's own discount amount (percent of qty x rate, or the amount). */
   @Prop({ required: true, default: 0 })
   discount: number;
 
-  /** qty x rate - discount. */
+  /** How the line discount was given; old invoices read as amount. */
+  @Prop({ type: String, enum: ['amount', 'percent'], default: 'amount' })
+  discountType?: 'amount' | 'percent';
+
+  @Prop({ default: 0 })
+  discountValue?: number;
+
+  /** This line's share of the invoice discount. */
+  @Prop({ default: 0 })
+  allocatedDiscount?: number;
+
+  /** Taxable: qty x rate - discount - allocatedDiscount. */
   @Prop({ required: true })
   amount: number;
 
@@ -72,6 +84,10 @@ export class SalesInvoice {
   @Prop({ required: true, unique: true, trim: true })
   voucherNo: string;
 
+  /** tax (SI-): VAT, TAX INVOICE. non_vat (SNV-): VAT 0, credited to Sales (Non-VAT), plain INVOICE print. Never changes. */
+  @Prop({ type: String, enum: ['tax', 'non_vat'], default: 'tax', index: true })
+  invoiceKind?: 'tax' | 'non_vat';
+
   @Prop({ required: true, index: true })
   voucherDate: Date;
 
@@ -105,8 +121,19 @@ export class SalesInvoice {
   @Prop({ required: true, default: 0 })
   grossTotal: number;
 
+  /** Sum of the line discounts. */
   @Prop({ required: true, default: 0 })
   totalDiscount: number;
+
+  /** Header discount, applied after the line discounts and spread over the lines. */
+  @Prop({ type: String, enum: ['amount', 'percent'], default: 'amount' })
+  discountType?: 'amount' | 'percent';
+
+  @Prop({ default: 0 })
+  discountValue?: number;
+
+  @Prop({ default: 0 })
+  invoiceDiscount?: number;
 
   /** Net before VAT: credited to Sales. */
   @Prop({ required: true, default: 0 })

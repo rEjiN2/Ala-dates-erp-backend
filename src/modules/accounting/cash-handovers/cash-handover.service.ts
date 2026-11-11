@@ -657,8 +657,8 @@ export class CashHandoverService {
   }
 
   /** CASH HANDOVER SLIP, ORIGINAL then DUPLICATEs; every call is audited as a print. */
-  async print(id: string, actor: Viewer): Promise<PrintedVoucher> {
-    return this.printService.print(DEF, this.model, id, actor, await this.posting.scopeFilter(actor, DEF));
+  async print(id: string, actor: Viewer, requestedSize?: string): Promise<PrintedVoucher> {
+    return this.printService.print(DEF, this.model, id, actor, await this.posting.scopeFilter(actor, DEF), requestedSize);
   }
 
   /**

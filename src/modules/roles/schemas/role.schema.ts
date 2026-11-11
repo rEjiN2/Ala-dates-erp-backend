@@ -25,6 +25,10 @@ export class Role {
   @Prop({ type: String, enum: DataScope, required: true, default: DataScope.ALL })
   dataScope: DataScope;
 
+  /** Highest total sales discount (% of gross) the role may give; null = unlimited. */
+  @Prop({ type: Number, min: 0, max: 100, default: null })
+  maxDiscountPercent: number | null;
+
   /** Seeded and protected (the admin role): can't be edited or deleted through the API. */
   @Prop({ default: false })
   isSystem: boolean;

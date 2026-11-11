@@ -1,6 +1,6 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { Transform } from 'class-transformer';
-import { ArrayUnique, IsArray, IsEnum, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { ArrayUnique, IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { ALL_PERMISSIONS, DataScope, type Permission } from '../permissions.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
@@ -31,6 +31,13 @@ export class CreateRoleDto {
 
   @IsEnum(DataScope)
   dataScope: DataScope;
+
+  /** Highest total sales discount in % of gross; null/omitted = unlimited. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  maxDiscountPercent?: number | null;
 }
 
 export class UpdateRoleDto extends PartialType(CreateRoleDto) {}

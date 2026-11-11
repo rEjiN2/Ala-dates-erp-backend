@@ -18,10 +18,13 @@ import {
 import {
   CancelSalesInvoiceDto,
   CreateSalesInvoiceDto,
+  type InvoiceKind,
+  PreviewSalesInvoiceDto,
   SalesInvoiceLineDto,
   SalesInvoiceQueryDto,
   UpdateSalesInvoiceDto,
 } from './dto/sales-invoice.dto.js';
+import { priceInvoice, type DiscountType } from './sales-pricing.js';
 import { CostService } from '../../stock/costing/cost.service.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../../stock/stock.service.js';
 import { Product, ProductDocument, ProductStatus } from '../../product/products/schemas/product.schema.js';
@@ -31,7 +34,8 @@ import { Location, LocationDocument } from '../../location/schemas/location.sche
 import { VoucherStatus } from '../../accounting/vouchers/schemas/voucher.schema.js';
 import { LedgerEntryKind } from '../../accounting/vouchers/schemas/ledger-entry.schema.js';
 import { VoucherPostingService } from '../../accounting/vouchers/voucher-posting.service.js';
-import { buildVoucherPdf, copyLabel, formatMoney, formatVoucherDate } from '../../accounting/vouchers/voucher-pdf.js';
+import { buildPlainInvoicePdf, buildVoucherPdf, copyLabel, formatVoucherDate, itemDocument } from '../../accounting/vouchers/voucher-pdf.js';
+import { printLayout } from '../../../common/pdf/print-layout.js';
 import type { PrintedVoucher } from '../../accounting/vouchers/voucher-print.service.js';
 import { isOwnScope, resolveCollectorId, withScope } from '../../accounting/vouchers/data-scope.js';
 import { LedgerAccountService } from '../../accounting/ledger-accounts/ledger-account.service.js';
@@ -64,6 +68,7 @@ import { runInTransaction } from '../../../common/utils/transaction.util.js';
 type Viewer = AuthenticatedUser;
 
 const SEQUENCE = { key: 'sales-invoice', prefix: 'SI-', width: 4 };
+const NON_VAT_SEQUENCE = { key: 'SNV', prefix: 'SNV-', width: 4 };
 const LABEL = 'Sales invoice';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOLERANCE = 0.001;
@@ -75,10 +80,14 @@ interface PrepareInput {
   dueDate?: string;
   remarks?: string | null;
   lines: SalesInvoiceLineDto[];
+  discountType?: DiscountType;
+  discountValue?: number;
+  invoiceKind?: InvoiceKind;
 }
 
 /** Everything a save writes onto the invoice, checked and priced. */
 interface Prepared {
+  invoiceKind: InvoiceKind;
   voucherDate: Date;
   customerId: Types.ObjectId;
   customerAccountId: Types.ObjectId;
@@ -88,6 +97,9 @@ interface Prepared {
   lines: SalesInvoiceLine[];
   grossTotal: number;
   totalDiscount: number;
+  discountType: DiscountType;
+  discountValue: number;
+  invoiceDiscount: number;
   taxableTotal: number;
   totalTax: number;
   netTotal: number;
@@ -164,6 +176,13 @@ export class SalesInvoiceService {
     if (query.customerId) filter.customerId = new Types.ObjectId(query.customerId);
     if (query.locationId) filter.locationId = new Types.ObjectId(query.locationId);
     if (query.soldById) filter.soldById = new Types.ObjectId(query.soldById);
+    const kind = query.kind ?? 'tax';
+    if (kind === 'non_vat') {
+      assertKindPermission(viewer, 'non_vat', Permission.NON_VAT_INVOICES_READ, 'view');
+      filter.invoiceKind = 'non_vat';
+    } else if (kind === 'tax') {
+      filter.invoiceKind = { $ne: 'non_vat' };
+    }
     const term = query.q?.trim();
     if (term) filter.voucherNo = new RegExp(escapeRegExp(term), 'i');
     const scoped = withScope(filter, scopeOf(viewer));
@@ -206,6 +225,7 @@ export class SalesInvoiceService {
         id: doc._id.toString(),
         voucherNo: doc.voucherNo,
         voucherDate: doc.voucherDate,
+        invoiceKind: doc.invoiceKind ?? 'tax',
         customer: { id: doc.customerId.toString(), name: customers.get(doc.customerId.toString()) ?? null },
         location: { id: doc.locationId.toString(), name: locations.get(doc.locationId.toString()) ?? null },
         soldBy: { id: doc.soldById.toString(), name: doc.soldByName },
@@ -236,6 +256,29 @@ export class SalesInvoiceService {
         outstanding: round2(summaryRows[0]?.outstanding ?? 0),
       },
     };
+  }
+
+  /**
+   * Net sales (before VAT, which is 0) of posted non-VAT invoices dated dateFrom..dateTo (date-only
+   * bounds cover whole days). Kept apart from taxable sales: for the VAT report, which must not count them.
+   */
+  async nonVatSalesTotal(dateFrom?: string, dateTo?: string): Promise<number> {
+    const range: { $gte?: Date; $lte?: Date } = {};
+    if (dateFrom) range.$gte = new Date(dateFrom);
+    if (dateTo) range.$lte = endOfDayIfDateOnly(dateTo);
+    const [row] = await this.model
+      .aggregate<{ total: number }>([
+        {
+          $match: {
+            invoiceKind: 'non_vat',
+            status: VoucherStatus.POSTED,
+            ...(dateFrom || dateTo ? { voucherDate: range } : {}),
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$taxableTotal' } } },
+      ])
+      .exec();
+    return round2(row?.total ?? 0);
   }
 
   async findById(id: string, viewer?: Viewer): Promise<SalesInvoiceDocument> {
@@ -271,6 +314,8 @@ export class SalesInvoiceService {
   async create(dto: CreateSalesInvoiceDto, actor: Viewer): Promise<SalesInvoiceDocument> {
     const locationId = resolveLocation(actor, dto.locationId);
     const soldById = resolveCollectorId(actor, dto.soldById);
+    const kind = dto.invoiceKind ?? 'tax';
+    assertKindPermission(actor, kind, Permission.NON_VAT_INVOICES_CREATE, 'create');
 
     return runInTransaction(this.connection, async (session) => {
       const seller = await this.usersService.findEligibleCollector(soldById, Permission.SALES_INVOICES_CREATE, session);
@@ -288,7 +333,7 @@ export class SalesInvoiceService {
         );
       }
 
-      const voucherNo = await this.sequenceService.nextCode(SEQUENCE, session);
+      const voucherNo = await this.sequenceService.nextCode(kind === 'non_vat' ? NON_VAT_SEQUENCE : SEQUENCE, session);
       const now = new Date();
       const [created] = await this.model.create(
         [
@@ -346,6 +391,7 @@ export class SalesInvoiceService {
 
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scopeOf(actor), session);
+      assertKindPermission(actor, existing.invoiceKind ?? 'tax', Permission.NON_VAT_INVOICES_EDIT, 'edit');
       assertNotCancelled(existing, 'edited');
       assertNoReturns(existing, 'edited');
       await this.allocations.assertNoActive(
@@ -368,9 +414,12 @@ export class SalesInvoiceService {
           dueDate: dto.dueDate ?? (dateOrCustomerChanged ? undefined : existing.dueDate.toISOString()),
           remarks: dto.remarks !== undefined ? dto.remarks : existing.remarks,
           lines: dto.lines ?? existing.lines.map(toInput),
+          invoiceKind: existing.invoiceKind ?? 'tax',
+          discountType: dto.discountType ?? existing.discountType,
+          discountValue: dto.discountValue ?? existing.discountValue,
         },
         actor,
-        dto.lines !== undefined,
+        dto.lines !== undefined || dto.discountType !== undefined || dto.discountValue !== undefined,
         session,
       );
       const customer = (await this.partyModel.findById(next.customerId).session(session).exec())!;
@@ -419,6 +468,7 @@ export class SalesInvoiceService {
 
     return runInTransaction(this.connection, async (session) => {
       const found = await this.load(id, scopeOf(actor), session);
+      assertKindPermission(actor, found.invoiceKind ?? 'tax', Permission.NON_VAT_INVOICES_CANCEL, 'cancel');
       assertNotCancelled(found, 'cancelled again');
       assertNoReturns(found, 'cancelled');
       if (found.paymentReceiptId) {
@@ -470,11 +520,13 @@ export class SalesInvoiceService {
     });
   }
 
-  /** TAX INVOICE as an A4 PDF: ORIGINAL then DUPLICATEs, every print audited. */
-  async print(id: string, actor: Viewer): Promise<PrintedVoucher> {
+  /** TAX INVOICE PDF (?size, else the company default): ORIGINAL then DUPLICATEs, every print audited. */
+  async print(id: string, actor: Viewer, requestedSize?: string): Promise<PrintedVoucher> {
     assertValidId(id);
     // Fetched before the transaction: it may call out to file storage.
     const { settings, logoDataUrl } = await this.companyService.getForPrinting();
+    // Validated before any print side effect; a non-VAT invoice's default size is chosen once it is loaded.
+    const defaultSize = printLayout.resolveSize(requestedSize, 'taxInvoice', settings.printDefaults);
 
     return runInTransaction(this.connection, async (session) => {
       const doc = await this.model
@@ -504,52 +556,66 @@ export class SalesInvoiceService {
         const product = products.find((candidate) => candidate._id.equals(productId));
         return product ? `${product.code} ${product.name}` : productId.toString();
       };
-      const vatSummary = new Map<number, { taxable: number; vat: number }>();
-      for (const line of doc.lines) {
-        const row = vatSummary.get(line.vatRate) ?? { taxable: 0, vat: 0 };
-        vatSummary.set(line.vatRate, { taxable: round2(row.taxable + line.amount), vat: round2(row.vat + line.vat) });
-      }
       const printedAt = new Date();
       const copyNumber = doc.printCount;
+      // A non-VAT invoice prints as a plain INVOICE: no logo, company name, address, TRN or VAT.
+      const nonVat = doc.invoiceKind === 'non_vat';
+      const size = nonVat ? printLayout.resolveSize(requestedSize, 'nonVatInvoice', settings.printDefaults) : defaultSize;
 
-      const definition = buildVoucherPdf(
+      const definition = (nonVat ? buildPlainInvoicePdf : buildVoucherPdf)(
         {
-          company: {
-            legalName: settings.legalName,
-            addressLines: [
-              settings.addressLine1,
-              settings.addressLine2,
-              [settings.city, settings.country].filter(Boolean).join(', '),
-            ].filter((line): line is string => Boolean(line)),
-            phone: settings.phone,
-            trn: settings.trn,
-            footerText: settings.receiptFooterText,
-            currencyCode: settings.currencyCode,
-            logoDataUrl,
-          },
+          company: nonVat
+            ? {
+                legalName: '',
+                addressLines: [],
+                phone: null,
+                trn: null,
+                footerText: null,
+                plainHeaderText: settings.nonVatHeaderText,
+                currencyCode: settings.currencyCode,
+                logoDataUrl: null,
+              }
+            : {
+                legalName: settings.legalName,
+                addressLines: [
+                  settings.addressLine1,
+                  settings.addressLine2,
+                  [settings.city, settings.country].filter(Boolean).join(', '),
+                ].filter((line): line is string => Boolean(line)),
+                phone: settings.phone,
+                trn: settings.trn,
+                footerText: settings.receiptFooterText,
+                currencyCode: settings.currencyCode,
+                logoDataUrl,
+              },
           voucher: {
             voucherNo: doc.voucherNo,
             voucherDate: doc.voucherDate,
-            headerAccountName: customer ? `${customer.code} ${customer.name}` : doc.customerId.toString(),
+            headerAccountName: customer ? (nonVat ? customer.name : `${customer.code} ${customer.name}`) : doc.customerId.toString(),
             collectedByName: doc.soldByName,
-            extraInfo: [
-              { label: 'Customer TRN', value: customer?.vatNumber ?? '-' },
-              { label: 'Location', value: locations.get(doc.locationId.toString()) ?? '-' },
-              { label: 'Due Date', value: formatVoucherDate(doc.dueDate) },
-              ...[...vatSummary].map(([rate, row]) => ({
-                label: `VAT ${rate}%`,
-                value: `${formatMoney(row.vat)} on ${formatMoney(row.taxable)}`,
-              })),
-            ],
+            extraInfo: nonVat
+              ? []
+              : [
+                  { label: 'Customer TRN', value: customer?.vatNumber ?? '-' },
+                  { label: 'Location', value: locations.get(doc.locationId.toString()) ?? '-' },
+                  { label: 'Due Date', value: formatVoucherDate(doc.dueDate) },
+                ],
             paymentMethod: 'cash',
             paymentReference: null,
-            lines: doc.lines.map((line) => ({
-              counterparty: productName(line.productId),
-              narration: `${line.qty} x ${line.rate}${line.discount > 0 ? ` less ${line.discount.toFixed(2)}` : ''}, VAT ${line.vatRate}%`,
-              amount: line.amount,
-              vat: line.vat,
-              netAmount: line.netAmount,
-            })),
+            lines: [],
+            items: itemDocument(
+              doc.lines.map((line) => ({
+                product: productName(line.productId),
+                qty: line.qty,
+                rate: line.rate,
+                discount: line.discount,
+                allocatedDiscount: line.allocatedDiscount ?? 0,
+                vatRate: line.vatRate,
+                amount: line.amount,
+                vat: line.vat,
+              })),
+              true,
+            ),
             grossTotal: doc.taxableTotal,
             totalTax: doc.totalTax,
             grandTotal: doc.netTotal,
@@ -563,10 +629,11 @@ export class SalesInvoiceService {
           copyNumber,
           printedBy: actor.name,
           printedAt,
+          size,
         },
         {
-          titles: { cash: 'TAX INVOICE', bank: 'TAX INVOICE' },
-          documentTitle: 'Tax Invoice',
+          titles: nonVat ? { cash: 'INVOICE', bank: 'INVOICE' } : { cash: 'TAX INVOICE', bank: 'TAX INVOICE' },
+          documentTitle: nonVat ? 'Invoice' : 'Tax Invoice',
           headerLabel: 'Customer',
           counterpartyColumn: 'Product',
           signatures: ['Salesman', 'Received by'],
@@ -581,7 +648,10 @@ export class SalesInvoiceService {
           entityRef: doc.voucherNo,
           action: AuditAction.PRINTED,
           actor,
-          changes: [{ field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) }],
+          changes: [
+            { field: 'copy', label: 'Copy', from: null, to: copyLabel(copyNumber) },
+            { field: 'size', label: 'Size', from: null, to: size },
+          ],
           at: printedAt,
         },
         session,
@@ -606,19 +676,78 @@ export class SalesInvoiceService {
     }
     await this.stockService.assertHoldsStock([], [input.locationId], session);
 
+    const priced = await this.price(input, actor, checkPricing, session);
+    const voucherDate = new Date(input.date);
+    return {
+      invoiceKind: input.invoiceKind ?? 'tax',
+      voucherDate,
+      customerId: customer._id,
+      customerAccountId: customer.ledgerAccountId,
+      locationId: new Types.ObjectId(input.locationId),
+      dueDate: input.dueDate ? new Date(input.dueDate) : new Date(voucherDate.getTime() + (customer.creditDays ?? 0) * DAY_MS),
+      remarks: input.remarks?.trim() || null,
+      ...priced,
+    };
+  }
+
+  /** POST /sales-invoices/preview: the same pricing and checks as a save, nothing stored. */
+  async preview(dto: PreviewSalesInvoiceDto, actor: Viewer) {
+    assertKindPermission(actor, dto.invoiceKind ?? 'tax', Permission.NON_VAT_INVOICES_CREATE, 'create');
+    const priced = await this.price(dto, actor, true);
+    return {
+      lines: priced.lines.map((line) => ({
+        productId: line.productId.toString(),
+        qty: line.qty,
+        rate: line.rate,
+        discountType: line.discountType,
+        discountValue: line.discountValue,
+        discountAmount: line.discount,
+        allocatedDiscount: line.allocatedDiscount,
+        taxable: line.amount,
+        vatRate: line.vatRate,
+        vat: line.vat,
+        net: line.netAmount,
+      })),
+      totals: {
+        gross: priced.grossTotal,
+        lineDiscounts: priced.totalDiscount,
+        invoiceDiscount: priced.invoiceDiscount,
+        taxable: priced.taxableTotal,
+        tax: priced.totalTax,
+        net: priced.netTotal,
+      },
+    };
+  }
+
+  /**
+   * Prices the lines: rate defaults to the sale price; line discount (amount or
+   * percent), then the invoice discount spread over the lines; VAT per line on
+   * what is left. `checkPricing`: the lines/discount were sent now, so price
+   * overrides, discounts and the role's maxDiscountPercent apply.
+   */
+  private async price(
+    input: Pick<PrepareInput, 'lines' | 'discountType' | 'discountValue' | 'invoiceKind'>,
+    actor: Viewer,
+    checkPricing: boolean,
+    session?: ClientSession,
+  ) {
     const products = await this.productModel
       .find({ _id: { $in: input.lines.map((line) => asId(line.productId, 'product')) } })
       .select('code name status salePrice vatRate')
-      .session(session)
+      .session(session ?? null)
       .lean()
       .exec();
-    const lines = input.lines.map((line, index): SalesInvoiceLine => {
+    const nonVat = input.invoiceKind === 'non_vat';
+    const headerType = input.discountType ?? 'amount';
+    const headerValue = round2(input.discountValue ?? 0);
+    const rows = input.lines.map((line, index) => {
       const product = products.find((candidate) => candidate._id.toString() === line.productId);
       if (!product) {
         throw new NotFoundException(`Line ${index + 1}: product ${line.productId} not found`);
       }
       const rate = line.rate ?? product.salePrice;
-      const discount = round2(line.discount ?? 0);
+      const discountType = line.discountType ?? 'amount';
+      const discountValue = round2(line.discountValue ?? line.discount ?? 0);
       if (checkPricing) {
         if (product.status !== ProductStatus.ACTIVE) {
           throw new BadRequestException(`Line ${index + 1}: ${product.code} (${product.name}) is inactive`);
@@ -628,50 +757,65 @@ export class SalesInvoiceService {
             `Line ${index + 1}: you may not change the price of ${product.code} (${product.name}) from ${product.salePrice}`,
           );
         }
-        if (discount > 0 && !hasPermission(actor, Permission.SALES_DISCOUNT)) {
-          throw new ForbiddenException(`Line ${index + 1}: you may not give a discount`);
-        }
+      }
+      if (nonVat && line.vatRate) {
+        throw new BadRequestException(`Line ${index + 1}: a non-VAT invoice can't carry VAT (vatRate must be 0)`);
       }
       const qty = roundQty(line.qty);
-      const amount = round2(qty * rate - discount);
-      if (!(qty > 0) || rate < 0 || discount < 0) {
+      if (!(qty > 0) || rate < 0 || discountValue < 0) {
         throw new BadRequestException(`Line ${index + 1}: quantity must be above 0, rate and discount 0 or more`);
       }
-      if (amount < 0) {
-        throw new BadRequestException(`Line ${index + 1}: the discount is more than the line value`);
+      if (discountType === 'percent' && discountValue > 100) {
+        throw new BadRequestException(`Line ${index + 1}: a percent discount can't be above 100`);
       }
-      const vatRate = line.vatRate ?? product.vatRate;
-      const vat = round2((amount * vatRate) / 100);
+      return { product, qty, rate, discountType, discountValue, vatRate: nonVat ? 0 : (line.vatRate ?? product.vatRate) };
+    });
+    if (headerType === 'percent' && headerValue > 100) {
+      throw new BadRequestException("The invoice discount can't be above 100%");
+    }
+    const priced = priceInvoice(rows, { discountType: headerType, discountValue: headerValue });
+    if (checkPricing && priced.lineDiscounts + priced.invoiceDiscount > 0) {
+      if (!hasPermission(actor, Permission.SALES_DISCOUNT)) {
+        throw new ForbiddenException('You may not give a discount');
+      }
+      const limit = actor.maxDiscountPercent;
+      if (limit != null && priced.grossTotal > 0) {
+        const percent = ((priced.lineDiscounts + priced.invoiceDiscount) / priced.grossTotal) * 100;
+        if (percent > limit + TOLERANCE) {
+          throw new ForbiddenException(
+            `Total discount is ${round2(percent)}% of the invoice; your role allows up to ${limit}%`,
+          );
+        }
+      }
+    }
+    const lines = rows.map((row, index): SalesInvoiceLine => {
+      const line = priced.lines[index];
       return {
-        productId: product._id,
-        qty,
-        rate,
-        discount,
-        amount,
-        vatRate,
-        vat,
-        netAmount: round2(amount + vat),
+        productId: row.product._id,
+        qty: row.qty,
+        rate: row.rate,
+        discount: line.discountAmount,
+        discountType: row.discountType,
+        discountValue: row.discountValue,
+        allocatedDiscount: line.allocatedDiscount,
+        amount: line.taxable,
+        vatRate: row.vatRate,
+        vat: line.vat,
+        netAmount: line.net,
         unitCost: 0,
         costAmount: 0,
       };
     });
-
-    const voucherDate = new Date(input.date);
-    const taxableTotal = sum2(lines.map((line) => line.amount));
-    const totalTax = sum2(lines.map((line) => line.vat));
     return {
-      voucherDate,
-      customerId: customer._id,
-      customerAccountId: customer.ledgerAccountId,
-      locationId: new Types.ObjectId(input.locationId),
-      dueDate: input.dueDate ? new Date(input.dueDate) : new Date(voucherDate.getTime() + (customer.creditDays ?? 0) * DAY_MS),
-      remarks: input.remarks?.trim() || null,
       lines,
-      grossTotal: sum2(lines.map((line) => round2(line.qty * line.rate))),
-      totalDiscount: sum2(lines.map((line) => line.discount)),
-      taxableTotal,
-      totalTax,
-      netTotal: round2(taxableTotal + totalTax),
+      grossTotal: priced.grossTotal,
+      totalDiscount: priced.lineDiscounts,
+      discountType: headerType,
+      discountValue: headerValue,
+      invoiceDiscount: priced.invoiceDiscount,
+      taxableTotal: priced.taxableTotal,
+      totalTax: priced.totalTax,
+      netTotal: priced.netTotal,
     };
   }
 
@@ -702,27 +846,34 @@ export class SalesInvoiceService {
     }
   }
 
-  /** Dr customer (net total), Cr Sales (net before VAT), Cr VAT Output (tax); a reversal swaps the sides. */
+  /**
+   * Dr customer (net total), Cr Sales (net before VAT), Cr VAT Output (tax); a reversal swaps the sides.
+   * Non-VAT: Cr Sales (Non-VAT) instead, and VAT Output is never touched.
+   */
   private async postLedger(doc: SalesInvoiceDocument, kind: LedgerEntryKind, cause: string, session: ClientSession) {
+    const nonVat = doc.invoiceKind === 'non_vat';
+    const salesAccount = nonVat ? SYSTEM_ACCOUNTS.SALES_NON_VAT : SYSTEM_ACCOUNTS.SALES;
     const sales = await this.ledgerAccountService.ensureSystemAccount(
-      SYSTEM_ACCOUNTS.SALES.key,
-      SYSTEM_ACCOUNTS.SALES.name,
-      SYSTEM_ACCOUNTS.SALES.type,
+      salesAccount.key,
+      salesAccount.name,
+      salesAccount.type,
       session,
     );
-    const vatOutput = await this.ledgerAccountService.ensureSystemAccount(
-      SYSTEM_ACCOUNTS.VAT_OUTPUT.key,
-      SYSTEM_ACCOUNTS.VAT_OUTPUT.name,
-      SYSTEM_ACCOUNTS.VAT_OUTPUT.type,
-      session,
-    );
+    const vatOutput = nonVat
+      ? null
+      : await this.ledgerAccountService.ensureSystemAccount(
+          SYSTEM_ACCOUNTS.VAT_OUTPUT.key,
+          SYSTEM_ACCOUNTS.VAT_OUTPUT.name,
+          SYSTEM_ACCOUNTS.VAT_OUTPUT.type,
+          session,
+        );
     const narration = doc.voucherNo;
     await this.posting.postEntries(
       { entityType: SALES_INVOICE_ENTITY_TYPE, id: doc._id, voucherNo: doc.voucherNo, voucherDate: doc.voucherDate },
       [
         { accountId: doc.customerAccountId.toString(), debit: doc.netTotal, credit: 0, narration },
         { accountId: sales._id.toString(), debit: 0, credit: doc.taxableTotal, narration },
-        { accountId: vatOutput._id.toString(), debit: 0, credit: doc.totalTax, narration },
+        ...(vatOutput ? [{ accountId: vatOutput._id.toString(), debit: 0, credit: doc.totalTax, narration }] : []),
       ],
       kind,
       cause,
@@ -796,6 +947,7 @@ export class SalesInvoiceService {
       soldBy: doc.soldByName,
       dueDate: day(doc.dueDate),
       remarks: doc.remarks,
+      invoiceDiscount: `${doc.discountType ?? 'amount'} ${doc.discountValue ?? 0}`,
       netTotal: doc.netTotal,
     });
     const changes = diffFields(header(before), header(after), [
@@ -805,13 +957,14 @@ export class SalesInvoiceService {
       { key: 'soldBy', label: 'Sold By' },
       { key: 'dueDate', label: 'Due Date' },
       { key: 'remarks', label: 'Remarks' },
+      { key: 'invoiceDiscount', label: 'Invoice discount' },
       { key: 'netTotal', label: 'Net total' },
     ]);
 
     const describe = (lines: readonly SalesInvoiceLine[]) => {
       const byProduct = new Map<string, string[]>();
       for (const line of lines) {
-        const text = `${line.qty} @ ${line.rate}${line.discount > 0 ? ` - ${line.discount.toFixed(2)}` : ''}, VAT ${line.vatRate}%`;
+        const text = `${line.qty} @ ${line.rate}${line.discount > 0 ? ` - ${line.discount.toFixed(2)}` : ''}${(line.allocatedDiscount ?? 0) > 0 ? ` - ${line.allocatedDiscount!.toFixed(2)} spread` : ''}, VAT ${line.vatRate}%`;
         byProduct.set(line.productId.toString(), [...(byProduct.get(line.productId.toString()) ?? []), text]);
       }
       return new Map([...byProduct].map(([id, texts]) => [id, texts.join(' + ')]));
@@ -883,7 +1036,20 @@ export function salesScopeOf(user: Viewer | undefined): Record<string, unknown> 
   return { $or: [{ 'createdBy.id': me }, { soldById: me }] };
 }
 
-const scopeOf = salesScopeOf;
+/** salesScopeOf plus: users without non-vat-invoices:read never see non-VAT invoices (404). */
+function scopeOf(user: Viewer | undefined): Record<string, unknown> | null {
+  const own = salesScopeOf(user);
+  if (!user || hasPermission(user, Permission.NON_VAT_INVOICES_READ)) return own;
+  const taxOnly = { invoiceKind: { $ne: 'non_vat' } };
+  return own ? { $and: [own, taxOnly] } : taxOnly;
+}
+
+/** Non-VAT invoices need their own permission on top of the sales-invoices one the route asks for. */
+function assertKindPermission(user: Viewer | undefined, kind: InvoiceKind, permission: Permission, action: string): void {
+  if (kind === 'non_vat' && user && !hasPermission(user, permission)) {
+    throw new ForbiddenException(`You may not ${action} non-VAT invoices`);
+  }
+}
 
 /** The sale's location; an "own"-scoped user with a single allowed location gets it by default. */
 function resolveLocation(user: Viewer, locationId: string | undefined): string {
@@ -913,7 +1079,8 @@ function toInput(line: SalesInvoiceLine): SalesInvoiceLineDto {
     productId: line.productId.toString(),
     qty: line.qty,
     rate: line.rate,
-    discount: line.discount,
+    discountType: line.discountType ?? 'amount',
+    discountValue: line.discountValue || line.discount,
     vatRate: line.vatRate,
   };
 }

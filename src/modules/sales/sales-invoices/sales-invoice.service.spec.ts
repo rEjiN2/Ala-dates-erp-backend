@@ -4,6 +4,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { Types, type Connection, type Model } from 'mongoose';
 import request from 'supertest';
+import { priceInvoice } from './sales-pricing.js';
 import { mongooseTestRoot } from '../../../../test/mongo-test-db.js';
 import { SalesInvoiceService } from './sales-invoice.service.js';
 import { SalesInvoiceController } from './sales-invoice.controller.js';
@@ -323,6 +324,34 @@ describe('Sales invoices', () => {
     await expectBalancesMatchEntries();
   });
 
+  it('prints the invoice at every size: Product/Qty/Unit price/Total, no narration, VAT summary, size audited', async () => {
+    const f = await fixtures();
+    const invoice = await invoices.create(input(f, { locationId: undefined }), f.salesman);
+    const id = invoice._id.toString();
+
+    for (const size of ['a4', 'a5', 'a6', 'letter', 'thermal80', 'thermal58']) {
+      const { definition, buffer } = await invoices.print(id, f.salesman, size);
+      const text = JSON.stringify(definition);
+      expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+      for (const expected of ['Product', 'Qty', 'Unit price', 'Total', 'VAT', 'Grand Total', '220.00']) {
+        expect(text).toContain(expected);
+      }
+      expect(text).not.toContain('Narration');
+      expect(text).not.toContain(' less ');
+      expect(text).toContain('Amount in words');
+      expect(Boolean(definition.pageSize && typeof definition.pageSize === 'object')).toBe(size.startsWith('thermal'));
+    }
+    // Company default for a tax invoice is A5.
+    expect((await invoices.print(id, f.salesman)).definition.pageSize).toBe('A5');
+    await expect(invoices.print(id, f.salesman, 'a3')).rejects.toThrow('size must be one of');
+    const audit = await model<{ changes: { field: string; to: string }[] }>(AuditLog.name)
+      .find({ entityRef: 'SI-0001', action: 'printed' })
+      .lean()
+      .exec();
+    expect(audit).toHaveLength(7);
+    expect(audit.every((entry) => entry.changes.some((change) => change.field === 'size'))).toBe(true);
+  });
+
   it('costs a sale from the oldest layers, stores cost and margin, and cancel restores the same layers', async () => {
     const f = await fixtures();
     const cost = moduleRef.get(CostService);
@@ -491,5 +520,130 @@ describe('Sales invoices', () => {
     const mine = await invoices.findAll({}, f.salesman);
     expect(mine.items.map((item) => item.voucherNo)).toEqual(['SI-0001']);
     expect(mine.summary).toMatchObject({ count: 1, netTotal: 105, outstanding: 105 });
+  });
+
+  it('10% line + 5% invoice discount: spread sums exactly, totals post, preview matches, old amount discount still works', async () => {
+    const f = await fixtures();
+    const lines = [
+      { productId: f.ajwa._id.toString(), qty: 10, discountType: 'percent', discountValue: 10 },
+      { productId: f.delivery._id.toString(), qty: 1 },
+    ];
+    const draft = { lines, discountType: 'percent', discountValue: 5 };
+
+    const preview = await request(app.getHttpServer()).post('/sales-invoices/preview').send(draft).expect(201);
+    expect(preview.body.totals).toEqual({ gross: 210, lineDiscounts: 20, invoiceDiscount: 9.5, taxable: 180.5, tax: 8.55, net: 189.05 });
+    expect(await model(SalesInvoice.name).countDocuments()).toBe(0);
+
+    const invoice = await invoices.create(input(f, draft), admin);
+    expect(invoice).toMatchObject({ grossTotal: 210, totalDiscount: 20, invoiceDiscount: 9.5, taxableTotal: 180.5, totalTax: 8.55, netTotal: 189.05, margin: 180.5 - 60 });
+    expect(invoice.lines.map((line) => [line.discount, line.allocatedDiscount, line.amount, line.vat, line.netAmount])).toEqual([
+      [20, 9, 171, 8.55, 179.55],
+      [0, 0.5, 9.5, 0, 9.5],
+    ]);
+    expect(await balanceOf(f.shop.account._id)).toBe(189.05);
+    expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.SALES.key))).toBe(-180.5);
+    expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.VAT_OUTPUT.key))).toBe(-8.55);
+    await expectBalancesMatchEntries();
+
+    const old = await invoices.create(input(f, { lines: [{ productId: f.ajwa._id.toString(), qty: 1, discount: 2 }] }), admin);
+    expect(old.lines[0]).toMatchObject({ discountType: 'amount', discountValue: 2, discount: 2, amount: 18 });
+  });
+
+  it('spreads an invoice discount with largest-remainder rounding', () => {
+    const line = { qty: 1, rate: 10, discountType: 'amount' as const, discountValue: 0, vatRate: 0 };
+    const priced = priceInvoice([line, line, line], { discountType: 'amount', discountValue: 0.1 });
+    expect(priced.lines.map((row) => row.allocatedDiscount)).toEqual([0.04, 0.03, 0.03]);
+    expect(priced.invoiceDiscount).toBe(0.1);
+    expect(() => priceInvoice([line], { discountType: 'amount', discountValue: 10.01 })).toThrow(/more than the invoice/);
+  });
+
+  it("refuses a total discount above the role's maxDiscountPercent", async () => {
+    const f = await fixtures();
+    const capped: AuthenticatedUser = { ...admin, maxDiscountPercent: 5 };
+    // 10 x 20 = 200: a 10 discount is 5%, an 11 discount is 5.5%.
+    const lines = [{ productId: f.ajwa._id.toString(), qty: 10 }];
+    await invoices.create(input(f, { lines, discountType: 'amount', discountValue: 10 }), capped);
+    await expect(invoices.create(input(f, { lines, discountType: 'amount', discountValue: 11 }), capped)).rejects.toThrow(
+      /your role allows up to 5%/,
+    );
+  });
+
+  describe('non-VAT invoices', () => {
+    const nonVat = (f: Fixtures, extra: Record<string, unknown> = {}) =>
+      input(f, { invoiceKind: 'non_vat', lines: [{ productId: f.ajwa._id.toString(), qty: 10 }], ...extra });
+
+    it('numbers SNV- apart from SI-, forces VAT 0, posts Sales (Non-VAT) only, and moves stock and cost like an invoice', async () => {
+      const f = await fixtures();
+      const first = await invoices.create(input(f), admin);
+      const snv = await invoices.create(nonVat(f, { discountType: 'percent', discountValue: 10 }), admin);
+      const next = await invoices.create(nonVat(f), admin);
+      const second = await invoices.create(input(f), admin);
+
+      expect([first.voucherNo, snv.voucherNo, next.voucherNo, second.voucherNo]).toEqual(['SI-0001', 'SNV-0001', 'SNV-0002', 'SI-0002']);
+      // 10 x 20 = 200, 10% off = 180, no VAT even though the product is 5%.
+      expect(snv).toMatchObject({ invoiceKind: 'non_vat', taxableTotal: 180, totalTax: 0, netTotal: 180, balance: 180, costTotal: 60, margin: 120 });
+      expect(snv.lines[0]).toMatchObject({ vatRate: 0, vat: 0, unitCost: 6 });
+      expect(await qtyOf(f.ajwa._id, f.van._id)).toBe(50 - 40);
+      // SI x2 = 420 + 20 VAT to Sales/VAT Output; the two SNV (180 + 200) go to Sales (Non-VAT) only.
+      expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.SALES_NON_VAT.key))).toBe(-380);
+      expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.VAT_OUTPUT.key))).toBe(-20);
+      expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.SALES.key))).toBe(-420);
+      await expectBalancesMatchEntries();
+
+      await invoices.cancel(snv._id.toString(), { reason: 'Entered twice' }, admin);
+      expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.SALES_NON_VAT.key))).toBe(-200);
+      expect(await qtyOf(f.ajwa._id, f.van._id)).toBe(50 - 30);
+    });
+
+    it('rejects a VAT rate, needs its own permission, and the kind filter keeps the lists apart', async () => {
+      const f = await fixtures();
+      await expect(
+        invoices.create(nonVat(f, { lines: [{ productId: f.ajwa._id.toString(), qty: 1, vatRate: 5 }] }), admin),
+      ).rejects.toThrow(/can't carry VAT/);
+
+      const accountantLike = { ...admin, permissions: admin.permissions.filter((p) => p !== Permission.NON_VAT_INVOICES_CREATE) };
+      await expect(invoices.create(nonVat(f), accountantLike)).rejects.toThrow(/may not create non-VAT/);
+
+      const tax = await invoices.create(input(f), admin);
+      const snv = await invoices.create(nonVat(f), admin);
+      expect((await invoices.findAll({}, admin)).items.map((i) => i.voucherNo)).toEqual([tax.voucherNo]);
+      expect((await invoices.findAll({ kind: 'non_vat' }, admin)).items.map((i) => i.voucherNo)).toEqual([snv.voucherNo]);
+      expect((await invoices.findAll({ kind: 'all' }, admin)).items).toHaveLength(2);
+
+      const noRead = { ...admin, permissions: admin.permissions.filter((p) => p !== Permission.NON_VAT_INVOICES_READ) };
+      await expect(invoices.findAll({ kind: 'non_vat' }, noRead)).rejects.toThrow(/may not view non-VAT/);
+      expect((await invoices.findAll({ kind: 'all' }, noRead)).items.map((i) => i.voucherNo)).toEqual([tax.voucherNo]);
+      await expect(invoices.findById(snv._id.toString(), noRead)).rejects.toThrow(/not found/);
+    });
+
+    it('prints a plain INVOICE with no company details, and a tax invoice still shows them', async () => {
+      const f = await fixtures();
+      const snv = await invoices.create(nonVat(f, { discountType: 'amount', discountValue: 20 }), admin);
+      const { definition, buffer } = await invoices.print(snv._id.toString(), admin);
+      const text = JSON.stringify(definition);
+      expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+      for (const expected of ['INVOICE', 'SNV-0001', 'Corner Shop', 'Product', 'Qty', 'Unit price', 'Invoice Discount', 'Grand Total', '180.00', 'Amount in words', 'ORIGINAL']) {
+        expect(text).toContain(expected);
+      }
+      for (const forbidden of ['ALA DATES LLC', 'TRN', 'VAT', 'TAX INVOICE']) {
+        expect(text).not.toContain(forbidden);
+      }
+
+      const tax = await invoices.create(input(f), admin);
+      expect(JSON.stringify((await invoices.print(tax._id.toString(), admin)).definition)).toContain('ALA DATES LLC');
+    });
+
+    it('nonVatSalesTotal counts posted non-VAT invoices only, by date', async () => {
+      const f = await fixtures();
+      await invoices.create(input(f), admin);
+      await invoices.create(nonVat(f), admin); // 200 on 2026-03-05
+      await invoices.create(nonVat(f, { date: '2026-04-02' }), admin);
+      const cancelled = await invoices.create(nonVat(f, { date: '2026-04-03' }), admin);
+      await invoices.cancel(cancelled._id.toString(), { reason: 'Wrong' }, admin);
+
+      expect(await invoices.nonVatSalesTotal()).toBe(400);
+      expect(await invoices.nonVatSalesTotal('2026-03-01', '2026-03-31')).toBe(200);
+      expect(await invoices.nonVatSalesTotal('2026-04-02', '2026-04-30')).toBe(200);
+    });
   });
 });
