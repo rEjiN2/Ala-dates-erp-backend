@@ -106,6 +106,7 @@ export class StockTransferService {
     if (query.fromLocationId) filter.fromLocationId = new Types.ObjectId(query.fromLocationId);
     if (query.toLocationId) filter.toLocationId = new Types.ObjectId(query.toLocationId);
     if (query.productId) filter['lines.productId'] = new Types.ObjectId(query.productId);
+    if (query.receivableByMe && viewer) filter.$and = [receivableByFilter(viewer)];
     const term = query.q?.trim();
     if (term) {
       const pattern = new RegExp(escapeRegExp(term), 'i');
@@ -169,18 +170,7 @@ export class StockTransferService {
 
   /** In-transit transfers this user can receive (scoped: into their locations, not their own). For the menu badge. */
   async toReceiveCount(viewer: Viewer): Promise<{ count: number }> {
-    const allowed = stockLocationScope(viewer);
-    const count = await this.model
-      .countDocuments({
-        status: PendingReceiptStatus.IN_TRANSIT,
-        ...(allowed
-          ? {
-              toLocationId: { $in: allowed.map((id) => new Types.ObjectId(id)) },
-              'sentBy.id': { $ne: new Types.ObjectId(viewer.id) },
-            }
-          : {}),
-      })
-      .exec();
+    const count = await this.model.countDocuments(receivableByFilter(viewer)).exec();
     return { count };
   }
 
@@ -549,6 +539,20 @@ function scopeOf(user: Viewer | undefined): Record<string, unknown> | null {
   if (!allowed) return null;
   const ids = allowed.map((id) => new Types.ObjectId(id));
   return { $or: [{ fromLocationId: { $in: ids } }, { toLocationId: { $in: ids } }] };
+}
+
+/** Single rule for the to-receive badge and the receivableByMe list filter. */
+function receivableByFilter(viewer: Viewer): Record<string, unknown> {
+  const allowed = stockLocationScope(viewer);
+  return {
+    status: PendingReceiptStatus.IN_TRANSIT,
+    ...(allowed
+      ? {
+          toLocationId: { $in: allowed.map((id) => new Types.ObjectId(id)) },
+          'sentBy.id': { $ne: new Types.ObjectId(viewer.id) },
+        }
+      : {}),
+  };
 }
 
 function assertFromAllowed(user: Viewer, locationId: string): void {

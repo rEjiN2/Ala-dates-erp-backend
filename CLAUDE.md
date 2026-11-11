@@ -47,7 +47,8 @@ VoucherPostingService.create/cancel; Party.systemKey cash_customer;
 /dashboard/sales|purchases).
 Built: sales/purchase returns (src/modules/accounting/returns, SR-/PR-; ReturnService
 engine + thin services like VoucherPostingService).
-Planned: stock transfer, bundling, reports, migration.
+Built: FIFO costing core (src/modules/stock/costing: CostLayer, LayerConsumption, CostService; PI/OS add layers, SI consumes, `pnpm migrate:fifo`). Returns, bundling, counts also on layers; every StockService.post entry declares costing (layer-add|consume|restore|none; transfers exempt); GET /reports/batch-expiry.
+Planned: reports, migration.
 
 ## Conventions
 - Permissions: one PERMISSIONS constant for every @RequirePermission().

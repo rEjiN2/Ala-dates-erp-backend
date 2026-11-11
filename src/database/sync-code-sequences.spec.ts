@@ -17,6 +17,7 @@ import {
   ProductGroupDocument,
   ProductGroupSchema,
 } from '../modules/product/product-groups/schemas/product-group.schema.js';
+import { Product, ProductSchema } from '../modules/product/products/schemas/product.schema.js';
 import { SequenceService } from '../modules/sequence/sequence.service.js';
 import { Counter, CounterDocument, CounterSchema } from '../modules/sequence/schemas/counter.schema.js';
 
@@ -36,6 +37,7 @@ describe('syncCodeSequences', () => {
         MongooseModule.forFeature([
           { name: Location.name, schema: LocationSchema },
           { name: ProductGroup.name, schema: ProductGroupSchema },
+          { name: Product.name, schema: ProductSchema },
           { name: Counter.name, schema: CounterSchema },
         ]),
       ],

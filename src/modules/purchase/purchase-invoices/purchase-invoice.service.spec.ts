@@ -9,6 +9,9 @@ import { PurchaseInvoiceService } from './purchase-invoice.service.js';
 import { PurchaseInvoiceController } from './purchase-invoice.controller.js';
 import { PURCHASE_INVOICE_ENTITY_TYPE, PurchaseInvoice, PurchaseInvoiceSchema } from './schemas/purchase-invoice.schema.js';
 import { SalesInvoice, SalesInvoiceSchema } from '../../sales/sales-invoices/schemas/sales-invoice.schema.js';
+import { CostService } from '../../stock/costing/cost.service.js';
+import { CostLayer, CostLayerSchema } from '../../stock/costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from '../../stock/costing/schemas/layer-consumption.schema.js';
 import { StockService } from '../../stock/stock.service.js';
 import { StockEntry, StockEntrySchema } from '../../stock/schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from '../../stock/schemas/stock-balance.schema.js';
@@ -78,6 +81,8 @@ describe('Purchase invoices', () => {
     PurchaseInvoice,
     StockEntry,
     StockBalance,
+    CostLayer,
+    LayerConsumption,
     Product,
     ProductGroup,
     Unit,
@@ -99,6 +104,8 @@ describe('Purchase invoices', () => {
           { name: SalesInvoice.name, schema: SalesInvoiceSchema },
           { name: StockEntry.name, schema: StockEntrySchema },
           { name: StockBalance.name, schema: StockBalanceSchema },
+          { name: CostLayer.name, schema: CostLayerSchema },
+          { name: LayerConsumption.name, schema: LayerConsumptionSchema },
           { name: Product.name, schema: ProductSchema },
           { name: ProductGroup.name, schema: ProductGroupSchema },
           { name: Unit.name, schema: UnitSchema },
@@ -120,6 +127,7 @@ describe('Purchase invoices', () => {
         PurchaseInvoiceService,
         AllocationService,
         StockService,
+        CostService,
         ProductService,
         ProductUsageRegistry,
         VoucherPostingService,
@@ -231,7 +239,7 @@ describe('Purchase invoices', () => {
   const issue = (productId: Types.ObjectId, locationId: Types.ObjectId, qty: number) =>
     runInTransaction(moduleRef.get<Connection>(getConnectionToken()), (session) =>
       stock.post(
-        [{ productId, locationId, qty: -qty, date: new Date('2026-03-02'), voucherType: 'test-issue', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
+        [{ productId, locationId, qty: -qty, date: new Date('2026-03-02'), voucherType: 'test-issue', costing: 'none', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
         admin,
         session,
       ),
@@ -329,6 +337,26 @@ describe('Purchase invoices', () => {
     expect(await qtyOf(f.ajwa._id, f.wh._id)).toBe(6);
     await expect(invoices.update(other._id.toString(), { billNo: 'X' }, admin)).rejects.toThrow(/cancelled/);
     await expectBalancesMatchEntries();
+  });
+
+  it('adds a FIFO layer per stock line at the net unit cost; cancel and edit are blocked once it is consumed', async () => {
+    const f = await fixtures();
+    const bill = await invoices.create(
+      input(f, { lines: [{ productId: f.ajwa._id.toString(), qty: 10, rate: 12.5, discount: 5, expiryDate: '2027-01-31' }] }),
+      admin,
+    );
+    const layers = model<{ qtyIn: number; qtyRemaining: number; unitCost: number; expiryDate: Date; sourceVoucherId: Types.ObjectId }>(
+      CostLayer.name,
+    );
+    expect(await layers.find().lean().exec()).toMatchObject([{ qtyIn: 10, qtyRemaining: 10, unitCost: 12, expiryDate: new Date('2027-01-31') }]);
+
+    await runInTransaction(moduleRef.get<Connection>(getConnectionToken()), (session) =>
+      moduleRef.get(CostService).consume(f.ajwa._id, 3, { voucherType: 'sales-invoice', voucherId: new Types.ObjectId(), voucherNo: 'SI-0009' }, session),
+    );
+    const blocked = /can't be (cancelled|edited): its stock was already used on SI-0009/;
+    await expect(invoices.cancel(bill._id.toString(), { reason: 'x' }, admin)).rejects.toThrow(blocked);
+    await expect(invoices.update(bill._id.toString(), { billNo: 'X' }, admin)).rejects.toThrow(blocked);
+    expect(await layers.countDocuments({ voidedAt: null })).toBe(1);
   });
 
   it('marks products and the supplier account as used', async () => {

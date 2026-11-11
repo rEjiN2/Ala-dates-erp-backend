@@ -16,12 +16,22 @@ import { DataScope, Permission, hasPermission } from '../roles/permissions.js';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 import { escapeRegExp } from '../sequence/code-sequence.js';
 import { InTransitRegistry } from './pending-receipt.js';
+import { CostService } from './costing/cost.service.js';
+import { STOCK_TRANSFER_ENTITY_TYPE } from './transfers/schemas/stock-transfer.schema.js';
 import { type Actor, toUserSnapshot, userRefOf } from '../../common/schemas/user-snapshot.schema.js';
 import { round2 } from '../../common/utils/money.util.js';
 
 /** Branches are organisational; only these hold stock. */
 export const STOCK_LOCATION_TYPES: readonly LocationType[] = [LocationType.WAREHOUSE, LocationType.STORE, LocationType.VAN];
 export const STOCK_PRODUCT_TYPES: readonly ProductType[] = [ProductType.STOCK, ProductType.BUNDLE];
+
+/**
+ * What a voucher does to the FIFO cost layers next to its stock entry:
+ * layer-add (a purchase-like inflow), consume (an outflow), restore (goods
+ * back into the layers they left) or none. Every voucher type except stock
+ * transfers must declare one.
+ */
+export type CostingAction = 'layer-add' | 'consume' | 'restore' | 'none';
 
 export interface StockEntryInput {
   productId: Types.ObjectId | string;
@@ -33,6 +43,8 @@ export interface StockEntryInput {
   voucherId: Types.ObjectId;
   voucherNo: string;
   unitCost?: number | null;
+  /** Required for every voucher type but stock transfers (post throws without it). */
+  costing?: CostingAction;
   reversalOf?: Types.ObjectId | null;
 }
 
@@ -50,9 +62,9 @@ export interface StockSummaryRow {
   inTransit: number;
   /** total + inTransit. */
   grandTotal: number;
-  byLocation: { locationId: string; name: string | null; qty: number }[];
+  byLocation: { locationId: string; name: string | null; qty: number; /** qty x average remaining layer cost; only with products:view-cost. */ value?: number }[];
   status: StockStatus;
-  /** total x purchasePrice; only with products:view-cost. */
+  /** Sum of FIFO layer qtyRemaining x unitCost; only with products:view-cost. */
   value?: number;
 }
 
@@ -85,6 +97,7 @@ export class StockService {
     private readonly productService: ProductService,
     productUsage: ProductUsageRegistry,
     @Optional() private readonly inTransit?: InTransitRegistry,
+    @Optional() private readonly costService?: CostService,
   ) {
     productUsage.register('stock entries', async (productId, session) =>
       Boolean(
@@ -103,6 +116,13 @@ export class StockService {
     session: ClientSession,
     options: { strict?: boolean } = {},
   ): Promise<void> {
+    for (const entry of entries) {
+      if (!entry.costing && entry.voucherType !== STOCK_TRANSFER_ENTITY_TYPE) {
+        throw new Error(
+          `Stock entry for voucher type "${entry.voucherType}" has no costing declaration (layer-add, consume, restore or none)`,
+        );
+      }
+    }
     const postedAt = new Date();
     const by = toUserSnapshot(actor);
     const rows = entries
@@ -116,6 +136,7 @@ export class StockService {
         voucherId: entry.voucherId,
         voucherNo: entry.voucherNo,
         unitCost: entry.unitCost ?? null,
+        costing: entry.costing ?? null,
         reversalOf: entry.reversalOf ?? null,
         by,
         postedAt,
@@ -185,6 +206,7 @@ export class StockService {
         voucherId,
         voucherNo: entry.voucherNo,
         unitCost: entry.unitCost,
+        costing: (entry.costing ?? 'none') as CostingAction,
         reversalOf: entry._id,
       }));
   }
@@ -239,7 +261,7 @@ export class StockService {
 
     const products = await this.productModel
       .find(filter)
-      .select('code name productGroupId unitId purchasePrice minStock reorderLevel')
+      .select('code name productGroupId unitId minStock reorderLevel')
       .sort({ code: 1 })
       .lean()
       .exec();
@@ -277,6 +299,8 @@ export class StockService {
       units.map((unit) => [unit._id.toString(), { id: unit._id.toString(), name: unit.name, symbol: unit.symbol }]),
     );
     const canViewCost = hasPermission(viewer, Permission.PRODUCTS_VIEW_COST);
+    const valuation =
+      canViewCost && this.costService ? await this.costService.valuation(products.map((product) => product._id)) : new Map();
     const transit = this.inTransit
       ? await this.inTransit.quantities(
           products.map((product) => product._id),
@@ -291,6 +315,7 @@ export class StockService {
           locationId: balance.locationId.toString(),
           name: locationNames.get(balance.locationId.toString()) ?? null,
           qty: roundQty(balance.qty),
+          ...(canViewCost ? { value: round2(roundQty(balance.qty) * (valuation.get(product._id.toString())?.avgCost ?? 0)) } : {}),
         }));
       const total = roundQty(byLocation.reduce((sum, row) => sum + row.qty, 0));
       const inTransit = transit.get(product._id.toString()) ?? 0;
@@ -307,7 +332,7 @@ export class StockService {
         grandTotal: roundQty(total + inTransit),
         byLocation,
         status: levelStatus(total, product),
-        ...(canViewCost ? { value: round2(total * (product.purchasePrice ?? 0)) } : {}),
+        ...(canViewCost ? { value: valuation.get(product._id.toString())?.value ?? 0 } : {}),
       };
     });
     if (query.lowStock) rows = rows.filter((row) => row.status !== 'ok');

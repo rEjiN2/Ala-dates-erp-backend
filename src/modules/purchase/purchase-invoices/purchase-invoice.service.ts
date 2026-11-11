@@ -15,6 +15,7 @@ import {
   PurchaseInvoiceQueryDto,
   UpdatePurchaseInvoiceDto,
 } from './dto/purchase-invoice.dto.js';
+import { CostService } from '../../stock/costing/cost.service.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../../stock/stock.service.js';
 import { PRODUCT_ENTITY_TYPE, Product, ProductDocument } from '../../product/products/schemas/product.schema.js';
 import { ProductUsageRegistry } from '../../product/products/product-usage.registry.js';
@@ -92,6 +93,7 @@ export class PurchaseInvoiceService {
     @InjectModel(Party.name) private readonly partyModel: Model<PartyDocument>,
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     private readonly stockService: StockService,
+    private readonly costService: CostService,
     private readonly posting: VoucherPostingService,
     private readonly ledgerAccountService: LedgerAccountService,
     private readonly sequenceService: SequenceService,
@@ -252,6 +254,7 @@ export class PurchaseInvoiceService {
       );
       await this.postLedger(created, LedgerEntryKind.POSTING, 'created', session);
       await this.stockService.post(await this.stockEntriesOf(created, session), actor, session);
+      await this.addLayers(created, session);
       await this.record(created, AuditAction.CREATED, actor, now, session);
       await this.applyPurchasePrices(created, actor, now, session);
       return created;
@@ -300,6 +303,7 @@ export class PurchaseInvoiceService {
         throw new BadRequestException('No changes to save');
       }
 
+      await this.removeLayers(existing, 'edited', session);
       const stockReversals = await this.stockService.reversalsOf(PURCHASE_INVOICE_ENTITY_TYPE, existing._id, session);
       await this.postLedger(existing, LedgerEntryKind.REVERSAL, 'updated', session);
       const now = new Date();
@@ -312,6 +316,7 @@ export class PurchaseInvoiceService {
         session,
         { strict: true },
       );
+      await this.addLayers(existing, session);
       await this.record(existing, AuditAction.UPDATED, actor, now, session, { changes, reason: dto.changeNote });
       await this.applyPurchasePrices(existing, actor, now, session);
       return existing;
@@ -333,6 +338,7 @@ export class PurchaseInvoiceService {
         'cancelled',
         session,
       );
+      await this.removeLayers(existing, 'cancelled', session);
       await this.stockService.post(
         await this.stockService.reversalsOf(PURCHASE_INVOICE_ENTITY_TYPE, existing._id, session),
         actor,
@@ -528,6 +534,7 @@ export class PurchaseInvoiceService {
         vatRate,
         vat,
         netAmount: round2(amount + vat),
+        expiryDate: line.expiryDate ? new Date(line.expiryDate) : null,
       };
     });
 
@@ -602,7 +609,37 @@ export class PurchaseInvoiceService {
         voucherId: doc._id,
         voucherNo: doc.voucherNo,
         unitCost: Math.round((line.amount / line.qty) * 10000) / 10000,
+        costing: 'layer-add' as const,
       }));
+  }
+
+  /** One FIFO layer per stock/bundle line at its stock entry's net unit cost (amount / qty, before VAT). */
+  private async addLayers(doc: PurchaseInvoiceDocument, session: ClientSession): Promise<void> {
+    // The entries are the stocked lines, in line order.
+    const entries = await this.stockEntriesOf(doc, session);
+    let next = 0;
+    for (const line of doc.lines) {
+      const entry = entries[next];
+      if (!entry || !line.productId.equals(entry.productId.toString())) continue;
+      next++;
+      await this.costService.addLayer(
+        {
+          productId: entry.productId,
+          sourceType: PURCHASE_INVOICE_ENTITY_TYPE,
+          sourceVoucherId: doc._id,
+          sourceLineId: line._id ?? null,
+          date: doc.voucherDate,
+          qty: entry.qty,
+          unitCost: entry.unitCost ?? 0,
+          expiryDate: line.expiryDate,
+        },
+        session,
+      );
+    }
+  }
+
+  private removeLayers(doc: PurchaseInvoiceDocument, action: string, session: ClientSession) {
+    return this.costService.removeLayers(PURCHASE_INVOICE_ENTITY_TYPE, doc._id, `${LABEL} ${doc.voucherNo}`, action, session);
   }
 
   /** Sets each product's purchase price to its (last) line rate, audited on the product. */
@@ -663,7 +700,7 @@ export class PurchaseInvoiceService {
     const describe = (lines: readonly PurchaseInvoiceLine[]) => {
       const byProduct = new Map<string, string[]>();
       for (const line of lines) {
-        const text = `${line.qty} @ ${line.rate}${line.discount > 0 ? ` - ${line.discount.toFixed(2)}` : ''}, VAT ${line.vatRate}%`;
+        const text = `${line.qty} @ ${line.rate}${line.discount > 0 ? ` - ${line.discount.toFixed(2)}` : ''}, VAT ${line.vatRate}%${line.expiryDate ? `, exp ${day(line.expiryDate)}` : ''}`;
         byProduct.set(line.productId.toString(), [...(byProduct.get(line.productId.toString()) ?? []), text]);
       }
       return new Map([...byProduct].map(([id, texts]) => [id, texts.join(' + ')]));
@@ -753,6 +790,7 @@ function toInput(line: PurchaseInvoiceLine): PurchaseInvoiceLineDto {
     rate: line.rate,
     discount: line.discount,
     vatRate: line.vatRate,
+    expiryDate: line.expiryDate?.toISOString() ?? null,
   };
 }
 

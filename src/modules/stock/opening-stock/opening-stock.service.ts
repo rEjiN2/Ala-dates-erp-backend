@@ -15,6 +15,7 @@ import {
   UpdateOpeningStockDto,
   ValidateOpeningStockDto,
 } from './dto/opening-stock.dto.js';
+import { CostService } from '../costing/cost.service.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../stock.service.js';
 import { Product, ProductDocument, ProductType } from '../../product/products/schemas/product.schema.js';
 import { Location, LocationDocument } from '../../location/schemas/location.schema.js';
@@ -41,6 +42,7 @@ interface LineInput {
   productCode?: string;
   qty?: number;
   unitCost?: number | null;
+  expiryDate?: string | Date | null;
 }
 
 export interface CheckedStockLine {
@@ -51,6 +53,7 @@ export interface CheckedStockLine {
   productType: ProductType | null;
   qty: number;
   unitCost: number | null;
+  expiryDate: Date | null;
 }
 
 export interface StockRowError {
@@ -73,6 +76,7 @@ export class OpeningStockService {
     @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     private readonly stockService: StockService,
+    private readonly costService: CostService,
     private readonly sequenceService: SequenceService,
     private readonly auditService: AuditService,
     private readonly commentsService: CommentsService,
@@ -191,6 +195,7 @@ export class OpeningStockService {
         { session },
       );
       await this.stockService.post(this.entriesOf(created), actor, session);
+      await this.addLayers(created, session);
       await this.record(created, AuditAction.CREATED, actor, now, session);
       return created;
     });
@@ -222,6 +227,7 @@ export class OpeningStockService {
         throw new BadRequestException('No changes to save');
       }
 
+      await this.removeLayers(existing, 'edited', session);
       const reversals = await this.stockService.reversalsOf(OPENING_STOCK_ENTITY_TYPE, existing._id, session);
       const now = new Date();
       existing.asOfDate = next.asOfDate;
@@ -233,6 +239,7 @@ export class OpeningStockService {
       existing.updatedAt = now;
       await existing.save({ session });
       await this.stockService.post([...reversals, ...this.entriesOf(existing)], actor, session);
+      await this.addLayers(existing, session);
       await this.record(existing, AuditAction.UPDATED, actor, now, session, { changes, reason: dto.changeNote });
       return existing;
     });
@@ -245,6 +252,7 @@ export class OpeningStockService {
     return runInTransaction(this.connection, async (session) => {
       const existing = await this.load(id, scopeOf(actor), session);
       assertNotCancelled(existing, 'cancelled again');
+      await this.removeLayers(existing, 'cancelled', session);
       await this.stockService.post(
         await this.stockService.reversalsOf(OPENING_STOCK_ENTITY_TYPE, existing._id, session),
         actor,
@@ -275,7 +283,31 @@ export class OpeningStockService {
       voucherId: doc._id,
       voucherNo: doc.voucherNo,
       unitCost: line.unitCost,
+      costing: 'layer-add' as const,
     }));
+  }
+
+  /** One FIFO layer per line (the line has no _id: the product id stands in, unique per voucher). */
+  private async addLayers(doc: OpeningStockDocument, session: ClientSession): Promise<void> {
+    for (const line of doc.lines) {
+      await this.costService.addLayer(
+        {
+          productId: line.productId,
+          sourceType: OPENING_STOCK_ENTITY_TYPE,
+          sourceVoucherId: doc._id,
+          sourceLineId: line.productId,
+          date: doc.asOfDate,
+          qty: line.qty,
+          unitCost: line.unitCost ?? 0,
+          expiryDate: line.expiryDate,
+        },
+        session,
+      );
+    }
+  }
+
+  private removeLayers(doc: OpeningStockDocument, action: string, session: ClientSession) {
+    return this.costService.removeLayers(OPENING_STOCK_ENTITY_TYPE, doc._id, `${LABEL} ${doc.voucherNo}`, action, session);
   }
 
   /** Checked lines as stored; any row error rejects the save with every row's message. */
@@ -294,6 +326,7 @@ export class OpeningStockService {
       productId: new Types.ObjectId(line.productId!),
       qty: line.qty,
       unitCost: line.unitCost,
+      expiryDate: line.expiryDate,
     }));
   }
 
@@ -343,7 +376,9 @@ export class OpeningStockService {
         seen.add(id);
       }
       if (!(qty > 0)) fail('Quantity must be greater than 0');
-      if (unitCost !== null && unitCost < 0) fail('Unit cost cannot be negative');
+      if (unitCost === null) fail('Unit cost is required');
+      else if (unitCost < 0) fail('Unit cost cannot be negative');
+      const expiryDate = input.expiryDate ? new Date(input.expiryDate) : null;
 
       return {
         row,
@@ -353,6 +388,7 @@ export class OpeningStockService {
         productType: product?.type ?? null,
         qty,
         unitCost,
+        expiryDate,
       };
     });
 
@@ -415,7 +451,8 @@ export class OpeningStockService {
       new Map(
         lines.map((line) => [
           line.productId.toString(),
-          line.unitCost != null ? `${line.qty} @ ${line.unitCost.toFixed(2)}` : `${line.qty}`,
+          (line.unitCost != null ? `${line.qty} @ ${line.unitCost.toFixed(2)}` : `${line.qty}`) +
+            (line.expiryDate ? ` exp ${day(line.expiryDate)}` : ''),
         ]),
       );
     const from = describe(before.lines);
@@ -490,7 +527,7 @@ function assertLocationAllowed(user: Viewer, locationId: string): void {
 }
 
 function toInput(line: OpeningStockLine): LineInput {
-  return { productId: line.productId.toString(), qty: line.qty, unitCost: line.unitCost };
+  return { productId: line.productId.toString(), qty: line.qty, unitCost: line.unitCost, expiryDate: line.expiryDate };
 }
 
 function totalQtyOf(lines: readonly { qty: number }[]): number {

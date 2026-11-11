@@ -36,6 +36,9 @@ import { ChequeController } from '../src/modules/accounting/cheques/cheque.contr
 import { AccountingReportsService } from '../src/modules/reports/accounting-reports.service.js';
 import { ReportService } from '../src/modules/reports/report.service.js';
 import { SalesmanCollectionsService } from '../src/modules/reports/salesman-collections.service.js';
+import { BatchExpiryService } from '../src/modules/reports/batch-expiry.service.js';
+import { CostLayer, CostLayerSchema } from '../src/modules/stock/costing/schemas/cost-layer.schema.js';
+import { Product, ProductSchema } from '../src/modules/product/products/schemas/product.schema.js';
 import { ReportsController } from '../src/modules/reports/reports.controller.js';
 import { VoucherPostingService } from '../src/modules/accounting/vouchers/voucher-posting.service.js';
 import { VoucherPrintService } from '../src/modules/accounting/vouchers/voucher-print.service.js';
@@ -109,6 +112,8 @@ export async function createVoucherHarness(dbName: string) {
         { name: LedgerAccount.name, schema: LedgerAccountSchema },
         { name: Counter.name, schema: CounterSchema },
         { name: Location.name, schema: LocationSchema },
+        { name: CostLayer.name, schema: CostLayerSchema },
+        { name: Product.name, schema: ProductSchema },
         { name: AuditLog.name, schema: AuditLogSchema },
         { name: Comment.name, schema: CommentSchema },
         { name: User.name, schema: UserSchema },
@@ -138,6 +143,7 @@ export async function createVoucherHarness(dbName: string) {
       SalesmanCollectionsService,
       ReportService,
       AccountingReportsService,
+      BatchExpiryService,
       VoucherPostingService,
       VoucherPrintService,
       LedgerAccountService,

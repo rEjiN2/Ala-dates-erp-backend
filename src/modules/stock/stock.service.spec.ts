@@ -10,6 +10,9 @@ import { StockService } from './stock.service.js';
 import { StockController } from './stock.controller.js';
 import { StockEntry, StockEntrySchema } from './schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from './schemas/stock-balance.schema.js';
+import { CostService } from './costing/cost.service.js';
+import { CostLayer, CostLayerSchema } from './costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from './costing/schemas/layer-consumption.schema.js';
 import { OpeningStockService } from './opening-stock/opening-stock.service.js';
 import { OpeningStockController } from './opening-stock/opening-stock.controller.js';
 import { OpeningStock, OpeningStockSchema } from './opening-stock/schemas/opening-stock.schema.js';
@@ -62,6 +65,8 @@ describe('Stock engine and opening stock', () => {
           { name: StockEntry.name, schema: StockEntrySchema },
           { name: StockBalance.name, schema: StockBalanceSchema },
           { name: OpeningStock.name, schema: OpeningStockSchema },
+          { name: CostLayer.name, schema: CostLayerSchema },
+          { name: LayerConsumption.name, schema: LayerConsumptionSchema },
           { name: Product.name, schema: ProductSchema },
           { name: ProductGroup.name, schema: ProductGroupSchema },
           { name: Unit.name, schema: UnitSchema },
@@ -74,6 +79,7 @@ describe('Stock engine and opening stock', () => {
       controllers: [StockController, OpeningStockController],
       providers: [
         StockService,
+        CostService,
         OpeningStockService,
         ProductService,
         ProductUsageRegistry,
@@ -114,7 +120,7 @@ describe('Stock engine and opening stock', () => {
     company.allowNegativeStock = false;
     tokenUser = admin;
     await Promise.all(
-      [StockEntry, StockBalance, OpeningStock, Product, ProductGroup, Unit, Location, Counter, AuditLog, Comment].map(
+      [StockEntry, StockBalance, OpeningStock, CostLayer, LayerConsumption, Product, ProductGroup, Unit, Location, Counter, AuditLog, Comment].map(
         (m) => model(m.name).collection.deleteMany({}),
       ),
     );
@@ -151,7 +157,7 @@ describe('Stock engine and opening stock', () => {
       {
         asOfDate: '2026-01-01',
         locationId: locationId.toString(),
-        lines: lines.map((line) => ({ ...line, productId: line.productId.toString() })),
+        lines: lines.map((line) => ({ unitCost: 10, ...line, productId: line.productId.toString() })),
       },
       admin,
     );
@@ -169,7 +175,7 @@ describe('Stock engine and opening stock', () => {
             locationId,
             qty: -qty,
             date: new Date('2026-02-01'),
-            voucherType: 'test-issue',
+            voucherType: 'test-issue', costing: 'none',
             voucherId: new Types.ObjectId(),
             voucherNo: 'T-1',
           },
@@ -212,7 +218,7 @@ describe('Stock engine and opening stock', () => {
 
     const summary = await stock.summary({}, admin);
     const row = summary.items.find((item) => item.code === 'PRD-0001')!;
-    expect(row).toMatchObject({ total: 32.5, status: 'ok', value: 325, unit: { symbol: 'kg' }, group: { name: 'Dates' } });
+    expect(row).toMatchObject({ total: 32.5, status: 'ok', value: 385, unit: { symbol: 'kg' }, group: { name: 'Dates' } });
     expect(row.byLocation.map((l) => l.qty).sort()).toEqual([2.5, 30]);
     expect(summary.items.map((item) => item.code)).toEqual(['PRD-0001', 'PRD-0002']);
 
@@ -276,9 +282,11 @@ describe('Stock engine and opening stock', () => {
     await issue(ajwa._id, wh._id, 9);
 
     // 10 -> 12 would dip below zero mid-way if reversal and repost were checked separately.
-    await opening.update(os.id, { lines: [{ productId: ajwa._id.toString(), qty: 12 }] }, admin);
+    await opening.update(os.id, { lines: [{ productId: ajwa._id.toString(), qty: 12, unitCost: 10 }] }, admin);
     expect(await qtyOf(ajwa._id, wh._id)).toBe(3);
-    await expect(opening.update(os.id, { lines: [{ productId: ajwa._id.toString(), qty: 12 }] }, admin)).rejects.toThrow(
+    await expect(
+      opening.update(os.id, { lines: [{ productId: ajwa._id.toString(), qty: 12, unitCost: 10 }] }, admin),
+    ).rejects.toThrow(
       'No changes to save',
     );
 
@@ -292,7 +300,7 @@ describe('Stock engine and opening stock', () => {
 
     const audit = await model(AuditLog.name).findOne({ entityId: os._id, action: 'updated' }).lean().exec();
     expect((audit as unknown as { changes: unknown[] }).changes).toEqual([
-      expect.objectContaining({ label: 'PRD-0001 name', from: '10', to: '12' }),
+      expect.objectContaining({ label: 'PRD-0001 name', from: '10 @ 10.00', to: '12 @ 10.00' }),
     ]);
   });
 
@@ -316,7 +324,7 @@ describe('Stock engine and opening stock', () => {
     tokenUser = user('Accountant', [...ACCOUNTANT_PERMISSIONS]);
     await request(app.getHttpServer())
       .post('/opening-stock')
-      .send({ asOfDate: '2026-01-01', locationId: wh._id.toString(), lines: [{ productId: ajwa._id.toString(), qty: 1 }] })
+      .send({ asOfDate: '2026-01-01', locationId: wh._id.toString(), lines: [{ productId: ajwa._id.toString(), qty: 1, unitCost: 1 }] })
       .expect(403);
     await request(app.getHttpServer()).get('/stock/summary?lowStock=false').expect(200);
   });
@@ -328,11 +336,11 @@ describe('Stock engine and opening stock', () => {
       {
         locationId: wh._id.toString(),
         lines: [
-          { productCode: 'prd-0002', qty: 4 },
-          { productCode: 'NOPE', qty: 1 },
-          { productCode: 'PRD-0003', qty: 1 },
-          { productCode: 'PRD-0002', qty: 0 },
-          { productCode: 'PRD-0001', qty: 2 },
+          { productCode: 'prd-0002', qty: 4, unitCost: 1 },
+          { productCode: 'NOPE', qty: 1, unitCost: 1 },
+          { productCode: 'PRD-0003', qty: 1, unitCost: 1 },
+          { productCode: 'PRD-0002', qty: 0, unitCost: 1 },
+          { productCode: 'PRD-0001', qty: 2, unitCost: 1 },
         ],
       },
       admin,

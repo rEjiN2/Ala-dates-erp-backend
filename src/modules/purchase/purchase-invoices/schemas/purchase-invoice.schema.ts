@@ -45,6 +45,10 @@ export class PurchaseInvoiceLine {
   /** Quantity on active purchase returns; moved only by the returns service. */
   @Prop({ default: 0 })
   returnedQty?: number;
+
+  /** Stock lines: carried onto the FIFO cost layer. */
+  @Prop({ type: Date, default: null })
+  expiryDate?: Date | null;
 }
 
 export const PurchaseInvoiceLineSchema = SchemaFactory.createForClass(PurchaseInvoiceLine);

@@ -1,8 +1,9 @@
 import { IntersectionType, PartialType, PickType } from '@nestjs/mapped-types';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsIn,
   IsMongoId,
@@ -91,4 +92,10 @@ export class StockTransferQueryDto extends PickType(VoucherQueryDto, ['dateFrom'
   @IsOptional()
   @IsMongoId()
   productId?: string;
+
+  /** In transit and receivable by me; same rule as to-receive-count. */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  receivableByMe?: boolean;
 }

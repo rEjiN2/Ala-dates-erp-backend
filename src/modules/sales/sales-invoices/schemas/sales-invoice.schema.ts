@@ -42,9 +42,17 @@ export class SalesInvoiceLine {
   @Prop({ required: true })
   netAmount: number;
 
-  /** The product's purchase price when sold; returned only with products:view-cost. */
+  /** Average FIFO cost per unit (costAmount / qty); returned only with products:view-cost. */
   @Prop({ required: true, default: 0 })
   unitCost: number;
+
+  /** What the stock sold cost, from the FIFO layers consumed; only with products:view-cost. */
+  @Prop({ required: true, default: 0 })
+  costAmount: number;
+
+  /** Part of the quantity had no cost layer left and was costed at the latest layer cost. */
+  @Prop({ default: false })
+  uncosted?: boolean;
 
   /** Quantity on active sales returns; moved only by the returns service. */
   @Prop({ default: 0 })
@@ -110,6 +118,14 @@ export class SalesInvoice {
   /** Debited to the customer. */
   @Prop({ required: true, default: 0 })
   netTotal: number;
+
+  /** Sum of the lines' costAmount; only with products:view-cost. */
+  @Prop({ required: true, default: 0 })
+  costTotal: number;
+
+  /** taxableTotal - costTotal; only with products:view-cost. */
+  @Prop({ required: true, default: 0 })
+  margin: number;
 
   /** Active payment allocations; balance = netTotal - paidAmount - creditedAmount. Moved only by AllocationService. */
   @Prop({ required: true, default: 0 })

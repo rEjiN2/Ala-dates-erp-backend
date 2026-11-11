@@ -23,10 +23,14 @@ export class OpeningStockLineDto {
   @IsPositive()
   qty: number;
 
-  @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
+  /** Per unit, before VAT. */
+  @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
-  unitCost?: number | null;
+  unitCost: number;
+
+  @IsOptional()
+  @IsDateString()
+  expiryDate?: string | null;
 }
 
 export class CreateOpeningStockDto {
@@ -83,6 +87,10 @@ export class ValidateOpeningStockLineDto {
   @IsOptional()
   @IsNumber()
   unitCost?: number | null;
+
+  @IsOptional()
+  @IsDateString()
+  expiryDate?: string | null;
 }
 
 /** Lines by product code (e.g. an import); nothing is posted. */

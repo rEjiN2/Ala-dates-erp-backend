@@ -5,6 +5,9 @@ import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongo
 import { Types, type Connection, type Model } from 'mongoose';
 import request from 'supertest';
 import { mongooseTestRoot } from '../../../../test/mongo-test-db.js';
+import { CostService } from '../costing/cost.service.js';
+import { CostLayer, CostLayerSchema } from '../costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from '../costing/schemas/layer-consumption.schema.js';
 import { StockService } from '../stock.service.js';
 import { StockEntry, StockEntrySchema } from '../schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from '../schemas/stock-balance.schema.js';
@@ -58,6 +61,8 @@ describe('Bundling', () => {
         MongooseModule.forFeature([
           { name: StockEntry.name, schema: StockEntrySchema },
           { name: StockBalance.name, schema: StockBalanceSchema },
+          { name: CostLayer.name, schema: CostLayerSchema },
+          { name: LayerConsumption.name, schema: LayerConsumptionSchema },
           { name: Bundling.name, schema: BundlingSchema },
           { name: BundleRecipe.name, schema: BundleRecipeSchema },
           { name: Product.name, schema: ProductSchema },
@@ -72,6 +77,7 @@ describe('Bundling', () => {
       controllers: [BundlingController],
       providers: [
         StockService,
+        CostService,
         BundlingService,
         ProductService,
         ProductUsageRegistry,
@@ -97,7 +103,7 @@ describe('Bundling', () => {
     await app.init();
     bundling = moduleRef.get(BundlingService);
     stock = moduleRef.get(StockService);
-    await Promise.all([StockEntry, StockBalance, Bundling, BundleRecipe, Product, Location, Counter, AuditLog].map((m) => model(m.name).init()));
+    await Promise.all([StockEntry, StockBalance, CostLayer, LayerConsumption, Bundling, BundleRecipe, Product, Location, Counter, AuditLog].map((m) => model(m.name).init()));
   }, 120_000);
 
   afterAll(async () => {
@@ -144,7 +150,7 @@ describe('Bundling', () => {
   const move = (productId: Types.ObjectId, locationId: Types.ObjectId, qty: number) =>
     runInTransaction(moduleRef.get<Connection>(getConnectionToken()), (session) =>
       stock.post(
-        [{ productId, locationId, qty, date: new Date('2026-02-01'), voucherType: 'test', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
+        [{ productId, locationId, qty, date: new Date('2026-02-01'), voucherType: 'test', costing: 'none', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
         admin,
         session,
       ),
@@ -206,7 +212,7 @@ describe('Bundling', () => {
     expect(await qtyOf(f.dates._id, f.wh._id)).toBe(100); // unbundle uses the current recipe (5 per pack)
 
     // Undo the bundling: boxes 6 left, undo needs 10 out -> blocked, nothing changes.
-    await expect(bundling.cancel(made.id, { reason: 'wrong count' }, admin)).rejects.toThrow(/Cannot undo BND-0001/);
+    await expect(bundling.cancel(made.id, { reason: 'wrong count' }, admin)).rejects.toThrow(/Bundling BND-0001 can't be undone: its stock was already used on BND-0002/);
     expect(await qtyOf(f.gift._id, f.wh._id)).toBe(6);
     expect((await bundling.findById(made.id, admin)).status).toBe('posted');
   });

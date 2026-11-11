@@ -3,7 +3,15 @@
     "allow": [
       "Bash(sed 's/^ *//')",
       "Bash(cd \"C:/Users/HP/Desktop/RJ-TEST-CODE/Ala-Dates-Backend\" && ls src/modules/accounting/returns/dto; sed -n 15,40p src/modules/accounting/returns/dto/*return*.dto.ts | head -50; sed -n 505,560p src/modules/sales/sales-invoices/sales-invoice.service.ts; sed -n 668,695p src/modules/sales/sales-invoices/sales-invoice.service.ts; grep -rniE \"transfer\" src --include=*.ts -l | grep -v spec | head -4; grep -n \"settlesWithOffice\\\\|allowNegativeStock\\\\|default.*Account\" src/modules/company/schemas/company-settings.schema.ts | head; grep -n \"restock\" src/modules/accounting/returns/return.service.ts | head -5; grep -rn \"isVat\\\\|vatInvoice\\\\|nonVat\\\\|taxInvoice\\\\|invoiceKind\" src --include=*.ts -il | head -3)",
-      "PowerShell(pnpm test src/modules/accounting/cash-payments src/modules/accounting/returns 2>&1)"
+      "PowerShell(pnpm test src/modules/accounting/cash-payments src/modules/accounting/returns 2>&1)",
+      "Bash(python3 -)",
+      "Bash(cat > *)",
+      "Bash(grep -vE \"^\\\\s*$|plugin\")",
+      "Bash(grep -viE \"^\\\\s*$\")",
+      "Bash(grep -vE \"^\\\\s*$|Nest\\\\]\")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }

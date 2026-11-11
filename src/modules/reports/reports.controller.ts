@@ -5,6 +5,8 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/interfaces/auth.types.js';
 import { Permission } from '../roles/permissions.js';
+import { BatchExpiryService } from './batch-expiry.service.js';
+import { BatchExpiryQueryDto } from './dto/batch-expiry.dto.js';
 import { AccountingReportsService } from './accounting-reports.service.js';
 import { SalesmanCollectionsService } from './salesman-collections.service.js';
 import { CashBookQueryDto, DayBookQueryDto, LedgerReportQueryDto, TrialBalanceQueryDto } from './dto/accounting-reports.dto.js';
@@ -17,6 +19,7 @@ export class ReportsController {
   constructor(
     private readonly salesmanCollections: SalesmanCollectionsService,
     private readonly accounting: AccountingReportsService,
+    private readonly batchExpiry: BatchExpiryService,
   ) {}
 
   /** Accounting reports (reports:accounting); ?format=csv|pdf downloads the whole report. */
@@ -42,6 +45,13 @@ export class ReportsController {
   @RequirePermission(Permission.REPORTS_ACCOUNTING)
   trialBalance(@Query() query: TrialBalanceQueryDto) {
     return this.accounting.trialBalance(query);
+  }
+
+  /** Batches (cost layers) with stock left and an expiry date, soonest first; unit cost only with products:view-cost. */
+  @Get('batch-expiry')
+  @RequirePermission(Permission.REPORTS_ACCOUNTING)
+  batchExpiryReport(@Query() query: BatchExpiryQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.batchExpiry.report(query, user);
   }
 
   @Get('salesman-collections')

@@ -40,6 +40,10 @@ export class StockEntry {
   @Prop({ type: Number, default: null })
   unitCost: number | null;
 
+  /** What the voucher did to the FIFO layers alongside this entry (null on rows from before costing). */
+  @Prop({ type: String, default: null })
+  costing: string | null;
+
   /** The entry this one undoes. */
   @Prop({ type: Types.ObjectId, default: null })
   reversalOf: Types.ObjectId | null;

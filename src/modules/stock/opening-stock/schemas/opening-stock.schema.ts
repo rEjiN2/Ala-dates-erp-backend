@@ -16,8 +16,12 @@ export class OpeningStockLine {
   @Prop({ required: true })
   qty: number;
 
+  /** Per unit, before VAT: the FIFO layer's cost (required on new vouchers). */
   @Prop({ type: Number, default: null })
   unitCost: number | null;
+
+  @Prop({ type: Date, default: null })
+  expiryDate?: Date | null;
 }
 
 export const OpeningStockLineSchema = SchemaFactory.createForClass(OpeningStockLine);

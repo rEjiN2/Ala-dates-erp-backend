@@ -127,8 +127,8 @@ describe('VoucherPostingService (shared by receipts and payments)', () => {
 
   it('posts receipts and payments on opposite sides of the same accounts', async () => {
     const { a, line, receive, pay } = await setup();
-    const receipt = await receive(a.cash, [line(a.ali, 100)]);
-    const payment = await pay(a.cash, [line(a.ali, 100)], false);
+    const receipt = await receive(a.cash, [line(a.farms, 100)]);
+    const payment = await pay(a.cash, [line(a.farms, 100)], false);
     const sides = async (voucherId: Types.ObjectId) =>
       (await allEntries())
         .filter((entry) => entry.voucherId.equals(voucherId))
@@ -136,11 +136,11 @@ describe('VoucherPostingService (shared by receipts and payments)', () => {
 
     expect(await sides(receipt._id)).toEqual([
       [a.cash.id, 100, 0],
-      [a.ali.id, 0, 100],
+      [a.farms.id, 0, 100],
     ]);
     expect(await sides(payment._id)).toEqual([
       [a.cash.id, 0, 100],
-      [a.ali.id, 100, 0],
+      [a.farms.id, 100, 0],
     ]);
     expect(await h.balanceOf(a.cash)).toBe(0);
   });

@@ -22,6 +22,9 @@ import { SalesInvoiceService } from '../../sales/sales-invoices/sales-invoice.se
 import { SalesInvoice, SalesInvoiceSchema } from '../../sales/sales-invoices/schemas/sales-invoice.schema.js';
 import { PurchaseInvoiceService } from '../../purchase/purchase-invoices/purchase-invoice.service.js';
 import { PurchaseInvoice, PurchaseInvoiceSchema } from '../../purchase/purchase-invoices/schemas/purchase-invoice.schema.js';
+import { CostService } from '../../stock/costing/cost.service.js';
+import { CostLayer, CostLayerSchema } from '../../stock/costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from '../../stock/costing/schemas/layer-consumption.schema.js';
 import { StockService } from '../../stock/stock.service.js';
 import { StockEntry, StockEntrySchema } from '../../stock/schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from '../../stock/schemas/stock-balance.schema.js';
@@ -112,6 +115,8 @@ describe('Sales and purchase returns', () => {
     Allocation,
     StockEntry,
     StockBalance,
+    CostLayer,
+    LayerConsumption,
     Product,
     ProductGroup,
     Unit,
@@ -143,6 +148,7 @@ describe('Sales and purchase returns', () => {
         CashReceiptService,
         AllocationService,
         StockService,
+        CostService,
         ProductService,
         ProductUsageRegistry,
         VoucherPostingService,
@@ -290,7 +296,7 @@ describe('Sales and purchase returns', () => {
             locationId,
             qty,
             date: new Date('2026-03-01'),
-            voucherType: 'test',
+            voucherType: 'test', costing: 'none',
             voucherId: new Types.ObjectId(),
             voucherNo: 'T-1',
           },
@@ -773,6 +779,8 @@ const SCHEMAS = new Map<string, unknown>([
   [Allocation.name, AllocationSchema],
   [StockEntry.name, StockEntrySchema],
   [StockBalance.name, StockBalanceSchema],
+  [CostLayer.name, CostLayerSchema],
+  [LayerConsumption.name, LayerConsumptionSchema],
   [Product.name, ProductSchema],
   [ProductGroup.name, ProductGroupSchema],
   [Unit.name, UnitSchema],

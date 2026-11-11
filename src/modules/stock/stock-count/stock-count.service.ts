@@ -20,6 +20,7 @@ import {
   UpdateStockCountDto,
   ValidateStockCountDto,
 } from './dto/stock-count.dto.js';
+import { CostService } from '../costing/cost.service.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../stock.service.js';
 import { StockBalance, StockBalanceDocument } from '../schemas/stock-balance.schema.js';
 import { Product, ProductDocument, ProductStatus } from '../../product/products/schemas/product.schema.js';
@@ -99,6 +100,7 @@ export class StockCountService {
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     @InjectModel(StockBalance.name) private readonly balanceModel: Model<StockBalanceDocument>,
     private readonly stockService: StockService,
+    private readonly costService: CostService,
     private readonly productService: ProductService,
     private readonly sequenceService: SequenceService,
     private readonly auditService: AuditService,
@@ -352,6 +354,7 @@ export class StockCountService {
       existing.approvedBy = toUserSnapshot(actor);
       existing.approvedAt = now;
       await existing.save({ session });
+      await this.applyCosting(existing, now, session);
       await this.stockService.post(this.entriesOf(existing, now), actor, session);
       await this.record(existing, AuditAction.APPROVED, actor, now, session, {
         changes: [statusChange(StockCountStatus.SUBMITTED, StockCountStatus.APPROVED)],
@@ -392,6 +395,9 @@ export class StockCountService {
       }
       const from = existing.status;
       if (from === StockCountStatus.APPROVED) {
+        const subject = `${LABEL} ${existing.voucherNo}`;
+        await this.costService.removeLayers(STOCK_COUNT_ENTITY_TYPE, existing._id, subject, 'cancelled', session);
+        await this.costService.reverseAll({ voucherType: STOCK_COUNT_ENTITY_TYPE, voucherId: existing._id }, session);
         await this.stockService.post(
           await this.stockService.reversalsOf(STOCK_COUNT_ENTITY_TYPE, existing._id, session),
           actor,
@@ -576,16 +582,48 @@ export class StockCountService {
     };
   }
 
+  /** A shortage consumes FIFO; an excess adds a layer at the product's latest layer cost (else its purchase price). */
+  private async applyCosting(doc: StockCountDocument, date: Date, session: ClientSession): Promise<void> {
+    for (const line of doc.lines) {
+      const difference = roundQty((line.countedQty ?? 0) - line.snapshotQty);
+      if (difference < 0) {
+        await this.costService.consume(
+          line.productId,
+          -difference,
+          { voucherType: STOCK_COUNT_ENTITY_TYPE, voucherId: doc._id, voucherNo: doc.voucherNo, lineId: line.productId },
+          session,
+        );
+      } else if (difference > 0) {
+        await this.costService.addLayer(
+          {
+            productId: line.productId,
+            sourceType: STOCK_COUNT_ENTITY_TYPE,
+            sourceVoucherId: doc._id,
+            sourceLineId: line.productId,
+            date,
+            qty: difference,
+            unitCost: await this.costService.latestCost(line.productId, session),
+          },
+          session,
+        );
+      }
+    }
+  }
+
   private entriesOf(doc: StockCountDocument, date: Date): StockEntryInput[] {
-    return doc.lines.map((line) => ({
-      productId: line.productId,
-      locationId: doc.locationId,
-      qty: roundQty((line.countedQty ?? 0) - line.snapshotQty),
-      date,
-      voucherType: STOCK_COUNT_ENTITY_TYPE,
-      voucherId: doc._id,
-      voucherNo: doc.voucherNo,
-    }));
+    return doc.lines.map((line) => {
+      const qty = roundQty((line.countedQty ?? 0) - line.snapshotQty);
+      return {
+        productId: line.productId,
+        locationId: doc.locationId,
+        qty,
+        date,
+        voucherType: STOCK_COUNT_ENTITY_TYPE,
+        voucherId: doc._id,
+        voucherNo: doc.voucherNo,
+        costing: qty > 0 ? ('layer-add' as const) : qty < 0 ? ('consume' as const) : ('none' as const),
+      };
+    });
   }
 
   /** Current balances at a location, by product id. */

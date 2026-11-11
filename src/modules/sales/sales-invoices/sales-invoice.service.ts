@@ -22,6 +22,7 @@ import {
   SalesInvoiceQueryDto,
   UpdateSalesInvoiceDto,
 } from './dto/sales-invoice.dto.js';
+import { CostService } from '../../stock/costing/cost.service.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../../stock/stock.service.js';
 import { Product, ProductDocument, ProductStatus } from '../../product/products/schemas/product.schema.js';
 import { ProductUsageRegistry } from '../../product/products/product-usage.registry.js';
@@ -109,6 +110,7 @@ export class SalesInvoiceService {
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     @InjectModel(CashReceipt.name) private readonly receiptModel: Model<CashReceiptDocument>,
     private readonly stockService: StockService,
+    private readonly costService: CostService,
     private readonly posting: VoucherPostingService,
     private readonly ledgerAccountService: LedgerAccountService,
     private readonly sequenceService: SequenceService,
@@ -259,7 +261,11 @@ export class SalesInvoiceService {
   view(doc: SalesInvoiceDocument, viewer: Viewer) {
     const plain = doc.toObject();
     if (hasPermission(viewer, Permission.PRODUCTS_VIEW_COST)) return plain;
-    return { ...plain, lines: plain.lines.map(({ unitCost: _unitCost, ...line }) => line) };
+    const { costTotal: _costTotal, margin: _margin, ...invoice } = plain;
+    return {
+      ...invoice,
+      lines: plain.lines.map(({ unitCost: _unitCost, costAmount: _costAmount, uncosted: _uncosted, ...line }) => line),
+    };
   }
 
   async create(dto: CreateSalesInvoiceDto, actor: Viewer): Promise<SalesInvoiceDocument> {
@@ -300,6 +306,7 @@ export class SalesInvoiceService {
         { session },
       );
       await this.postLedger(created, LedgerEntryKind.POSTING, 'created', session);
+      await this.consumeCosts(created, session);
       await this.stockService.post(await this.stockEntriesOf(created, session), actor, session);
       await this.assertCredit(customer, paid, actor, dto.acknowledgeCredit, session);
       await this.record(created, AuditAction.CREATED, actor, now, session);
@@ -366,8 +373,6 @@ export class SalesInvoiceService {
         dto.lines !== undefined,
         session,
       );
-      // Lines kept as they were keep their cost snapshot.
-      if (!dto.lines) next.lines.forEach((line, index) => (line.unitCost = existing.lines[index].unitCost));
       const customer = (await this.partyModel.findById(next.customerId).session(session).exec())!;
       if (customer.systemKey === CASH_CUSTOMER_KEY) {
         throw new BadRequestException(`Sales to ${customer.name} must be paid in full at sale; cancel and re-enter instead`);
@@ -384,6 +389,7 @@ export class SalesInvoiceService {
       }
 
       const stockReversals = await this.stockService.reversalsOf(SALES_INVOICE_ENTITY_TYPE, existing._id, session);
+      await this.costService.reverseAll({ voucherType: SALES_INVOICE_ENTITY_TYPE, voucherId: existing._id }, session);
       await this.postLedger(existing, LedgerEntryKind.REVERSAL, 'updated', session);
       const now = new Date();
       existing.set({
@@ -396,6 +402,7 @@ export class SalesInvoiceService {
       });
       await existing.save({ session });
       await this.postLedger(existing, LedgerEntryKind.POSTING, 'updated', session);
+      await this.consumeCosts(existing, session);
       await this.stockService.post([...stockReversals, ...(await this.stockEntriesOf(existing, session))], actor, session);
       await this.assertCredit(customer, 0, actor, dto.acknowledgeCredit, session);
       await this.record(existing, AuditAction.UPDATED, actor, now, session, { changes, reason: dto.changeNote });
@@ -447,6 +454,7 @@ export class SalesInvoiceService {
         session,
         { strict: true },
       );
+      await this.costService.reverseAll({ voucherType: SALES_INVOICE_ENTITY_TYPE, voucherId: existing._id }, session);
       await this.postLedger(existing, LedgerEntryKind.REVERSAL, 'cancelled', session);
       const now = new Date();
       existing.status = VoucherStatus.CANCELLED;
@@ -600,7 +608,7 @@ export class SalesInvoiceService {
 
     const products = await this.productModel
       .find({ _id: { $in: input.lines.map((line) => asId(line.productId, 'product')) } })
-      .select('code name status salePrice purchasePrice vatRate')
+      .select('code name status salePrice vatRate')
       .session(session)
       .lean()
       .exec();
@@ -643,7 +651,8 @@ export class SalesInvoiceService {
         vatRate,
         vat,
         netAmount: round2(amount + vat),
-        unitCost: product.purchasePrice ?? 0,
+        unitCost: 0,
+        costAmount: 0,
       };
     });
 
@@ -721,15 +730,42 @@ export class SalesInvoiceService {
     );
   }
 
-  /** Stock-out per stock/bundle line at the cost snapshot; non-stock lines post accounts only. */
-  private async stockEntriesOf(doc: SalesInvoiceDocument, session: ClientSession): Promise<StockEntryInput[]> {
+  private async stockedIdsOf(doc: SalesInvoiceDocument, session: ClientSession): Promise<Set<string>> {
     const stocked = await this.productModel
       .find({ _id: { $in: doc.lines.map((line) => line.productId) }, type: { $in: STOCK_PRODUCT_TYPES } })
       .select('_id')
       .session(session)
       .lean()
       .exec();
-    const stockedIds = new Set(stocked.map((product) => product._id.toString()));
+    return new Set(stocked.map((product) => product._id.toString()));
+  }
+
+  /**
+   * Takes each stock/bundle line from the FIFO layers and stores its cost on
+   * the line, plus costTotal and margin on the invoice. Non-stock lines cost nothing.
+   */
+  private async consumeCosts(doc: SalesInvoiceDocument, session: ClientSession): Promise<void> {
+    const stockedIds = await this.stockedIdsOf(doc, session);
+    for (const line of doc.lines) {
+      if (!stockedIds.has(line.productId.toString())) continue;
+      const cost = await this.costService.consume(
+        line.productId,
+        line.qty,
+        { voucherType: SALES_INVOICE_ENTITY_TYPE, voucherId: doc._id, voucherNo: doc.voucherNo, lineId: line._id },
+        session,
+      );
+      line.unitCost = cost.avgUnitCost;
+      line.costAmount = cost.totalCost;
+      line.uncosted = cost.uncosted;
+    }
+    doc.costTotal = sum2(doc.lines.map((line) => line.costAmount));
+    doc.margin = round2(doc.taxableTotal - doc.costTotal);
+    await doc.save({ session });
+  }
+
+  /** Stock-out per stock/bundle line; non-stock lines post accounts only. */
+  private async stockEntriesOf(doc: SalesInvoiceDocument, session: ClientSession): Promise<StockEntryInput[]> {
+    const stockedIds = await this.stockedIdsOf(doc, session);
     return doc.lines
       .filter((line) => stockedIds.has(line.productId.toString()))
       .map((line) => ({
@@ -741,6 +777,7 @@ export class SalesInvoiceService {
         voucherId: doc._id,
         voucherNo: doc.voucherNo,
         unitCost: line.unitCost,
+        costing: 'consume' as const,
       }));
   }
 

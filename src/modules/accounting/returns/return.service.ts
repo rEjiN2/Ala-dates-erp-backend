@@ -7,6 +7,7 @@ import { PURCHASE_RETURN_ENTITY_TYPE, SALES_RETURN_ENTITY_TYPE, type ReturnDocum
 import type { RefundReturnDto, ReturnQueryDto } from './dto/return.dto.js';
 import { CashPayment } from '../cash-payments/schemas/cash-payment.schema.js';
 import { CashReceipt } from '../cash-receipts/schemas/cash-receipt.schema.js';
+import { CostService } from '../../stock/costing/cost.service.js';
 import { STOCK_PRODUCT_TYPES, StockService, roundQty, stockLocationScope, type StockEntryInput } from '../../stock/stock.service.js';
 import { Product, ProductDocument } from '../../product/products/schemas/product.schema.js';
 import { Party, PartyDocument } from '../../party/schemas/party.schema.js';
@@ -121,6 +122,7 @@ export class ReturnService {
     @InjectModel(Party.name) private readonly partyModel: Model<PartyDocument>,
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     private readonly stockService: StockService,
+    private readonly costService: CostService,
     private readonly posting: VoucherPostingService,
     private readonly ledgerAccountService: LedgerAccountService,
     private readonly sequenceService: SequenceService,
@@ -285,6 +287,7 @@ export class ReturnService {
       applyReturned(invoice, prepared.lines, prepared.netTotal, 1);
       await invoice.save({ session });
       await this.postLedger(def, created, LedgerEntryKind.POSTING, 'created', session);
+      await this.applyCosting(def, created, session);
       await this.stockService.post(await this.stockEntriesOf(def, created, session), actor, session, {
         strict: def.stockDirection === 'in',
       });
@@ -344,12 +347,14 @@ export class ReturnService {
       applyReturned(invoice, prepared.lines, prepared.netTotal, 1);
       await invoice.save({ session });
 
+      await this.undoCosting(def, existing, 'edited', session);
       const stockReversals = await this.stockService.reversalsOf(def.entityType, existing._id, session);
       await this.postLedger(def, existing, LedgerEntryKind.REVERSAL, 'updated', session);
       const now = new Date();
       existing.set({ ...prepared, autoAllocationId: null, updatedBy: toUserSnapshot(actor), updatedAt: now });
       await existing.save({ session });
       await this.postLedger(def, existing, LedgerEntryKind.POSTING, 'updated', session);
+      await this.applyCosting(def, existing, session);
       await this.stockService.post([...stockReversals, ...(await this.stockEntriesOf(def, existing, session))], actor, session, {
         strict: def.stockDirection === 'in',
       });
@@ -384,6 +389,7 @@ export class ReturnService {
         actor,
         session,
       );
+      await this.undoCosting(def, existing, 'cancelled', session);
       await this.stockService.post(await this.stockService.reversalsOf(def.entityType, existing._id, session), actor, session, {
         strict: def.stockDirection === 'in',
       });
@@ -774,8 +780,79 @@ export class ReturnService {
     );
   }
 
+  /**
+   * Sales: restocked lines go back into the layers the invoice line consumed
+   * (any part with no layer to return to becomes a new layer at the line's
+   * cost); no restock leaves the cost consumed. Purchase: each line consumes
+   * its own bought layer first, then the oldest, and is refused if too little remains.
+   */
+  private async applyCosting(def: ReturnDefinition, doc: ReturnDocument, session: ClientSession): Promise<void> {
+    for (const line of await this.stockedLines(def, doc, session)) {
+      if (def.stockDirection === 'in') {
+        const restored = await this.costService.restore(
+          { voucherType: def.invoiceEntityType, voucherId: doc.invoiceId, lineId: line.invoiceLineId },
+          line.qty,
+          session,
+          { voucherType: def.entityType, voucherId: doc._id },
+        );
+        const rest = roundQty(line.qty - restored.qty);
+        if (rest > 0) {
+          await this.costService.addLayer(
+            {
+              productId: line.productId,
+              sourceType: def.entityType,
+              sourceVoucherId: doc._id,
+              sourceLineId: line.invoiceLineId,
+              date: doc.voucherDate,
+              qty: rest,
+              unitCost: line.unitCost ?? 0,
+            },
+            session,
+          );
+        }
+      } else {
+        await this.costService.consume(
+          line.productId,
+          line.qty,
+          { voucherType: def.entityType, voucherId: doc._id, voucherNo: doc.voucherNo, lineId: line.invoiceLineId },
+          session,
+          {
+            preferSource: { sourceType: def.invoiceEntityType, sourceVoucherId: doc.invoiceId, sourceLineId: line.invoiceLineId },
+            strict: true,
+          },
+        );
+      }
+    }
+  }
+
+  /** Takes back what applyCosting did (edit or cancel); a sales return whose goods were used since is refused. */
+  private async undoCosting(def: ReturnDefinition, doc: ReturnDocument, action: string, session: ClientSession): Promise<void> {
+    const subject = `${def.label} ${doc.voucherNo}`;
+    if (def.stockDirection === 'in') {
+      await this.costService.unrestore({ voucherType: def.entityType, voucherId: doc._id }, subject, action, session);
+      await this.costService.removeLayers(def.entityType, doc._id, subject, action, session);
+    } else {
+      await this.costService.reverseAll({ voucherType: def.entityType, voucherId: doc._id }, session);
+    }
+  }
+
   /** Stock per stock/bundle line at the location: restocked lines in (sales), every line out (purchase). */
   private async stockEntriesOf(def: ReturnDefinition, doc: ReturnDocument, session: ClientSession): Promise<StockEntryInput[]> {
+    const into = def.stockDirection === 'in';
+    return (await this.stockedLines(def, doc, session)).map((line) => ({
+      productId: line.productId,
+      locationId: doc.locationId,
+      qty: into ? line.qty : -line.qty,
+      date: doc.voucherDate,
+      voucherType: def.entityType,
+      voucherId: doc._id,
+      voucherNo: doc.voucherNo,
+      unitCost: line.unitCost,
+      costing: into ? ('restore' as const) : ('consume' as const),
+    }));
+  }
+
+  private async stockedLines(def: ReturnDefinition, doc: ReturnDocument, session: ClientSession): Promise<ReturnLine[]> {
     const stocked = await this.productModel
       .find({ _id: { $in: doc.lines.map((line) => line.productId) }, type: { $in: STOCK_PRODUCT_TYPES } })
       .select('_id')
@@ -784,18 +861,7 @@ export class ReturnService {
       .exec();
     const stockedIds = new Set(stocked.map((product) => product._id.toString()));
     const into = def.stockDirection === 'in';
-    return doc.lines
-      .filter((line) => stockedIds.has(line.productId.toString()) && (!into || line.restock))
-      .map((line) => ({
-        productId: line.productId,
-        locationId: doc.locationId,
-        qty: into ? line.qty : -line.qty,
-        date: doc.voucherDate,
-        voucherType: def.entityType,
-        voucherId: doc._id,
-        voucherNo: doc.voucherNo,
-        unitCost: line.unitCost,
-      }));
+    return doc.lines.filter((line) => stockedIds.has(line.productId.toString()) && (!into || line.restock));
   }
 
   /** Field diff for the audit: header fields by display value, and each product's line. */

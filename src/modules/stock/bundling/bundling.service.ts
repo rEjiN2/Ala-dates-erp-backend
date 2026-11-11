@@ -18,6 +18,7 @@ import {
   CreateBundlingDto,
   SetRecipeDto,
 } from './dto/bundling.dto.js';
+import { CostService, type CostRef } from '../costing/cost.service.js';
 import { StockService, roundQty, stockLocationScope, type StockEntryInput } from '../stock.service.js';
 import { StockBalance, StockBalanceDocument } from '../schemas/stock-balance.schema.js';
 import {
@@ -71,6 +72,7 @@ export class BundlingService {
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     @InjectModel(StockBalance.name) private readonly balanceModel: Model<StockBalanceDocument>,
     private readonly stockService: StockService,
+    private readonly costService: CostService,
     private readonly companyService: CompanyService,
     private readonly sequenceService: SequenceService,
     private readonly auditService: AuditService,
@@ -315,7 +317,7 @@ export class BundlingService {
           unitCost: info.get(component.productId.toString())?.cost ?? 0,
         })),
       };
-      const costPerUnit = round2(
+      let costPerUnit = round2(
         snapshot.components.reduce((sum, component) => sum + component.unitCost * component.qty, 0) +
           snapshot.extraCostPerUnit,
       );
@@ -345,6 +347,8 @@ export class BundlingService {
         ],
         { session },
       );
+      await this.applyCosting(created, session);
+      costPerUnit = created.costPerUnit;
       await this.stockService.post(this.entriesOf(created), actor, session);
       await this.record(created, AuditAction.CREATED, actor, now, session);
 
@@ -391,6 +395,8 @@ export class BundlingService {
       if (existing.status === VoucherStatus.CANCELLED) {
         throw new BadRequestException(`${LABEL} ${existing.voucherNo} is cancelled and cannot be cancelled again`);
       }
+      await this.costService.removeLayers(BUNDLING_ENTITY_TYPE, existing._id, `${LABEL} ${existing.voucherNo}`, 'undone', session);
+      await this.costService.reverseAll({ voucherType: BUNDLING_ENTITY_TYPE, voucherId: existing._id }, session);
       try {
         await this.stockService.post(
           await this.stockService.reversalsOf(BUNDLING_ENTITY_TYPE, existing._id, session),
@@ -485,6 +491,44 @@ export class BundlingService {
 
   // ---- internals ----
 
+  /**
+   * Bundle: components are consumed FIFO and the bundle layer costs their
+   * consumed cost / qty + extraCostPerUnit (expiry = the earliest batch used).
+   * Unbundle: the bundle's layers are consumed and each component comes back
+   * as a new layer at its latest layer cost. Fills in the actual costs on the doc.
+   */
+  private async applyCosting(doc: BundlingDocument, session: ClientSession): Promise<void> {
+    const ref = (lineId: Types.ObjectId): CostRef => ({ voucherType: BUNDLING_ENTITY_TYPE, voucherId: doc._id, voucherNo: doc.voucherNo, lineId });
+    if (doc.mode === BundlingMode.BUNDLE) {
+      let total = 0;
+      let expiry: Date | null = null;
+      for (const component of doc.recipeSnapshot.components) {
+        const qty = roundQty(component.qty * doc.qty);
+        const cost = await this.costService.consume(component.productId, qty, ref(component.productId), session);
+        component.unitCost = cost.avgUnitCost;
+        total += cost.totalCost;
+        for (const used of cost.consumptions) {
+          if (used.expiryDate && (!expiry || used.expiryDate < expiry)) expiry = used.expiryDate;
+        }
+      }
+      doc.costPerUnit = Math.round((total / doc.qty + doc.recipeSnapshot.extraCostPerUnit) * 10000) / 10000;
+      await this.costService.addLayer(
+        { productId: doc.bundleProductId, sourceType: BUNDLING_ENTITY_TYPE, sourceVoucherId: doc._id, date: doc.date, qty: doc.qty, unitCost: doc.costPerUnit, expiryDate: expiry },
+        session,
+      );
+    } else {
+      doc.costPerUnit = (await this.costService.consume(doc.bundleProductId, doc.qty, ref(doc.bundleProductId), session)).avgUnitCost;
+      for (const component of doc.recipeSnapshot.components) {
+        component.unitCost = await this.costService.latestCost(component.productId, session);
+        await this.costService.addLayer(
+          { productId: component.productId, sourceType: BUNDLING_ENTITY_TYPE, sourceVoucherId: doc._id, date: doc.date, qty: roundQty(component.qty * doc.qty), unitCost: component.unitCost },
+          session,
+        );
+      }
+    }
+    await doc.save({ session });
+  }
+
   /** Bundle: components out, bundle in. Unbundle: the bundle out, components in. */
   private entriesOf(doc: BundlingDocument): StockEntryInput[] {
     const base = {
@@ -501,8 +545,15 @@ export class BundlingService {
         productId: component.productId,
         qty: sign * roundQty(component.qty * doc.qty),
         unitCost: component.unitCost,
+        costing: sign === -1 ? ('consume' as const) : ('layer-add' as const),
       })),
-      { ...base, productId: doc.bundleProductId, qty: -sign * doc.qty, unitCost: doc.costPerUnit },
+      {
+        ...base,
+        productId: doc.bundleProductId,
+        qty: -sign * doc.qty,
+        unitCost: doc.costPerUnit,
+        costing: sign === -1 ? ('layer-add' as const) : ('consume' as const),
+      },
     ];
   }
 

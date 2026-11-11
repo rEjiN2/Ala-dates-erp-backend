@@ -21,6 +21,9 @@ import { BundlingController } from './bundling/bundling.controller.js';
 import { StockTransfer, StockTransferSchema } from './transfers/schemas/stock-transfer.schema.js';
 import { StockTransferService } from './transfers/stock-transfer.service.js';
 import { StockTransferController } from './transfers/stock-transfer.controller.js';
+import { CostLayer, CostLayerSchema } from './costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from './costing/schemas/layer-consumption.schema.js';
+import { CostService } from './costing/cost.service.js';
 import { InTransitRegistry } from './pending-receipt.js';
 import { ProductsModule } from '../product/products/products.module.js';
 import { CompanyModule } from '../company/company.module.js';
@@ -39,6 +42,8 @@ import { CommentsModule } from '../comments/comments.module.js';
       { name: BundleRecipe.name, schema: BundleRecipeSchema },
       { name: Bundling.name, schema: BundlingSchema },
       { name: StockTransfer.name, schema: StockTransferSchema },
+      { name: CostLayer.name, schema: CostLayerSchema },
+      { name: LayerConsumption.name, schema: LayerConsumptionSchema },
       { name: Product.name, schema: ProductSchema },
       { name: Unit.name, schema: UnitSchema },
       { name: ProductGroup.name, schema: ProductGroupSchema },
@@ -51,7 +56,7 @@ import { CommentsModule } from '../comments/comments.module.js';
     CommentsModule,
   ],
   controllers: [StockController, OpeningStockController, StockCountController, BundlingController, StockTransferController],
-  providers: [StockService, OpeningStockService, StockCountService, BundlingService, StockTransferService, InTransitRegistry],
-  exports: [StockService, InTransitRegistry],
+  providers: [StockService, OpeningStockService, StockCountService, BundlingService, StockTransferService, InTransitRegistry, CostService],
+  exports: [StockService, InTransitRegistry, CostService],
 })
 export class StockModule {}

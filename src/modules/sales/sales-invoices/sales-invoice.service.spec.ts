@@ -9,6 +9,9 @@ import { SalesInvoiceService } from './sales-invoice.service.js';
 import { SalesInvoiceController } from './sales-invoice.controller.js';
 import { SalesInvoice, SalesInvoiceSchema } from './schemas/sales-invoice.schema.js';
 import { PurchaseInvoice, PurchaseInvoiceSchema } from '../../purchase/purchase-invoices/schemas/purchase-invoice.schema.js';
+import { CostService } from '../../stock/costing/cost.service.js';
+import { CostLayer, CostLayerSchema } from '../../stock/costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from '../../stock/costing/schemas/layer-consumption.schema.js';
 import { StockService } from '../../stock/stock.service.js';
 import { StockEntry, StockEntrySchema } from '../../stock/schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from '../../stock/schemas/stock-balance.schema.js';
@@ -81,6 +84,8 @@ describe('Sales invoices', () => {
     Allocation,
     StockEntry,
     StockBalance,
+    CostLayer,
+    LayerConsumption,
     Product,
     ProductGroup,
     Unit,
@@ -105,6 +110,8 @@ describe('Sales invoices', () => {
           { name: CashReceipt.name, schema: CashReceiptSchema },
           { name: StockEntry.name, schema: StockEntrySchema },
           { name: StockBalance.name, schema: StockBalanceSchema },
+          { name: CostLayer.name, schema: CostLayerSchema },
+          { name: LayerConsumption.name, schema: LayerConsumptionSchema },
           { name: Product.name, schema: ProductSchema },
           { name: ProductGroup.name, schema: ProductGroupSchema },
           { name: Unit.name, schema: UnitSchema },
@@ -127,6 +134,7 @@ describe('Sales invoices', () => {
         CashReceiptService,
         AllocationService,
         StockService,
+        CostService,
         ProductService,
         ProductUsageRegistry,
         VoucherPostingService,
@@ -254,7 +262,7 @@ describe('Sales invoices', () => {
     // 50 in the van.
     await runInTransaction(moduleRef.get<Connection>(getConnectionToken()), (session) =>
       stock.post(
-        [{ productId: ajwa._id, locationId: van._id, qty: 50, date: new Date('2026-03-01'), voucherType: 'test-in', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
+        [{ productId: ajwa._id, locationId: van._id, qty: 50, date: new Date('2026-03-01'), voucherType: 'test-in', costing: 'none', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
         admin,
         session,
       ),
@@ -313,6 +321,35 @@ describe('Sales invoices', () => {
     expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.SALES.key))).toBe(-210);
     expect(await balanceOf(await systemAccount(SYSTEM_ACCOUNTS.VAT_OUTPUT.key))).toBe(-10);
     await expectBalancesMatchEntries();
+  });
+
+  it('costs a sale from the oldest layers, stores cost and margin, and cancel restores the same layers', async () => {
+    const f = await fixtures();
+    const cost = moduleRef.get(CostService);
+    const layers = model<{ qtyRemaining: number }>(CostLayer.name);
+    await runInTransaction(moduleRef.get<Connection>(getConnectionToken()), async (session) => {
+      await cost.addLayer({ productId: f.ajwa._id, sourceType: 'purchase-invoice', sourceVoucherId: new Types.ObjectId(), date: new Date('2026-01-01'), qty: 4, unitCost: 10 }, session);
+      await cost.addLayer({ productId: f.ajwa._id, sourceType: 'purchase-invoice', sourceVoucherId: new Types.ObjectId(), date: new Date('2026-02-01'), qty: 46, unitCost: 12 }, session);
+    });
+
+    // 10 at 20 = 200 (+ delivery 10): costs 4 x 10 + 6 x 12 = 112.
+    const invoice = await invoices.create(input(f), admin);
+    expect(invoice.lines[0]).toMatchObject({ costAmount: 112, unitCost: 11.2, uncosted: false });
+    expect(invoice.lines[1]).toMatchObject({ costAmount: 0 });
+    expect(invoice).toMatchObject({ costTotal: 112, margin: 98 });
+    expect((await layers.find().sort({ qtyRemaining: 1 }).lean().exec()).map((l) => l.qtyRemaining)).toEqual([0, 40]);
+    expect(await cost.reconcile()).toEqual([]);
+
+    const edited = await invoices.update(invoice._id.toString(), { lines: [{ productId: f.ajwa._id.toString(), qty: 5 }] }, admin);
+    expect(edited).toMatchObject({ costTotal: 52, margin: 48 });  // 4 x 10 + 1 x 12 on 100
+
+    await invoices.cancel(invoice._id.toString(), { reason: 'Wrong customer' }, admin);
+    expect((await layers.find().sort({ qtyRemaining: 1 }).lean().exec()).map((l) => l.qtyRemaining)).toEqual([4, 46]);
+    expect(await cost.reconcile()).toEqual([]);
+
+    expect(invoices.view(invoice, f.salesman)).not.toHaveProperty('margin');
+    expect(invoices.view(invoice, f.salesman).lines[0]).not.toHaveProperty('costAmount');
+    expect(invoices.view(invoice, admin)).toHaveProperty('margin');
   });
 
   it('pay-now cash lands in the salesman cash account and shows Paid', async () => {

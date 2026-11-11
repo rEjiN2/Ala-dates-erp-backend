@@ -5,6 +5,9 @@ import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongo
 import { Types, type Connection, type Model } from 'mongoose';
 import request from 'supertest';
 import { mongooseTestRoot } from '../../../../test/mongo-test-db.js';
+import { CostService } from '../costing/cost.service.js';
+import { CostLayer, CostLayerSchema } from '../costing/schemas/cost-layer.schema.js';
+import { LayerConsumption, LayerConsumptionSchema } from '../costing/schemas/layer-consumption.schema.js';
 import { StockService } from '../stock.service.js';
 import { StockEntry, StockEntrySchema } from '../schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from '../schemas/stock-balance.schema.js';
@@ -60,6 +63,8 @@ describe('Stock count', () => {
         MongooseModule.forFeature([
           { name: StockEntry.name, schema: StockEntrySchema },
           { name: StockBalance.name, schema: StockBalanceSchema },
+          { name: CostLayer.name, schema: CostLayerSchema },
+          { name: LayerConsumption.name, schema: LayerConsumptionSchema },
           { name: StockCount.name, schema: StockCountSchema },
           { name: Product.name, schema: ProductSchema },
           { name: ProductGroup.name, schema: ProductGroupSchema },
@@ -73,6 +78,7 @@ describe('Stock count', () => {
       controllers: [StockCountController],
       providers: [
         StockService,
+        CostService,
         StockCountService,
         ProductService,
         ProductUsageRegistry,
@@ -98,7 +104,7 @@ describe('Stock count', () => {
     await app.init();
     counts = moduleRef.get(StockCountService);
     stock = moduleRef.get(StockService);
-    await Promise.all([StockEntry, StockBalance, StockCount, Product, Location, Counter, AuditLog].map((m) => model(m.name).init()));
+    await Promise.all([StockEntry, StockBalance, CostLayer, LayerConsumption, StockCount, Product, Location, Counter, AuditLog].map((m) => model(m.name).init()));
   }, 120_000);
 
   afterAll(async () => {
@@ -138,7 +144,7 @@ describe('Stock count', () => {
   const move = (productId: Types.ObjectId, locationId: Types.ObjectId, qty: number, voucherNo = 'T-1') =>
     runInTransaction(moduleRef.get<Connection>(getConnectionToken()), (session) =>
       stock.post(
-        [{ productId, locationId, qty, date: new Date('2026-02-01'), voucherType: 'test', voucherId: new Types.ObjectId(), voucherNo }],
+        [{ productId, locationId, qty, date: new Date('2026-02-01'), voucherType: 'test', costing: 'none', voucherId: new Types.ObjectId(), voucherNo }],
         approver,
         session,
       ),

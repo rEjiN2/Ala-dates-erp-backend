@@ -125,7 +125,7 @@ describe('StockTransfer', () => {
   const move = (productId: Types.ObjectId, locationId: Types.ObjectId, qty: number) =>
     runInTransaction(moduleRef.get<Connection>(getConnectionToken()), (session) =>
       stock.post(
-        [{ productId, locationId, qty, date: new Date('2026-02-01'), voucherType: 'test', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
+        [{ productId, locationId, qty, date: new Date('2026-02-01'), voucherType: 'test', costing: 'none', voucherId: new Types.ObjectId(), voucherNo: 'T-1' }],
         admin,
         session,
       ),
@@ -280,6 +280,8 @@ describe('StockTransfer', () => {
     // Badge: Ali can receive only the one into his van (not the one he sent, not the one into van 2).
     expect(await transfers.toReceiveCount(ali)).toEqual({ count: 1 });
     expect(await transfers.toReceiveCount(admin)).toEqual({ count: 3 });
+    expect((await transfers.findAll({ receivableByMe: true }, ali)).items).toHaveLength(1);
+    expect((await transfers.findAll({ receivableByMe: true }, admin)).items).toHaveLength(3);
     await expect(transfers.receive(toOffice.id, {}, ali)).rejects.toThrow(/you sent/);
     await expect(transfers.receive(toVan2.id, {}, ali)).rejects.toThrow(/may not receive stock into/);
     await transfers.receive(fromOffice.id, {}, ali);

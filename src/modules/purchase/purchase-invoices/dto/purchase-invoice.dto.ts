@@ -44,6 +44,11 @@ export class PurchaseInvoiceLineDto {
   @Min(0)
   @Max(100)
   vatRate?: number;
+
+  /** Stock lines: the batch's expiry. */
+  @IsOptional()
+  @IsDateString()
+  expiryDate?: string | null;
 }
 
 export class CreatePurchaseInvoiceDto {

@@ -7,6 +7,9 @@ import { Location, LocationSchema } from '../location/schemas/location.schema.js
 import { LedgerAccountModule } from '../accounting/ledger-accounts/ledger-account.module.js';
 import { LedgerEntry, LedgerEntrySchema } from '../accounting/vouchers/schemas/ledger-entry.schema.js';
 import { LedgerAccount, LedgerAccountSchema } from '../accounting/ledger-accounts/schemas/ledger-account.schema.js';
+import { CostLayer, CostLayerSchema } from '../stock/costing/schemas/cost-layer.schema.js';
+import { Product, ProductSchema } from '../product/products/schemas/product.schema.js';
+import { BatchExpiryService } from './batch-expiry.service.js';
 import { CompanyModule } from '../company/company.module.js';
 import { AccountingReportsService } from './accounting-reports.service.js';
 import { ReportService } from './report.service.js';
@@ -23,11 +26,13 @@ import { ReportsController } from './reports.controller.js';
       { name: Location.name, schema: LocationSchema },
       { name: LedgerEntry.name, schema: LedgerEntrySchema },
       { name: LedgerAccount.name, schema: LedgerAccountSchema },
+      { name: CostLayer.name, schema: CostLayerSchema },
+      { name: Product.name, schema: ProductSchema },
     ]),
     LedgerAccountModule,
     CompanyModule,
   ],
   controllers: [ReportsController],
-  providers: [SalesmanCollectionsService, ReportService, AccountingReportsService],
+  providers: [SalesmanCollectionsService, ReportService, AccountingReportsService, BatchExpiryService],
 })
 export class ReportsModule {}
