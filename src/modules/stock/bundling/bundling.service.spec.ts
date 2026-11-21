@@ -180,8 +180,10 @@ describe('Bundling', () => {
     await expect(set([{ productId: f.gift._id.toString(), qty: 1 }])).rejects.toThrow(/itself/);
     await expect(set([{ productId: f.service._id.toString(), qty: 1 }])).rejects.toThrow(/stock products/);
     await expect(
-      bundling.setRecipe(f.dates._id.toString(), { components: [{ productId: f.box._id.toString(), qty: 1 }], extraCostPerUnit: 0 }, admin),
-    ).rejects.toThrow(/not a bundle/);
+      bundling.setRecipe(f.service._id.toString(), { components: [{ productId: f.box._id.toString(), qty: 1 }], extraCostPerUnit: 0 }, admin),
+    ).rejects.toThrow(/cannot be bundled/);
+    // any stock product can be a bundle output
+    await bundling.setRecipe(f.dates._id.toString(), { components: [{ productId: f.box._id.toString(), qty: 1 }], extraCostPerUnit: 0 }, admin);
     await recipe(f);
     await expect(recipe(f)).rejects.toThrow(/No changes/);
     const changed = await set([{ productId: f.dates._id.toString(), qty: 3 }]);
@@ -307,7 +309,7 @@ describe('Bundling', () => {
       expect(result.bundling?.costPerUnit).toBe(23.5);
       expect(result.recipe?.version).toBe(1);
       const product = await model<Product>(Product.name).findById(result.product.id).lean();
-      expect(product?.type).toBe(ProductType.BUNDLE);
+      expect(product?.type).toBe(ProductType.STOCK);
       expect(await qtyOf(f.dates._id, f.wh._id)).toBe(80);
       expect(await qtyOf(new Types.ObjectId(result.product.id), f.wh._id)).toBe(10);
       const audit = await model<{ entityType: string }>(AuditLog.name).find({ correlationId: result.correlationId }).lean();

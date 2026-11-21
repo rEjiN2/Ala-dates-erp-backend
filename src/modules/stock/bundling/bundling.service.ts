@@ -70,6 +70,9 @@ interface ProductInfo {
  * transaction with its number and audit entry. No edit; cancel reverses
  * strictly. "own"-scoped users see and enter only their allowedLocationIds.
  */
+/** Any stock product can be a bundle output; the legacy 'bundle' type is still read as one. */
+const BUNDLE_OUTPUT_TYPES: readonly ProductType[] = [ProductType.STOCK, ProductType.BUNDLE];
+
 @Injectable()
 export class BundlingService {
   constructor(
@@ -284,7 +287,7 @@ export class BundlingService {
         const productGroupId = draft.productGroupId ?? (await this.defaultGroupId(session));
         try {
           product = await this.productService.createIn(
-            { ...draft, productGroupId, name: draft.name.trim(), type: ProductType.BUNDLE },
+            { ...draft, productGroupId, name: draft.name.trim(), type: ProductType.STOCK },
             actor,
             session,
             correlationId,
@@ -301,7 +304,7 @@ export class BundlingService {
         const found = await this.productModel.findById(dto.product.id).select('code name type status').session(session).lean().exec();
         if (!found) throw new NotFoundException({ message: `Product ${dto.product.id} not found`, field: 'product.id' });
         if (found.status !== ProductStatus.ACTIVE) throw fieldError(`${found.code} is inactive`, 'product.id');
-        if (found.type !== ProductType.BUNDLE && found.type !== ProductType.STOCK) {
+        if (!BUNDLE_OUTPUT_TYPES.includes(found.type)) {
           throw fieldError(`${found.code} is a ${found.type} product: it cannot be bundled`, 'product.id');
         }
         product = found;
@@ -337,7 +340,7 @@ export class BundlingService {
               },
               actor,
               session,
-              { correlationId, recipe: effective, allowStockOutput: true },
+              { correlationId, recipe: effective },
             )
           : null;
       const info = await this.productInfo(components.map((component) => component.productId), session);
@@ -373,7 +376,7 @@ export class BundlingService {
       await this.assertParts(dto.parts.map((part) => part.productId), dto.productId ?? '', 'parts');
       components = dto.parts.map((part) => ({ productId: new Types.ObjectId(part.productId), qty: roundQty(part.qtyPerBundle) }));
     } else if (dto.productId) {
-      const recipe = await this.recipeOf(new Types.ObjectId(dto.productId), undefined, true);
+      const recipe = await this.recipeOf(new Types.ObjectId(dto.productId));
       components = recipe.components;
       extra ??= recipe.extraCostPerUnit;
     } else {
@@ -434,7 +437,7 @@ export class BundlingService {
     if (term) {
       const pattern = new RegExp(escapeRegExp(term), 'i');
       const products = await this.productModel
-        .find({ type: ProductType.BUNDLE, $or: [{ name: pattern }, { code: pattern }] })
+        .find({ $or: [{ name: pattern }, { code: pattern }] })
         .select('_id')
         .lean()
         .exec();
@@ -508,11 +511,11 @@ export class BundlingService {
     dto: CreateBundlingDto,
     actor: Viewer,
     session: ClientSession,
-    options: { correlationId?: string; recipe?: RecipeLike; allowStockOutput?: boolean } = {},
+    options: { correlationId?: string; recipe?: RecipeLike } = {},
   ): Promise<BundlingDocument> {
     {
       const bundleId = new Types.ObjectId(dto.bundleProductId);
-      const recipe = options.recipe ?? (await this.recipeOf(bundleId, session, options.allowStockOutput));
+      const recipe = options.recipe ?? (await this.recipeOf(bundleId, session));
       await this.stockService.assertHoldsStock(
         [dto.bundleProductId, ...recipe.components.map((component) => component.productId.toString())],
         [dto.locationId],
@@ -771,7 +774,7 @@ export class BundlingService {
     ];
   }
 
-  private async recipeOf(bundleProductId: Types.ObjectId, session?: ClientSession, allowStockOutput = false) {
+  private async recipeOf(bundleProductId: Types.ObjectId, session?: ClientSession) {
     const product = await this.productModel
       .findById(bundleProductId)
       .select('code type')
@@ -779,8 +782,8 @@ export class BundlingService {
       .lean()
       .exec();
     if (!product) throw new NotFoundException(`Product ${bundleProductId.toString()} not found`);
-    if (product.type !== ProductType.BUNDLE && !(allowStockOutput && product.type === ProductType.STOCK)) {
-      throw new BadRequestException(`${product.code} is not a bundle product`);
+    if (!BUNDLE_OUTPUT_TYPES.includes(product.type)) {
+      throw new BadRequestException(`${product.code} is a ${product.type} product: it cannot be bundled`);
     }
     const recipe = await this.recipeModel
       .findOne({ bundleProductId })
@@ -795,7 +798,9 @@ export class BundlingService {
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException(`Product id "${id}" is not a valid id`);
     const product = await this.productModel.findById(id).select('code name type').lean().exec();
     if (!product) throw new NotFoundException(`Product ${id} not found`);
-    if (product.type !== ProductType.BUNDLE) throw new BadRequestException(`${product.code} is not a bundle product`);
+    if (!BUNDLE_OUTPUT_TYPES.includes(product.type)) {
+      throw new BadRequestException(`${product.code} is a ${product.type} product: it cannot be bundled`);
+    }
     return product;
   }
 

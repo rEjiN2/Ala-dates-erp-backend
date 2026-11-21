@@ -23,6 +23,8 @@ export class CreateProductDto {
   @IsMongoId()
   productGroupId: string;
 
+  // "bundle" is no longer offered: an old client sending it creates a stock product.
+  @Transform(({ value }) => (value === 'bundle' ? ProductType.STOCK : value))
   @IsEnum(ProductType)
   type: ProductType;
 

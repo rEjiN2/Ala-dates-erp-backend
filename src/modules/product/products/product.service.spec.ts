@@ -229,6 +229,16 @@ describe('Products (ProductService)', () => {
     await groupModel.updateOne({ _id: gifts._id }, { defaultUnitId: null, allowedUnitIds: [] });
   });
 
+  it('maps an incoming type "bundle" to stock and derives isBundle from a saved recipe', async () => {
+    asUser(ADMIN_PERMISSIONS);
+    const body = { name: 'Old client', productGroupId: ajwa.id, unitId: kg.id, type: 'bundle' };
+    const created = await request(app.getHttpServer()).post('/products').send(body).expect(201);
+    expect(created.body).toMatchObject({ type: 'stock', isBundle: false });
+    await moduleRef.get(getConnectionToken()).collection('bundle_recipes').insertOne({ bundleProductId: new Types.ObjectId(created.body.id) });
+    const again = await request(app.getHttpServer()).get(`/products/${created.body.id}`).expect(200);
+    expect(again.body.isBundle).toBe(true);
+  });
+
   it('audits a field diff including price changes and rejects a no-change edit', async () => {
     const product = await create({ name: 'Ajwa 1kg', salePrice: 85, purchasePrice: 60 });
     await service.update(product.id, { salePrice: 90, purchasePrice: 62, productGroupId: gifts.id }, admin);

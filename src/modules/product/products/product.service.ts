@@ -77,6 +77,8 @@ export interface ProductView {
   productGroupId: string;
   productGroup: { id: string; code: string; name: string } | null;
   type: ProductType;
+  /** Derived: the product has a saved bundle recipe. */
+  isBundle: boolean;
   unitId: string;
   unit: { id: string; name: string; symbol: string } | null;
   barcode: string | null;
@@ -539,6 +541,11 @@ export class ProductService {
       this.groupsById(products.map((product) => product.productGroupId)),
       this.unitsById(products.map((product) => product.unitId)),
     ]);
+    const recipes = await this.connection
+      .collection<{ bundleProductId: Types.ObjectId }>('bundle_recipes')
+      .find({ bundleProductId: { $in: products.map((product) => product._id) } }, { projection: { bundleProductId: 1 } })
+      .toArray();
+    const bundles = new Set(recipes.map((recipe) => recipe.bundleProductId.toString()));
     return products.map((product) => {
       const imageFileId = product.imageFileRef?.toString() ?? null;
       return {
@@ -548,6 +555,7 @@ export class ProductService {
         productGroupId: product.productGroupId.toString(),
         productGroup: groups.get(product.productGroupId.toString()) ?? null,
         type: product.type,
+        isBundle: bundles.has(product._id.toString()),
         unitId: product.unitId.toString(),
         unit: units.get(product.unitId.toString()) ?? null,
         barcode: product.barcode,
