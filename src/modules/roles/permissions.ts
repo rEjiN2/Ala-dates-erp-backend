@@ -56,6 +56,8 @@ export const Permission = {
   STOCK_TRANSFERS_CREATE: 'stock-transfers:create',
   /** Confirm what arrived at the destination. */
   STOCK_TRANSFERS_RECEIVE: 'stock-transfers:receive',
+  /** Receive a transfer into any location, not only the user's own. */
+  STOCK_TRANSFERS_RECEIVE_ANY: 'stock-transfers:receive-any',
   /** Cancel a transfer still in transit. */
   STOCK_TRANSFERS_CANCEL: 'stock-transfers:cancel',
   /** Define and change bundle recipes (PUT /products/:id/recipe). */

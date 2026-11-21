@@ -16,6 +16,14 @@ export class ProductGroup {
 
   @Prop({ type: Types.ObjectId, ref: 'ProductGroup', default: null, index: true })
   under: Types.ObjectId | null;
+
+  /** Unit a new product in this group gets when it names none. */
+  @Prop({ type: Types.ObjectId, ref: 'Unit', default: null })
+  defaultUnitId: Types.ObjectId | null;
+
+  /** When not empty, products in this group may only use these units. */
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'Unit' }], default: [] })
+  allowedUnitIds: Types.ObjectId[];
 }
 
 export const ProductGroupSchema = SchemaFactory.createForClass(ProductGroup);

@@ -42,6 +42,7 @@ export class ProductGroupService {
     }
 
     // Issued only after validation passes, so a rejected request burns no number.
+    assertUnitRules(dto.defaultUnitId, dto.allowedUnitIds);
     const code = await this.sequenceService.nextCode(PRODUCT_GROUP_CODE_SEQUENCE);
 
     try {
@@ -49,6 +50,8 @@ export class ProductGroupService {
         code,
         name: dto.name,
         under: underId ? new Types.ObjectId(underId) : null,
+        defaultUnitId: dto.defaultUnitId ? new Types.ObjectId(dto.defaultUnitId) : null,
+        allowedUnitIds: (dto.allowedUnitIds ?? []).map((unitId) => new Types.ObjectId(unitId)),
       });
     } catch (error) {
       throw this.toFriendlyError(error);
@@ -72,6 +75,13 @@ export class ProductGroupService {
     }
 
     if (dto.name !== undefined) existing.name = dto.name;
+    if (dto.defaultUnitId !== undefined || dto.allowedUnitIds !== undefined) {
+      const defaultUnit = dto.defaultUnitId !== undefined ? dto.defaultUnitId : existing.defaultUnitId?.toString();
+      const allowed = dto.allowedUnitIds ?? existing.allowedUnitIds.map(String);
+      assertUnitRules(defaultUnit, allowed);
+      existing.defaultUnitId = defaultUnit ? new Types.ObjectId(defaultUnit) : null;
+      existing.allowedUnitIds = allowed.map((unitId) => new Types.ObjectId(unitId));
+    }
     existing.under = nextUnderId ? new Types.ObjectId(nextUnderId) : null;
 
     try {
@@ -144,5 +154,12 @@ export class ProductGroupService {
 
   private isDuplicateKeyError(error: unknown): boolean {
     return typeof error === 'object' && error !== null && (error as { code?: number }).code === 11000;
+  }
+}
+
+/** A default unit must be one of the allowed units when an allow-list is set. */
+function assertUnitRules(defaultUnitId: string | null | undefined, allowedUnitIds: string[] | undefined): void {
+  if (defaultUnitId && allowedUnitIds?.length && !allowedUnitIds.includes(defaultUnitId)) {
+    throw new BadRequestException({ message: 'defaultUnitId must be one of allowedUnitIds', field: 'defaultUnitId' });
   }
 }

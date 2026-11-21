@@ -10,7 +10,9 @@ import {
   AvailabilityQueryDto,
   BundlingQueryDto,
   CancelBundlingDto,
+  ComposeBundlingDto,
   CreateBundlingDto,
+  PreviewBundlingDto,
   SetRecipeDto,
 } from './dto/bundling.dto.js';
 
@@ -65,6 +67,18 @@ export class BundlingController {
       length: printed.buffer.length,
       disposition: `inline; filename="${printed.filename}"`,
     });
+  }
+
+  /** Workspace: product + recipe + bundling in one transaction. Permissions are checked per step in the service. */
+  @Post('bundlings/compose')
+  compose(@Body() dto: ComposeBundlingDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bundlingService.compose(dto, user);
+  }
+
+  @Post('bundlings/preview')
+  @RequirePermission(Permission.BUNDLING_READ)
+  preview(@Body() dto: PreviewBundlingDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bundlingService.preview(dto, user);
   }
 
   @Post('bundlings')

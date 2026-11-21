@@ -350,6 +350,7 @@ export class SalesInvoiceService {
         ],
         { session },
       );
+      await this.assertLinesAvailable(prepared, [], session);
       await this.postLedger(created, LedgerEntryKind.POSTING, 'created', session);
       await this.consumeCosts(created, session);
       await this.stockService.post(await this.stockEntriesOf(created, session), actor, session);
@@ -438,6 +439,7 @@ export class SalesInvoiceService {
       }
 
       const stockReversals = await this.stockService.reversalsOf(SALES_INVOICE_ENTITY_TYPE, existing._id, session);
+      await this.assertLinesAvailable(next, stockReversals, session);
       await this.costService.reverseAll({ voucherType: SALES_INVOICE_ENTITY_TYPE, voucherId: existing._id }, session);
       await this.postLedger(existing, LedgerEntryKind.REVERSAL, 'updated', session);
       const now = new Date();
@@ -912,6 +914,41 @@ export class SalesInvoiceService {
     doc.costTotal = sum2(doc.lines.map((line) => line.costAmount));
     doc.margin = round2(doc.taxableTotal - doc.costTotal);
     await doc.save({ session });
+  }
+
+  /**
+   * Rejects the first stock line (counted cumulatively per product) that has no stock at the
+   * invoice location or asks for more than is available, unless Company.allowNegativeStock.
+   * `reversals` are the invoice's own stock-outs being undone by an edit: they count as available.
+   */
+  private async assertLinesAvailable(
+    input: { locationId: Types.ObjectId | string; lines: { productId: Types.ObjectId | string; qty: number }[] },
+    reversals: readonly StockEntryInput[],
+    session: ClientSession,
+  ): Promise<void> {
+    if ((await this.companyService.ensure()).allowNegativeStock) return;
+    const locationId = input.locationId.toString();
+    const stocked = await this.stockedIdsOf(input as unknown as SalesInvoiceDocument, session);
+    const available = await this.stockService.onHand(locationId, [...stocked], session);
+    for (const entry of reversals) {
+      if (entry.locationId.toString() !== locationId) continue;
+      const id = entry.productId.toString();
+      available.set(id, roundQty((available.get(id) ?? 0) + entry.qty));
+    }
+    const names = await this.namesOf(this.productModel, input.lines.map((line) => new Types.ObjectId(line.productId.toString())), session);
+    input.lines.forEach((line, index) => {
+      const id = line.productId.toString();
+      if (!stocked.has(id)) return;
+      const left = available.get(id) ?? 0;
+      available.set(id, roundQty(left - line.qty));
+      if (line.qty > left + 1e-9) {
+        throw new BadRequestException(
+          `Line ${index + 1} (${names.get(id) ?? id}): ${
+            left > 0 ? `only ${left} available` : 'no stock'
+          } at this location, ${line.qty} requested`,
+        );
+      }
+    });
   }
 
   /** Stock-out per stock/bundle line; non-stock lines post accounts only. */

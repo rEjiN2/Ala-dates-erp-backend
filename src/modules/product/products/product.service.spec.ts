@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, ConflictException, type ExecutionContext, type INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { MongooseModule, getModelToken } from '@nestjs/mongoose';
+import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import request from 'supertest';
 import { mongooseTestRoot } from '../../../../test/mongo-test-db.js';
@@ -188,6 +188,45 @@ describe('Products (ProductService)', () => {
     expect(lookup.body).toEqual([
       { id: expect.any(String), code: 'PRD-0001', name: 'Ajwa 1kg', unit: { id: kg.id, name: 'Kilogram', symbol: 'KG' }, salePrice: 0, vatRate: 5 },
     ]);
+  });
+
+  it('lookup?for=sales lists only active stock products with stock at the location, within data scope', async () => {
+    const withStock = await create({ name: 'Ajwa 1kg' });
+    const noStock = await create({ name: 'Safawi 1kg' });
+    const service5 = await create({ name: 'Delivery', type: ProductType.NON_STOCK });
+    const location = new Types.ObjectId();
+    const balances = moduleRef.get(getConnectionToken()).collection('stock_balances');
+    await balances.insertMany([
+      { productId: new Types.ObjectId(withStock.id), locationId: location, qty: 7 },
+      { productId: new Types.ObjectId(noStock.id), locationId: location, qty: 0 },
+      { productId: new Types.ObjectId(service5.id), locationId: location, qty: 3 },
+    ]);
+
+    asUser(ADMIN_PERMISSIONS);
+    const ok = await request(app.getHttpServer()).get(`/products/lookup?for=sales&locationId=${location}`).expect(200);
+    expect(ok.body).toEqual([expect.objectContaining({ id: withStock.id, availableQty: 7 })]);
+    await request(app.getHttpServer()).get('/products/lookup?for=sales').expect(400);
+
+    asUser(VAN_SALESMAN_PERMISSIONS);
+    tokenUser = { ...tokenUser, dataScope: 'own', allowedLocationIds: [new Types.ObjectId().toString()] } as AuthenticatedUser;
+    await request(app.getHttpServer()).get(`/products/lookup?for=sales&locationId=${location}`).expect(403);
+  });
+
+  it("a group's allowed units are enforced with a unitId field error, and its default unit fills an empty unit", async () => {
+    const box = await unitModel.create({ name: 'Box', symbol: 'BOX' });
+    await groupModel.updateOne({ _id: gifts._id }, { defaultUnitId: box._id, allowedUnitIds: [box._id] });
+
+    await expect(create({ name: 'Bad unit', productGroupId: gifts.id, unitId: kg.id })).rejects.toMatchObject({
+      response: { field: 'unitId' },
+    });
+    const defaulted = await create({ name: 'Gift 1', productGroupId: gifts.id, unitId: undefined });
+    expect(defaulted.unit?.id).toBe(box.id);
+    await expect(service.update(defaulted.id, { unitId: kg.id }, admin)).rejects.toMatchObject({ response: { field: 'unitId' } });
+    const loose = await create({ name: 'Loose 1kg' });
+    await expect(service.update(loose.id, { productGroupId: gifts.id }, admin)).rejects.toMatchObject({
+      response: { field: 'unitId' },
+    });
+    await groupModel.updateOne({ _id: gifts._id }, { defaultUnitId: null, allowedUnitIds: [] });
   });
 
   it('audits a field diff including price changes and rejects a no-change edit', async () => {

@@ -94,8 +94,8 @@ export class AuthController {
     const domain = this.configService.get('COOKIE_DOMAIN', { infer: true });
     const cookieOptions = { httpOnly: true, secure, sameSite, domain, path: '/' } as const;
 
-    response.cookie(ACCESS_COOKIE, tokens.accessToken, cookieOptions);
-    response.cookie(REFRESH_COOKIE, tokens.refreshToken, cookieOptions);
+    response.cookie(ACCESS_COOKIE, tokens.accessToken, { ...cookieOptions, maxAge: tokens.accessMaxAgeMs });
+    response.cookie(REFRESH_COOKIE, tokens.refreshToken, { ...cookieOptions, maxAge: tokens.refreshMaxAgeMs });
   }
 
   private clearAuthCookies(response: Response): void {

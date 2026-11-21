@@ -35,11 +35,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? (exceptionResponse as { warnings: unknown }).warnings
         : undefined;
 
+    // Which request field a validation error belongs to (e.g. "product.new.name", "parts.2.qtyPerBundle").
+    const field =
+      exceptionResponse && typeof exceptionResponse === 'object' && 'field' in exceptionResponse
+        ? (exceptionResponse as { field: unknown }).field
+        : undefined;
+
     response.status(status).json({
       success: false,
       statusCode: status,
       error,
       message,
+      ...(typeof field === 'string' ? { field } : {}),
       ...(Array.isArray(warnings) ? { warnings } : {}),
       path: request.url,
       timestamp: new Date().toISOString(),

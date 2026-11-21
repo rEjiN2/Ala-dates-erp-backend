@@ -211,6 +211,19 @@ export class StockService {
       }));
   }
 
+  /** On-hand qty per product at one location; a product with no balance row is 0. */
+  async onHand(locationId: string, productIds: readonly string[], session?: ClientSession): Promise<Map<string, number>> {
+    const rows = await this.balanceModel
+      .find({
+        locationId: new Types.ObjectId(locationId),
+        productId: { $in: [...new Set(productIds)].map((id) => new Types.ObjectId(id)) },
+      })
+      .session(session ?? null)
+      .lean()
+      .exec();
+    return new Map(rows.map((row) => [row.productId.toString(), row.qty]));
+  }
+
   /** Every location must be an active warehouse, store or van; every product of type stock or bundle. */
   async assertHoldsStock(productIds: readonly string[], locationIds: readonly string[], session?: ClientSession) {
     const unique = (ids: readonly string[]) => [...new Set(ids)].map((id) => new Types.ObjectId(id));

@@ -16,6 +16,8 @@ export interface AuditEntryInput {
   reason?: string;
   /** Defaults to now; pass the business change's own timestamp so both match exactly. */
   at?: Date;
+  /** Shared by every entry written for one request. */
+  correlationId?: string;
 }
 
 export type AuditLogRecord = AuditLog & { _id: Types.ObjectId };
@@ -54,6 +56,7 @@ export class AuditService {
           at: entry.at ?? new Date(),
           changes: entry.changes ?? [],
           reason: reason || undefined,
+          correlationId: entry.correlationId,
         },
       ],
       { session },

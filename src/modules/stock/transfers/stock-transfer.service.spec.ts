@@ -24,7 +24,7 @@ import { CommentsService } from '../../comments/comments.service.js';
 import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { Comment, CommentSchema } from '../../comments/schemas/comment.schema.js';
 import { FilesService } from '../../files/files.service.js';
-import { ADMIN_PERMISSIONS, ADMIN_ROLE_NAME, DataScope, VAN_SALESMAN_PERMISSIONS } from '../../roles/permissions.js';
+import { ADMIN_PERMISSIONS, ADMIN_ROLE_NAME, DataScope, Permission, VAN_SALESMAN_PERMISSIONS } from '../../roles/permissions.js';
 import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
@@ -288,6 +288,30 @@ describe('StockTransfer', () => {
     await transfers.receive(toVan2.id, {}, omar);
     expect(await qtyOf(f.dates._id, f.van1._id)).toBe(20);
     expect(await qtyOf(f.dates._id, f.van2._id)).toBe(2);
+    await expectBalancesMatchEntries();
+  });
+
+  it('a salesman receives into his van from another salesman; receive-any lifts the destination rule', async () => {
+    const f = await fixtures();
+    await move(f.dates._id, f.van1._id, 20);
+    const salesman = (name: string, locations: Types.ObjectId[], extra: string[] = []) =>
+      user(name, {
+        role: { id: 'r', name: 'Van Salesman' },
+        permissions: [...VAN_SALESMAN_PERMISSIONS, ...extra],
+        dataScope: DataScope.OWN,
+        allowedLocationIds: locations.map((id) => id.toString()),
+      });
+    const ali = salesman('Ali', [f.van1._id]);
+    const omar = salesman('Omar', [f.van2._id]);
+    const lead = salesman('Lead', [f.wh._id], [Permission.STOCK_TRANSFERS_RECEIVE_ANY]);
+
+    const first = await send(f, 3, ali, f.van1, f.van2);
+    expect((await transfers.findAll({ receivableByMe: true }, omar)).items).toHaveLength(1);
+    await expect(transfers.receive(first.id, {}, lead)).resolves.toBeDefined();
+    const second = await send(f, 2, ali, f.van1, f.van2);
+    expect((await transfers.findAll({ receivableByMe: true }, lead)).items).toHaveLength(1);
+    await transfers.receive(second.id, {}, omar);
+    expect(await qtyOf(f.dates._id, f.van2._id)).toBe(5);
     await expectBalancesMatchEntries();
   });
 

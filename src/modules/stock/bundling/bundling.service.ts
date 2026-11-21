@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
@@ -15,7 +15,9 @@ import {
   AvailabilityQueryDto,
   BundlingQueryDto,
   CancelBundlingDto,
+  ComposeBundlingDto,
   CreateBundlingDto,
+  PreviewBundlingDto,
   SetRecipeDto,
 } from './dto/bundling.dto.js';
 import { CostService, type CostRef } from '../costing/cost.service.js';
@@ -25,8 +27,11 @@ import {
   PRODUCT_ENTITY_TYPE,
   Product,
   ProductDocument,
+  ProductStatus,
   ProductType,
 } from '../../product/products/schemas/product.schema.js';
+import { ProductService } from '../../product/products/product.service.js';
+import { ProductGroup, ProductGroupDocument } from '../../product/product-groups/schemas/product-group.schema.js';
 import { ProductUsageRegistry } from '../../product/products/product-usage.registry.js';
 import { Location, LocationDocument } from '../../location/schemas/location.schema.js';
 import { CompanyService } from '../../company/company.service.js';
@@ -51,6 +56,8 @@ type Viewer = AuthenticatedUser;
 const SEQUENCE = { key: 'bundling', prefix: 'BND-', width: 4 };
 const LABEL = 'Bundling';
 
+type RecipeLike = { version: number; extraCostPerUnit: number; components: { productId: Types.ObjectId; qty: number }[] };
+
 interface ProductInfo {
   code: string;
   name: string;
@@ -70,6 +77,8 @@ export class BundlingService {
     @InjectModel(Bundling.name) private readonly model: Model<BundlingDocument>,
     @InjectModel(BundleRecipe.name) private readonly recipeModel: Model<BundleRecipeDocument>,
     @InjectModel(Product.name) private readonly productModel: Model<ProductDocument>,
+    @InjectModel(ProductGroup.name) private readonly groupModel: Model<ProductGroupDocument>,
+    private readonly productService: ProductService,
     @InjectModel(Location.name) private readonly locationModel: Model<LocationDocument>,
     @InjectModel(StockBalance.name) private readonly balanceModel: Model<StockBalanceDocument>,
     private readonly stockService: StockService,
@@ -126,86 +135,109 @@ export class BundlingService {
   async setRecipe(productId: string, dto: SetRecipeDto, actor: Viewer) {
     const bundle = await this.bundleProduct(productId);
     const ids = dto.components.map((component) => component.productId);
-    if (new Set(ids).size !== ids.length) throw new BadRequestException('A component is on more than one line');
-    if (ids.includes(productId)) throw new BadRequestException('A bundle cannot contain itself');
-    const products = await this.productModel
-      .find({ _id: { $in: ids.map((id) => new Types.ObjectId(id)) } })
-      .select('code name type')
-      .lean()
-      .exec();
-    for (const id of ids) {
-      const product = products.find((candidate) => candidate._id.toString() === id);
-      if (!product) throw new NotFoundException(`Product ${id} not found`);
-      if (product.type !== ProductType.STOCK) {
-        throw new BadRequestException(
-          `${product.code} (${product.name}) is a ${product.type} product: components must be stock products`,
-        );
-      }
-    }
+    await this.assertParts(ids, productId, 'components');
     const components = dto.components.map((component) => ({
       productId: new Types.ObjectId(component.productId),
       qty: roundQty(component.qty),
     }));
     const extraCostPerUnit = round2(dto.extraCostPerUnit);
 
-    await runInTransaction(this.connection, async (session) => {
-      const existing = await this.recipeModel.findOne({ bundleProductId: bundle._id }).session(session).lean().exec();
-      const describe = (list: readonly { productId: Types.ObjectId; qty: number }[]) =>
-        list
-          .map((component) => `${component.productId.toString()}x${component.qty}`)
-          .sort()
-          .join(',');
-      if (existing && existing.extraCostPerUnit === extraCostPerUnit && describe(existing.components) === describe(components)) {
-        throw new BadRequestException('No changes to save');
-      }
-      const info = await this.productInfo(
-        [...components.map((component) => component.productId), ...(existing?.components.map((c) => c.productId) ?? [])],
-        session,
-      );
-      const text = (list: readonly { productId: Types.ObjectId; qty: number }[]) =>
-        list
-          .map((component) => `${info.get(component.productId.toString())?.name ?? component.productId} x ${component.qty}`)
-          .join(', ');
-      const changes: AuditChange[] = [
-        { field: 'recipe', label: 'Recipe', from: existing ? text(existing.components) : null, to: text(components) },
-      ];
-      if ((existing?.extraCostPerUnit ?? 0) !== extraCostPerUnit) {
-        changes.push({
-          field: 'extraCostPerUnit',
-          label: 'Extra cost per unit',
-          from: existing?.extraCostPerUnit ?? null,
-          to: extraCostPerUnit,
+    await runInTransaction(this.connection, (session) =>
+      this.writeRecipe(bundle, components, extraCostPerUnit, actor, session),
+    );
+    return this.getRecipe(productId);
+  }
+
+  /** Parts must be unique stock products and not the output itself. `field` names the request array for errors. */
+  private async assertParts(ids: string[], outputId: string, field: string, session?: ClientSession) {
+    const dup = ids.findIndex((id, index) => ids.indexOf(id) !== index);
+    if (dup >= 0) throw new BadRequestException({ message: 'A component is on more than one line', field: `${field}.${dup}.productId` });
+    const self = ids.indexOf(outputId);
+    if (self >= 0) throw new BadRequestException({ message: 'A bundle cannot contain itself', field: `${field}.${self}.productId` });
+    const products = await this.productModel
+      .find({ _id: { $in: ids.map((id) => new Types.ObjectId(id)) } })
+      .select('code name type')
+      .session(session ?? null)
+      .lean()
+      .exec();
+    for (const [index, id] of ids.entries()) {
+      const product = products.find((candidate) => candidate._id.toString() === id);
+      if (!product) throw new NotFoundException({ message: `Product ${id} not found`, field: `${field}.${index}.productId` });
+      if (product.type !== ProductType.STOCK) {
+        throw new BadRequestException({
+          message: `${product.code} (${product.name}) is a ${product.type} product: components must be stock products`,
+          field: `${field}.${index}.productId`,
         });
       }
-      await this.recipeModel
-        .updateOne(
-          { bundleProductId: bundle._id },
-          {
-            $set: {
-              components,
-              extraCostPerUnit,
-              version: (existing?.version ?? 0) + 1,
-              updatedBy: toUserSnapshot(actor),
-              updatedAt: new Date(),
-            },
-            $setOnInsert: { bundleProductId: bundle._id },
-          },
-          { upsert: true, session },
-        )
-        .exec();
-      await this.auditService.record(
+    }
+  }
+
+  /** Writes recipe version +1 and its audit entry. `skipIfSame` returns null instead of rejecting an unchanged recipe. */
+  private async writeRecipe(
+    bundle: { _id: Types.ObjectId; code: string },
+    components: { productId: Types.ObjectId; qty: number }[],
+    extraCostPerUnit: number,
+    actor: Viewer,
+    session: ClientSession,
+    options: { correlationId?: string; skipIfSame?: boolean } = {},
+  ) {
+    const existing = await this.recipeModel.findOne({ bundleProductId: bundle._id }).session(session).lean().exec();
+    const describe = (list: readonly { productId: Types.ObjectId; qty: number }[]) =>
+      list
+        .map((component) => `${component.productId.toString()}x${component.qty}`)
+        .sort()
+        .join(',');
+    if (existing && existing.extraCostPerUnit === extraCostPerUnit && describe(existing.components) === describe(components)) {
+      if (options.skipIfSame) return;
+      throw new BadRequestException('No changes to save');
+    }
+    const info = await this.productInfo(
+      [...components.map((component) => component.productId), ...(existing?.components.map((c) => c.productId) ?? [])],
+      session,
+    );
+    const text = (list: readonly { productId: Types.ObjectId; qty: number }[]) =>
+      list
+        .map((component) => `${info.get(component.productId.toString())?.name ?? component.productId} x ${component.qty}`)
+        .join(', ');
+    const changes: AuditChange[] = [
+      { field: 'recipe', label: 'Recipe', from: existing ? text(existing.components) : null, to: text(components) },
+    ];
+    if ((existing?.extraCostPerUnit ?? 0) !== extraCostPerUnit) {
+      changes.push({
+        field: 'extraCostPerUnit',
+        label: 'Extra cost per unit',
+        from: existing?.extraCostPerUnit ?? null,
+        to: extraCostPerUnit,
+      });
+    }
+    await this.recipeModel
+      .updateOne(
+        { bundleProductId: bundle._id },
         {
-          entityType: PRODUCT_ENTITY_TYPE,
-          entityId: bundle._id,
-          entityRef: bundle.code,
-          action: AuditAction.UPDATED,
-          actor,
-          changes,
+          $set: {
+            components,
+            extraCostPerUnit,
+            version: (existing?.version ?? 0) + 1,
+            updatedBy: toUserSnapshot(actor),
+            updatedAt: new Date(),
+          },
+          $setOnInsert: { bundleProductId: bundle._id },
         },
-        session,
-      );
-    });
-    return this.getRecipe(productId);
+        { upsert: true, session },
+      )
+      .exec();
+    await this.auditService.record(
+      {
+        entityType: PRODUCT_ENTITY_TYPE,
+        entityId: bundle._id,
+        entityRef: bundle.code,
+        action: AuditAction.UPDATED,
+        actor,
+        changes,
+        correlationId: options.correlationId,
+      },
+      session,
+    );
   }
 
   /** Per component: needed per unit and in total, on hand at the location, short; and how many bundles can be made. */
@@ -214,6 +246,173 @@ export class BundlingService {
     if (!Types.ObjectId.isValid(productId)) throw new BadRequestException(`Product id "${productId}" is not a valid id`);
     const recipe = await this.recipeOf(new Types.ObjectId(productId));
     return this.availabilityOf(recipe.components, query.locationId, query.qty ?? 1);
+  }
+
+  // ---- workspace: product + recipe + bundling in one transaction ----
+
+  /**
+   * One request, one transaction: create the product (if new), save the recipe
+   * (if asked or new), post the bundling (if qty > 0). Any failure rolls back
+   * all of it. The audit entries of the three steps share one correlationId.
+   */
+  async compose(dto: ComposeBundlingDto, actor: Viewer) {
+    assertNotFuture(dto.date);
+    assertLocationAllowed(actor, dto.locationId, 'bundle at');
+    const isNew = Boolean(dto.product.new);
+    if (isNew === Boolean(dto.product.id)) throw fieldError('Send either product.id or product.new', 'product');
+    const bundle = dto.mode === BundlingMode.BUNDLE;
+    if (!bundle && (isNew || dto.parts)) {
+      throw fieldError("Unbundle uses the product's saved recipe: send product.id only", 'product');
+    }
+    if (!bundle && dto.qty <= 0) throw fieldError('qty must be at least 1 to unbundle', 'qty');
+    const saveRecipe = bundle && Boolean(dto.saveRecipe || isNew);
+    if (dto.qty === 0 && !saveRecipe && !isNew) throw fieldError('Nothing to do: set qty or saveRecipe', 'qty');
+    const need = (permission: Permission, what: string, field: string) => {
+      if (!hasPermission(actor, permission)) {
+        throw new ForbiddenException({ message: `You need the ${permission} permission to ${what}`, field });
+      }
+    };
+    if (isNew) need(Permission.PRODUCTS_MANAGE, 'create a product', 'product.new');
+    if (saveRecipe) need(Permission.BUNDLES_MANAGE, 'save a recipe', 'saveRecipe');
+    if (dto.qty > 0) need(Permission.BUNDLING_CREATE, 'post a bundling', 'qty');
+
+    const correlationId = new Types.ObjectId().toString();
+    const result = await runInTransaction(this.connection, async (session) => {
+      let product: { _id: Types.ObjectId; code: string; name: string };
+      if (dto.product.new) {
+        const draft = dto.product.new;
+        const productGroupId = draft.productGroupId ?? (await this.defaultGroupId(session));
+        try {
+          product = await this.productService.createIn(
+            { ...draft, productGroupId, name: draft.name.trim(), type: ProductType.BUNDLE },
+            actor,
+            session,
+            correlationId,
+          );
+        } catch (error) {
+          if (error instanceof ConflictException) {
+            const message = error.message;
+            throw new ConflictException({ message, field: message.startsWith('Barcode') ? 'product.new.barcode' : 'product.new.name' });
+          }
+          throw error;
+        }
+      } else {
+        if (!Types.ObjectId.isValid(dto.product.id!)) throw fieldError(`Product id "${dto.product.id}" is not a valid id`, 'product.id');
+        const found = await this.productModel.findById(dto.product.id).select('code name type status').session(session).lean().exec();
+        if (!found) throw new NotFoundException({ message: `Product ${dto.product.id} not found`, field: 'product.id' });
+        if (found.status !== ProductStatus.ACTIVE) throw fieldError(`${found.code} is inactive`, 'product.id');
+        if (found.type !== ProductType.BUNDLE && found.type !== ProductType.STOCK) {
+          throw fieldError(`${found.code} is a ${found.type} product: it cannot be bundled`, 'product.id');
+        }
+        product = found;
+      }
+      const productId = product._id.toString();
+
+      const saved = isNew ? null : await this.recipeModel.findOne({ bundleProductId: product._id }).session(session).lean().exec();
+      if (!dto.parts && !saved) throw fieldError(`${product.code} has no saved recipe: add its parts`, 'parts');
+      let components = saved?.components ?? [];
+      if (dto.parts) {
+        await this.assertParts(dto.parts.map((part) => part.productId), productId, 'parts', session);
+        components = dto.parts.map((part) => ({ productId: new Types.ObjectId(part.productId), qty: roundQty(part.qtyPerBundle) }));
+      }
+      const extraCostPerUnit = round2(dto.extraCostPerUnit ?? saved?.extraCostPerUnit ?? 0);
+
+      if (saveRecipe) {
+        await this.writeRecipe(product, components, extraCostPerUnit, actor, session, { correlationId, skipIfSame: true });
+      }
+      const recipe = await this.recipeModel.findOne({ bundleProductId: product._id }).session(session).lean().exec();
+      const effective: RecipeLike = { version: recipe?.version ?? 0, extraCostPerUnit, components };
+
+      const doc =
+        dto.qty > 0
+          ? await this.postIn(
+              {
+                date: dto.date,
+                locationId: dto.locationId,
+                mode: dto.mode,
+                bundleProductId: productId,
+                qty: dto.qty,
+                updateBundlePurchasePrice: dto.updateBundlePurchasePrice,
+                remarks: dto.remarks,
+              },
+              actor,
+              session,
+              { correlationId, recipe: effective, allowStockOutput: true },
+            )
+          : null;
+      const info = await this.productInfo(components.map((component) => component.productId), session);
+      return {
+        doc,
+        product: { id: productId, code: product.code, name: product.name },
+        recipe: recipe && {
+          version: recipe.version,
+          extraCostPerUnit: recipe.extraCostPerUnit,
+          components: recipe.components.map((component) => ({
+            productId: component.productId.toString(),
+            productCode: info.get(component.productId.toString())?.code ?? null,
+            productName: info.get(component.productId.toString())?.name ?? null,
+            qtyPerBundle: component.qty,
+          })),
+        },
+      };
+    });
+    return {
+      correlationId,
+      product: result.product,
+      recipe: result.recipe,
+      bundling: result.doc ? await this.view(result.doc, actor) : null,
+    };
+  }
+
+  /** Needs, stock, FIFO cost per part (oldest layers first) and the estimated cost per bundle. Cost fields need products:view-cost. */
+  async preview(dto: PreviewBundlingDto, viewer: Viewer) {
+    assertLocationAllowed(viewer, dto.locationId, 'see stock at');
+    let components: { productId: Types.ObjectId; qty: number }[];
+    let extra = dto.extraCostPerUnit;
+    if (dto.parts) {
+      await this.assertParts(dto.parts.map((part) => part.productId), dto.productId ?? '', 'parts');
+      components = dto.parts.map((part) => ({ productId: new Types.ObjectId(part.productId), qty: roundQty(part.qtyPerBundle) }));
+    } else if (dto.productId) {
+      const recipe = await this.recipeOf(new Types.ObjectId(dto.productId), undefined, true);
+      components = recipe.components;
+      extra ??= recipe.extraCostPerUnit;
+    } else {
+      throw fieldError('Send parts or productId', 'parts');
+    }
+    const stock = await this.availabilityOf(components, dto.locationId, dto.qty);
+    const canCost = hasPermission(viewer, Permission.PRODUCTS_VIEW_COST);
+    const costs = canCost
+      ? await Promise.all(components.map((component) => this.costService.previewConsume(component.productId, roundQty(component.qty * dto.qty))))
+      : [];
+    const extraCostPerUnit = round2(extra ?? 0);
+    const partsCost = round2(costs.reduce((sum, cost) => sum + cost.totalCost, 0));
+    return {
+      locationId: dto.locationId,
+      qty: dto.qty,
+      parts: stock.components.map((row, index) => ({
+        productId: row.productId,
+        productCode: row.productCode,
+        productName: row.productName,
+        qtyPerBundle: row.requiredPerUnit,
+        required: row.requiredTotal,
+        available: row.available,
+        short: row.short,
+        ...(canCost ? { fifoCost: costs[index].totalCost, fifoUnitCost: costs[index].avgUnitCost } : {}),
+      })),
+      maxBundles: stock.maxBundles,
+      ...(canCost
+        ? { extraCostPerUnit, partsCost, costPerUnit: Math.round((partsCost / dto.qty + extraCostPerUnit) * 10000) / 10000 }
+        : {}),
+    };
+  }
+
+  /** The "Gift & Bundle Items" group, else the first group. */
+  private async defaultGroupId(session: ClientSession): Promise<string> {
+    const group =
+      (await this.groupModel.findOne({ name: /^gift & bundle items$/i }).select('_id').session(session).lean().exec()) ??
+      (await this.groupModel.findOne().sort({ code: 1 }).select('_id').session(session).lean().exec());
+    if (!group) throw fieldError('No product group exists: pick one', 'product.new.productGroupId');
+    return group._id.toString();
   }
 
   // ---- bundling ----
@@ -300,9 +499,20 @@ export class BundlingService {
     assertNotFuture(dto.date);
     assertLocationAllowed(actor, dto.locationId, 'bundle at');
 
-    const doc = await runInTransaction(this.connection, async (session) => {
+    const doc = await runInTransaction(this.connection, (session) => this.postIn(dto, actor, session));
+    return this.view(doc, actor);
+  }
+
+  /** Posts one bundling in the caller's transaction. `recipe` overrides the saved one (compose with unsaved parts). */
+  private async postIn(
+    dto: CreateBundlingDto,
+    actor: Viewer,
+    session: ClientSession,
+    options: { correlationId?: string; recipe?: RecipeLike; allowStockOutput?: boolean } = {},
+  ): Promise<BundlingDocument> {
+    {
       const bundleId = new Types.ObjectId(dto.bundleProductId);
-      const recipe = await this.recipeOf(bundleId, session);
+      const recipe = options.recipe ?? (await this.recipeOf(bundleId, session, options.allowStockOutput));
       await this.stockService.assertHoldsStock(
         [dto.bundleProductId, ...recipe.components.map((component) => component.productId.toString())],
         [dto.locationId],
@@ -351,7 +561,7 @@ export class BundlingService {
       await this.applyCosting(created, session);
       costPerUnit = created.costPerUnit;
       await this.stockService.post(this.entriesOf(created), actor, session);
-      await this.record(created, AuditAction.CREATED, actor, now, session);
+      await this.record(created, AuditAction.CREATED, actor, now, session, { correlationId: options.correlationId });
 
       const bundle = await this.productModel.findById(bundleId).session(session).exec();
       if (
@@ -373,13 +583,13 @@ export class BundlingService {
             at: now,
             changes: [{ field: 'purchasePrice', label: 'Purchase price', from, to: costPerUnit }],
             reason: `Bundling ${voucherNo}`,
+            correlationId: options.correlationId,
           },
           session,
         );
       }
       return created;
-    });
-    return this.view(doc, actor);
+    }
   }
 
   /** Undo: reverses the entries; refused if any balance would go below zero (e.g. the boxes were sold). */
@@ -561,7 +771,7 @@ export class BundlingService {
     ];
   }
 
-  private async recipeOf(bundleProductId: Types.ObjectId, session?: ClientSession) {
+  private async recipeOf(bundleProductId: Types.ObjectId, session?: ClientSession, allowStockOutput = false) {
     const product = await this.productModel
       .findById(bundleProductId)
       .select('code type')
@@ -569,7 +779,9 @@ export class BundlingService {
       .lean()
       .exec();
     if (!product) throw new NotFoundException(`Product ${bundleProductId.toString()} not found`);
-    if (product.type !== ProductType.BUNDLE) throw new BadRequestException(`${product.code} is not a bundle product`);
+    if (product.type !== ProductType.BUNDLE && !(allowStockOutput && product.type === ProductType.STOCK)) {
+      throw new BadRequestException(`${product.code} is not a bundle product`);
+    }
     const recipe = await this.recipeModel
       .findOne({ bundleProductId })
       .session(session ?? null)
@@ -632,10 +844,11 @@ export class BundlingService {
     const result = await this.availabilityOf(components, locationId, qty, session);
     const short = result.components.filter((row) => row.short > 0);
     if (short.length === 0) return;
-    throw new BadRequestException(
+    throw fieldError(
       `Not enough parts to make ${qty}: ${short
         .map((row) => `${row.productCode} (${row.productName}) needs ${row.requiredTotal}, has ${row.available}`)
         .join('; ')}. Max you can make: ${result.maxBundles}`,
+      'qty',
     );
   }
 
@@ -711,13 +924,18 @@ export class BundlingService {
     actor: Viewer,
     at: Date,
     session: ClientSession,
-    extra: { changes?: AuditChange[]; reason?: string } = {},
+    extra: { changes?: AuditChange[]; reason?: string; correlationId?: string } = {},
   ) {
     return this.auditService.record(
       { entityType: BUNDLING_ENTITY_TYPE, entityId: doc._id, entityRef: doc.voucherNo, action, actor, at, ...extra },
       session,
     );
   }
+}
+
+/** 400 that tells the client which request field to highlight. */
+function fieldError(message: string, field: string): BadRequestException {
+  return new BadRequestException({ message, field });
 }
 
 /** "own"-scoped users: only vouchers at their allowed locations. */

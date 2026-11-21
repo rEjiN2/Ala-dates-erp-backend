@@ -267,4 +267,106 @@ describe('Bundling', () => {
     expect(pdf.status).toBe(200);
     expect((await request(app.getHttpServer()).get('/bundlings?mode=bundle')).body.items).toHaveLength(1);
   });
+
+  describe('compose workspace', () => {
+    async function setup() {
+      const f = await fixtures();
+      // Fixture products were inserted by hand: move the PRD counter past them.
+      await model(Counter.name).collection.insertOne({ key: 'product', seq: 10 });
+      const unit = (await model(Unit.name).findOne().lean()) as unknown as Ref;
+      const compose = (over: Record<string, unknown> = {}, actor: AuthenticatedUser = admin) =>
+        bundling.compose(
+          {
+            mode: BundlingMode.BUNDLE,
+            locationId: f.wh._id.toString(),
+            date: '2026-02-02',
+            qty: 0,
+            product: { new: { name: 'Mega Gift', unitId: unit._id.toString() } },
+            parts: [
+              { productId: f.dates._id.toString(), qtyPerBundle: 2 },
+              { productId: f.box._id.toString(), qtyPerBundle: 1 },
+            ],
+            extraCostPerUnit: 1.5,
+            ...over,
+          } as never,
+          actor,
+        );
+      return { f, compose, unit };
+    }
+    const counts = async () => ({
+      products: await model(Product.name).countDocuments({ name: 'Mega Gift' }),
+      recipes: await model(BundleRecipe.name).countDocuments(),
+      bundlings: await model(Bundling.name).countDocuments(),
+    });
+
+    it('creates the product, its recipe and the bundling with FIFO cost, one correlation id', async () => {
+      const { f, compose } = await setup();
+      await move(f.dates._id, f.wh._id, 100);
+      await move(f.box._id, f.wh._id, 50);
+      const result = await compose({ qty: 10 });
+      expect(result.bundling?.costPerUnit).toBe(23.5);
+      expect(result.recipe?.version).toBe(1);
+      const product = await model<Product>(Product.name).findById(result.product.id).lean();
+      expect(product?.type).toBe(ProductType.BUNDLE);
+      expect(await qtyOf(f.dates._id, f.wh._id)).toBe(80);
+      expect(await qtyOf(new Types.ObjectId(result.product.id), f.wh._id)).toBe(10);
+      const audit = await model<{ entityType: string }>(AuditLog.name).find({ correlationId: result.correlationId }).lean();
+      expect(new Set(audit.map((entry) => entry.entityType))).toEqual(new Set(['product', 'bundling']));
+      expect(audit.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('a shortage rolls back the new product and recipe', async () => {
+      const { f, compose } = await setup();
+      await move(f.dates._id, f.wh._id, 1);
+      await expect(compose({ qty: 5 })).rejects.toThrow(/Not enough parts/);
+      expect(await counts()).toEqual({ products: 0, recipes: 0, bundlings: 0 });
+    });
+
+    it('qty 0 saves the product and recipe only', async () => {
+      const { f, compose } = await setup();
+      await move(f.dates._id, f.wh._id, 10);
+      const result = await compose({ qty: 0 });
+      expect(result.bundling).toBeNull();
+      expect(await counts()).toEqual({ products: 1, recipes: 1, bundlings: 0 });
+      expect(await qtyOf(f.dates._id, f.wh._id)).toBe(10);
+    });
+
+    it('an existing product with a recipe packs without parts', async () => {
+      const { f, compose } = await setup();
+      await recipe(f);
+      await move(f.dates._id, f.wh._id, 20);
+      await move(f.box._id, f.wh._id, 10);
+      const result = await compose({ product: { id: f.gift._id.toString() }, parts: undefined, qty: 3 });
+      expect(result.bundling?.costPerUnit).toBe(23.5);
+      expect(await qtyOf(f.gift._id, f.wh._id)).toBe(3);
+    });
+
+    it('refuses a missing permission and leaves nothing behind', async () => {
+      const { compose } = await setup();
+      const clerk = user('Clerk', ['bundling:create', 'bundles:manage']);
+      await expect(compose({ qty: 1 }, clerk)).rejects.toThrow(/products:manage/);
+      expect(await counts()).toEqual({ products: 0, recipes: 0, bundlings: 0 });
+    });
+
+    it('preview cost matches the posted cost; costs hidden without products:view-cost', async () => {
+      const { f, compose } = await setup();
+      await move(f.dates._id, f.wh._id, 100);
+      await move(f.box._id, f.wh._id, 50);
+      const input = {
+        locationId: f.wh._id.toString(),
+        qty: 10,
+        parts: [
+          { productId: f.dates._id.toString(), qtyPerBundle: 2 },
+          { productId: f.box._id.toString(), qtyPerBundle: 1 },
+        ],
+        extraCostPerUnit: 1.5,
+      };
+      const preview = await bundling.preview(input, admin);
+      expect(preview.maxBundles).toBe(50);
+      const posted = await compose({ qty: 10 });
+      expect(preview.costPerUnit).toBe(posted.bundling?.costPerUnit);
+      const blind = await bundling.preview(input, user('Blind', ['bundling:read']));
+      expect(blind).not.toHaveProperty('costPerUnit');
+    });
+  });
 });

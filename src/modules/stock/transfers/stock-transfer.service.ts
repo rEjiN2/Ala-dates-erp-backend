@@ -262,7 +262,7 @@ export class StockTransferService {
       const existing = await this.load(id, scopeOf(actor), session);
       assertInTransit(existing, 'received');
       const allowed = stockLocationScope(actor);
-      if (allowed) {
+      if (allowed && !hasPermission(actor, Permission.STOCK_TRANSFERS_RECEIVE_ANY)) {
         if (existing.sentBy?.id.toString() === actor.id) {
           throw new ForbiddenException('You cannot receive a transfer you sent');
         }
@@ -544,12 +544,19 @@ function scopeOf(user: Viewer | undefined): Record<string, unknown> | null {
   const allowed = stockLocationScope(user);
   if (!allowed) return null;
   const ids = allowed.map((id) => new Types.ObjectId(id));
-  return { $or: [{ fromLocationId: { $in: ids } }, { toLocationId: { $in: ids } }] };
+  return {
+    $or: [
+      { fromLocationId: { $in: ids } },
+      { toLocationId: { $in: ids } },
+      // receive-any users can see (and so receive) every transfer in transit
+      ...(hasPermission(user, Permission.STOCK_TRANSFERS_RECEIVE_ANY) ? [{ status: PendingReceiptStatus.IN_TRANSIT }] : []),
+    ],
+  };
 }
 
 /** Single rule for the to-receive badge and the receivableByMe list filter. */
 function receivableByFilter(viewer: Viewer): Record<string, unknown> {
-  const allowed = stockLocationScope(viewer);
+  const allowed = hasPermission(viewer, Permission.STOCK_TRANSFERS_RECEIVE_ANY) ? null : stockLocationScope(viewer);
   return {
     status: PendingReceiptStatus.IN_TRANSIT,
     ...(allowed

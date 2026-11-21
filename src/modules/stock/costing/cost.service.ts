@@ -166,6 +166,34 @@ export class CostService {
     };
   }
 
+  /** What `consume` would cost right now (oldest layers first), without taking anything. Same rounding as consume. */
+  async previewConsume(productId: Types.ObjectId, qty: number, session?: ClientSession): Promise<{ totalCost: number; avgUnitCost: number }> {
+    let need = roundQty(qty);
+    let total = 0;
+    const layers = await this.layerModel
+      .find({ productId, qtyRemaining: { $gt: EPSILON } })
+      .sort({ date: 1, createdAt: 1, _id: 1 })
+      .session(session ?? null)
+      .lean()
+      .exec();
+    for (const layer of layers) {
+      if (need <= EPSILON) break;
+      const take = roundQty(Math.min(layer.qtyRemaining, need));
+      total += take * layer.unitCost;
+      need = roundQty(need - take);
+    }
+    if (need > EPSILON) {
+      const latest = await this.layerModel.findOne({ productId, voidedAt: null }).sort({ date: -1, createdAt: -1, _id: -1 }).session(session ?? null).lean().exec();
+      const unit = latest
+        ? latest.unitCost
+        : ((await this.productModel.findById(productId).select('purchasePrice').session(session ?? null).lean().exec())?.purchasePrice ?? 0);
+      total += need * unit;
+    }
+    const totalCost = round2(total);
+    const whole = roundQty(qty);
+    return { totalCost, avgUnitCost: whole > 0 ? roundCost(totalCost / whole) : 0 };
+  }
+
   /**
    * Puts quantities back into the exact layers the ref consumed, in the order
    * they were consumed. No qty = everything. `by` (a sales return) is

@@ -1,6 +1,6 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { Transform } from 'class-transformer';
-import { IsEnum, IsInt, IsMongoId, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { ProductStatus, ProductType } from '../schemas/product.schema.js';
 
 /** Trims strings and turns a blank one into null, so "" clears an optional field. */
@@ -26,8 +26,10 @@ export class CreateProductDto {
   @IsEnum(ProductType)
   type: ProductType;
 
+  /** Left out: the group's defaultUnitId. */
+  @IsOptional()
   @IsMongoId()
-  unitId: string;
+  unitId?: string;
 
   @IsOptional() @Transform(trimToNull) @IsString() @MaxLength(50) barcode?: string | null;
 
@@ -85,6 +87,15 @@ export class ProductQueryDto {
 }
 
 export class ProductLookupQueryDto {
+  /** "sales": only stock products with on-hand > 0 at locationId. */
+  @IsOptional()
+  @IsIn(['sales'])
+  for?: 'sales';
+
+  @IsOptional()
+  @IsMongoId()
+  locationId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(100)

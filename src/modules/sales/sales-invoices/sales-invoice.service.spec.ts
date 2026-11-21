@@ -403,9 +403,20 @@ describe('Sales invoices', () => {
     const f = await fixtures();
     await expect(
       invoices.create(input(f, { lines: [{ productId: f.ajwa._id.toString(), qty: 51 }] }), f.salesman),
-    ).rejects.toThrow(/Not enough stock/);
+    ).rejects.toThrow(/Line 1 \(.*\): only 50 available at this location, 51 requested/);
     expect(await qtyOf(f.ajwa._id, f.van._id)).toBe(50);
     expect(await model(SalesInvoice.name).countDocuments()).toBe(0);
+  });
+
+  it('an edit counts its own qty as available and names the line when it asks for too much', async () => {
+    const f = await fixtures();
+    const invoice = await invoices.create(input(f, { lines: [{ productId: f.ajwa._id.toString(), qty: 40 }] }), f.salesman);
+    const edited = await invoices.update(invoice._id.toString(), { lines: [{ productId: f.ajwa._id.toString(), qty: 50 }] }, admin);
+    expect(edited.lines[0].qty).toBe(50);
+    await expect(
+      invoices.update(invoice._id.toString(), { lines: [{ productId: f.ajwa._id.toString(), qty: 51 }] }, admin),
+    ).rejects.toThrow(/Line 1 \(.*\): only 50 available/);
+    expect(await qtyOf(f.ajwa._id, f.van._id)).toBe(0);
   });
 
   it("a salesman can't change the price or give a discount, and gets no cost back", async () => {

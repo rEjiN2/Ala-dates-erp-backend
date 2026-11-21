@@ -86,6 +86,10 @@ export class AuditLog {
 
   @Prop({ trim: true })
   reason?: string;
+
+  /** Ties together the entries written by one request (e.g. bundling compose). */
+  @Prop({ trim: true })
+  correlationId?: string;
 }
 
 export const AuditLogSchema = SchemaFactory.createForClass(AuditLog);

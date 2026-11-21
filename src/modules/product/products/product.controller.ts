@@ -36,8 +36,8 @@ export class ProductController {
   // Declared before ':id' so "lookup" is not captured as an id.
   /** Active products: id, code, name, unit, salePrice, vatRate. Never cost. */
   @Get('lookup')
-  lookup(@Query() query: ProductLookupQueryDto) {
-    return this.productService.lookup(query);
+  lookup(@Query() query: ProductLookupQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.productService.lookup(query, user);
   }
 
   @Get(':id')

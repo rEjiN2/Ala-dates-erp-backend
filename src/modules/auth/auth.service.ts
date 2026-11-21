@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { UsersService } from '../users/users.service.js';
 import { isUserActive } from '../users/schemas/user.schema.js';
@@ -9,9 +10,15 @@ import type { AuthenticatedUser, JwtAccessPayload, JwtRefreshPayload } from './i
 import type { UserDocument } from '../users/schemas/user.schema.js';
 import type { RoleDocument } from '../roles/schemas/role.schema.js';
 
+/** bcrypt ignores input past 72 bytes, so hash the JWT first or every rotated token would match. */
+const digest = (token: string): string => createHash('sha256').update(token).digest('hex');
+
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
+  /** Cookie lifetimes in ms, taken from each token's own exp. */
+  accessMaxAgeMs: number;
+  refreshMaxAgeMs: number;
 }
 
 @Injectable()
@@ -58,10 +65,17 @@ export class AuthService {
       expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN', { infer: true }),
     });
 
-    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+    const refreshTokenHash = await bcrypt.hash(digest(refreshToken), 10);
     await this.usersService.setRefreshTokenHash(user.id, refreshTokenHash);
 
-    return { accessToken, refreshToken };
+    const maxAgeMs = (token: string): number =>
+      Math.max(0, ((this.jwtService.decode(token) as { exp: number }).exp * 1000) - Date.now());
+    return {
+      accessToken,
+      refreshToken,
+      accessMaxAgeMs: maxAgeMs(accessToken),
+      refreshMaxAgeMs: maxAgeMs(refreshToken),
+    };
   }
 
   async rotateRefreshToken(userId: string, presentedRefreshToken: string): Promise<AuthTokens> {
@@ -70,7 +84,7 @@ export class AuthService {
       throw new UnauthorizedException('Session expired, please log in again');
     }
 
-    const isValid = await bcrypt.compare(presentedRefreshToken, user.refreshTokenHash);
+    const isValid = await bcrypt.compare(digest(presentedRefreshToken), user.refreshTokenHash);
     if (!isValid) {
       throw new UnauthorizedException('Session expired, please log in again');
     }

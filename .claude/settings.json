@@ -17,7 +17,9 @@
       "Bash(sed -n 15,40p src/modules/accounting/returns/schemas/../../ledger-accounts/schemas/ledger-account.schema.ts; sed -n 15,40p src/modules/reports/accounting-reports.service.ts; grep -n \"referenceReceipt\\\\|printType\\\\|logo\\\\|trn\\\\|company\\\\.\" src/modules/accounting/vouchers/voucher-pdf.ts | head -60)",
       "Read(//c/Users/HP/Desktop/RJ-TEST-CODE/Ala-Dates-Backend/src/modules/accounting/ledger-accounts/schemas/**)",
       "PowerShell(python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch1.py\")",
-      "PowerShell(Set-Location c:\\\\Users\\\\HP\\\\Desktop\\\\RJ-TEST-CODE\\\\Ala-Dates-Backend; \\(Get-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Raw -Encoding utf8\\).Replace\\(\"import { buildVoucherPdf, copyLabel, itemDocument }\", \"import { buildPlainInvoicePdf, buildVoucherPdf, copyLabel, itemDocument }\"\\) | Set-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Encoding utf8 -NoNewline; python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch3.py\"; git diff --stat src/modules/accounting/returns/return.service.ts)"
+      "PowerShell(Set-Location c:\\\\Users\\\\HP\\\\Desktop\\\\RJ-TEST-CODE\\\\Ala-Dates-Backend; \\(Get-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Raw -Encoding utf8\\).Replace\\(\"import { buildVoucherPdf, copyLabel, itemDocument }\", \"import { buildPlainInvoicePdf, buildVoucherPdf, copyLabel, itemDocument }\"\\) | Set-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Encoding utf8 -NoNewline; python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch3.py\"; git diff --stat src/modules/accounting/returns/return.service.ts)",
+      "Bash(timeout 200 pnpm db:reset)",
+      "Bash(grep -c \"^ms$\")"
     ],
     "additionalDirectories": [
       "\\tmp"

@@ -8,10 +8,13 @@ import {
   IsEnum,
   IsInt,
   IsMongoId,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
+  Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -71,6 +74,119 @@ export class CreateBundlingDto {
 }
 
 export class CancelBundlingDto extends CancelVoucherDto {}
+
+export class ComposeNewProductDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  name: string;
+
+  /** Default: the "Gift & Bundle Items" group. */
+  @IsOptional()
+  @IsMongoId()
+  productGroupId?: string;
+
+  @IsMongoId()
+  unitId: string;
+
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) salePrice?: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100) vatRate?: number;
+  @IsOptional() @IsString() @MaxLength(50) barcode?: string;
+}
+
+/** Exactly one of `id` or `new`. */
+export class ComposeProductDto {
+  @IsOptional()
+  @IsMongoId()
+  id?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ComposeNewProductDto)
+  new?: ComposeNewProductDto;
+}
+
+export class ComposePartDto {
+  @IsMongoId()
+  productId: string;
+
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @IsPositive()
+  qtyPerBundle: number;
+}
+
+export class ComposeBundlingDto {
+  @IsEnum(BundlingMode)
+  mode: BundlingMode;
+
+  @IsMongoId()
+  locationId: string;
+
+  @IsDateString()
+  date: string;
+
+  @IsOptional()
+  @IsString()
+  remarks?: string;
+
+  /** 0 = save the product and recipe only. */
+  @IsInt()
+  @Min(0)
+  qty: number;
+
+  @ValidateNested()
+  @Type(() => ComposeProductDto)
+  product: ComposeProductDto;
+
+  /** Omit to use the product's saved recipe. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ComposePartDto)
+  parts?: ComposePartDto[];
+
+  /** Default: the saved recipe's, else 0. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  extraCostPerUnit?: number;
+
+  /** Save `parts` as the product's recipe. Always done for a new product. */
+  @IsOptional()
+  @IsBoolean()
+  saveRecipe?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  updateBundlePurchasePrice?: boolean;
+}
+
+export class PreviewBundlingDto {
+  @IsMongoId()
+  locationId: string;
+
+  @IsInt()
+  @IsPositive()
+  qty: number;
+
+  /** Either `parts` (a new or edited bundle) or `productId` (its saved recipe). */
+  @IsOptional()
+  @IsMongoId()
+  productId?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ComposePartDto)
+  parts?: ComposePartDto[];
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  extraCostPerUnit?: number;
+}
 
 export class BundlingQueryDto extends PickType(VoucherQueryDto, [
   'dateFrom',

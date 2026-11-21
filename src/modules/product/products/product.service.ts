@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model, QueryFilter } from 'mongoose';
@@ -23,7 +23,8 @@ import { AuditService } from '../../audit/audit.service.js';
 import { AuditAction, type AuditChange } from '../../audit/schemas/audit-log.schema.js';
 import { diffFields, type DiffField } from '../../audit/field-diff.js';
 import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
-import { Permission, hasPermission } from '../../roles/permissions.js';
+import { DataScope, Permission, hasPermission } from '../../roles/permissions.js';
+import type { AuthenticatedUser } from '../../auth/interfaces/auth.types.js';
 import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
 import { runInTransaction } from '../../../common/utils/transaction.util.js';
 
@@ -109,6 +110,8 @@ export interface ProductLookupItem {
   unit: { id: string; name: string; symbol: string } | null;
   salePrice: number;
   vatRate: number;
+  /** Only for=sales: on-hand at the requested location. */
+  availableQty?: number;
 }
 
 @Injectable()
@@ -154,13 +157,29 @@ export class ProductService {
   }
 
   /** Active products for invoice dropdowns. */
-  async lookup(query: ProductLookupQueryDto): Promise<ProductLookupItem[]> {
+  async lookup(query: ProductLookupQueryDto, user?: AuthenticatedUser): Promise<ProductLookupItem[]> {
     const filter: QueryFilter<ProductDocument> = {
       ...this.searchFilter(query.q, ['name', 'code', 'barcode']),
       status: ProductStatus.ACTIVE,
     };
+    // for=sales: stock products with on-hand > 0 at one location (read straight from
+    // stock_balances: importing StockModule here would be a module cycle).
+    let available: Map<string, number> | undefined;
+    if (query.for === 'sales') {
+      if (!query.locationId) throw new BadRequestException('locationId is required for lookup?for=sales');
+      if (user?.dataScope === DataScope.OWN && !(user.allowedLocationIds ?? []).includes(query.locationId)) {
+        throw new ForbiddenException('You may not sell from this location');
+      }
+      const rows = await this.connection
+        .collection<{ productId: Types.ObjectId; qty: number }>('stock_balances')
+        .find({ locationId: new Types.ObjectId(query.locationId), qty: { $gt: 0 } })
+        .toArray();
+      available = new Map(rows.map((row) => [row.productId.toString(), row.qty]));
+      filter._id = { $in: rows.map((row) => row.productId) };
+      filter.type = { $in: [ProductType.STOCK, ProductType.BUNDLE] };
+    }
     if (query.groupId) filter.productGroupId = { $in: await this.groupWithDescendants(query.groupId) };
-    if (query.type) filter.type = query.type;
+    if (query.type && !available) filter.type = query.type;
 
     const products = await this.productModel
       .find(filter)
@@ -178,6 +197,7 @@ export class ProductService {
       unit: units.get(product.unitId.toString()) ?? null,
       salePrice: product.salePrice,
       vatRate: product.vatRate,
+      ...(available ? { availableQty: available.get(product._id.toString()) ?? 0 } : {}),
     }));
   }
 
@@ -191,37 +211,40 @@ export class ProductService {
   }
 
   async create(dto: CreateProductDto, actor: Actor): Promise<ProductView> {
+    const created = await this.inTransaction((session) => this.createIn(dto, actor, session));
+    return this.findById(created.id);
+  }
+
+  /** Create inside the caller's transaction (bundling compose); `correlationId` links its audit entry. */
+  async createIn(dto: CreateProductDto, actor: Actor, session: ClientSession, correlationId?: string): Promise<ProductDocument> {
     await this.assertGroupExists(dto.productGroupId);
-    await this.assertUnitExists(dto.unitId);
+    const unitId = await this.resolveUnit(dto.productGroupId, dto.unitId);
+    await this.assertUnitExists(unitId);
     const values = Object.fromEntries(SIMPLE_FIELDS.map((field) => [field, dto[field] ?? DEFAULTS[field]]));
     this.assertStockLevels(values.minStock as number | null, values.reorderLevel as number | null, values.maxStock as number | null);
 
-    const created = await this.inTransaction(async (session) => {
-      await this.assertNoDuplicates(dto.name, (values.barcode as string | null) ?? null, null, session);
-      const code = await this.sequenceService.nextCode(PRODUCT_CODE_SEQUENCE, session);
-      const [product] = await this.productModel.create(
-        [
-          {
-            code,
-            name: dto.name,
-            productGroupId: new Types.ObjectId(dto.productGroupId),
-            type: dto.type,
-            unitId: new Types.ObjectId(dto.unitId),
-            status: dto.status ?? ProductStatus.ACTIVE,
-            imageFileRef: null,
-            ...values,
-          },
-        ],
-        { session },
-      );
-      await this.auditService.record(
-        { entityType: PRODUCT_ENTITY_TYPE, entityId: product._id, entityRef: code, action: AuditAction.CREATED, actor },
-        session,
-      );
-      return product;
-    });
-
-    return this.findById(created.id);
+    await this.assertNoDuplicates(dto.name, (values.barcode as string | null) ?? null, null, session);
+    const code = await this.sequenceService.nextCode(PRODUCT_CODE_SEQUENCE, session);
+    const [product] = await this.productModel.create(
+      [
+        {
+          code,
+          name: dto.name,
+          productGroupId: new Types.ObjectId(dto.productGroupId),
+          type: dto.type,
+          unitId: new Types.ObjectId(unitId),
+          status: dto.status ?? ProductStatus.ACTIVE,
+          imageFileRef: null,
+          ...values,
+        },
+      ],
+      { session },
+    );
+    await this.auditService.record(
+      { entityType: PRODUCT_ENTITY_TYPE, entityId: product._id, entityRef: code, action: AuditAction.CREATED, actor, correlationId },
+      session,
+    );
+    return product;
   }
 
   /**
@@ -232,10 +255,17 @@ export class ProductService {
     const provided = (key: keyof UpdateProductDto) => Object.prototype.hasOwnProperty.call(dto, key);
     if (provided('name') && !dto.name) throw new BadRequestException('name cannot be empty');
     if (provided('productGroupId')) await this.assertGroupExists(dto.productGroupId!);
-    if (provided('unitId')) await this.assertUnitExists(dto.unitId!);
+    if (provided('unitId') && dto.unitId) await this.assertUnitExists(dto.unitId);
 
     await this.inTransaction(async (session) => {
       const product = await this.getByIdOrThrow(id, session);
+      let nextUnitId: string | undefined;
+      if (provided('unitId') || provided('productGroupId')) {
+        nextUnitId = await this.resolveUnit(
+          dto.productGroupId ?? product.productGroupId.toString(),
+          (provided('unitId') ? dto.unitId : product.unitId.toString()) ?? undefined,
+        );
+      }
       const before = await this.display(product);
 
       if (provided('name')) product.name = dto.name!;
@@ -247,7 +277,7 @@ export class ProductService {
         }
         product.type = dto.type!;
       }
-      if (provided('unitId')) product.unitId = new Types.ObjectId(dto.unitId!);
+      if (nextUnitId) product.unitId = new Types.ObjectId(nextUnitId);
       if (provided('status')) product.status = dto.status!;
       for (const field of SIMPLE_FIELDS) {
         if (provided(field)) product.set(field, dto[field] ?? DEFAULTS[field]);
@@ -392,6 +422,20 @@ export class ProductService {
     if (!(await this.productGroupModel.exists({ _id: id }).exec())) {
       throw new BadRequestException(`Product group ${id} not found`);
     }
+  }
+
+  /** The unit to use: the one given, else the group's default; must be in the group's allowed units when it has any. */
+  private async resolveUnit(groupId: string, unitId: string | undefined): Promise<string> {
+    const group = await this.productGroupModel.findById(groupId).select('defaultUnitId allowedUnitIds').lean().exec();
+    const unit = unitId ?? group?.defaultUnitId?.toString();
+    if (!unit) {
+      throw new BadRequestException({ message: 'unitId is required: this group has no default unit', field: 'unitId' });
+    }
+    const allowed = (group?.allowedUnitIds ?? []).map(String);
+    if (allowed.length > 0 && !allowed.includes(unit)) {
+      throw new BadRequestException({ message: 'This unit is not allowed for the product group', field: 'unitId' });
+    }
+    return unit;
   }
 
   private async assertUnitExists(id: string): Promise<void> {
