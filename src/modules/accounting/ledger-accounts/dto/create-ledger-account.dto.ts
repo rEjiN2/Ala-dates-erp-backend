@@ -23,6 +23,11 @@ export class CreateLedgerAccountDto {
   @IsMongoId()
   locationId?: string | null;
 
+  /** Cash accounts only: an active user. Optional. */
+  @IsOptional()
+  @IsMongoId()
+  holderUserId?: string | null;
+
   /** Bank accounts only. */
   @IsOptional()
   @ValidateNested()

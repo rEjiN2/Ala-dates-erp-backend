@@ -15,15 +15,21 @@ import {
   LedgerAccountScope,
   LedgerAccountStatus,
   LedgerAccountType,
+  LEDGER_ACCOUNT_ENTITY_TYPE,
   SCOPE_ACCOUNT_TYPES,
   SYSTEM_MANAGED_ACCOUNT_TYPES,
 } from './schemas/ledger-account.schema.js';
 import { CreateLedgerAccountDto } from './dto/create-ledger-account.dto.js';
-import { UpdateLedgerAccountDto } from './dto/update-ledger-account.dto.js';
+import { ChangeHolderDto, UpdateLedgerAccountDto } from './dto/update-ledger-account.dto.js';
 import { BankDetailsDto } from './dto/bank-details.dto.js';
 import { LedgerAccountLookupQueryDto, LedgerAccountQueryDto } from './dto/ledger-account-query.dto.js';
 import { LEDGER_ACCOUNT_CODE_SEQUENCES } from './ledger-account-code.js';
 import { LedgerAccountUsageRegistry } from './ledger-account-usage.registry.js';
+import { User, UserDocument, ACTIVE_USER_FILTER } from '../../users/schemas/user.schema.js';
+import { AuditService } from '../../audit/audit.service.js';
+import { AuditAction } from '../../audit/schemas/audit-log.schema.js';
+import type { Actor } from '../../../common/schemas/user-snapshot.schema.js';
+import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { LocationService } from '../../location/location.service.js';
 import { SequenceService } from '../../sequence/sequence.service.js';
 import { escapeRegExp } from '../../sequence/code-sequence.js';
@@ -57,17 +63,28 @@ export interface LedgerAccountLookupItem {
   name: string;
   type: LedgerAccountType;
   balance: number;
+  /** Cash accounts: the user collecting into it. */
+  holderUserId: string | null;
 }
 
 @Injectable()
 export class LedgerAccountService {
   constructor(
-    @InjectModel(LedgerAccount.name) private readonly ledgerAccountModel: Model<LedgerAccountDocument>,
+    @InjectModel(LedgerAccount.name)
+    private readonly ledgerAccountModel: Model<LedgerAccountDocument>,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    private readonly auditService: AuditService,
     @InjectConnection() private readonly connection: Connection,
     private readonly sequenceService: SequenceService,
     private readonly locationService: LocationService,
     private readonly usageRegistry: LedgerAccountUsageRegistry,
+    entityAccess: EntityAccessRegistry,
   ) {
+    // Holder history via GET /activity: readable by anyone logged in, like GET /accounts/:id.
+    entityAccess.register(LEDGER_ACCOUNT_ENTITY_TYPE, {
+      exists: async (id) => Boolean(await this.ledgerAccountModel.exists({ _id: id }).exec()),
+      canRead: () => true,
+    });
     usageRegistry.register('bank accounts (as their bank charge account)', async (accountId, session) =>
       Boolean(
         await this.ledgerAccountModel
@@ -92,6 +109,8 @@ export class LedgerAccountService {
       },
     };
     if (query.status) filter.status = query.status;
+    // Locked system accounts are hidden unless asked for.
+    filter.systemKey = query.systemAccounts ? { $ne: null } : null;
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -105,7 +124,118 @@ export class LedgerAccountService {
       this.ledgerAccountModel.countDocuments(filter).exec(),
     ]);
 
+    const holders = await this.userModel
+      .find({
+        _id: { $in: items.map((item) => item.holderUserId).filter(Boolean) },
+      })
+      .select('name')
+      .lean()
+      .exec();
+    const names = new Map(holders.map((holder) => [holder._id.toString(), holder.name]));
+    for (const item of items)
+      item.holderName = item.holderUserId ? (names.get(item.holderUserId.toString()) ?? null) : null;
+
     return { items, total, page, limit };
+  }
+
+  /**
+   * Moves a cash account to another active user (or to nobody). Refused while the
+   * balance is not zero or a submitted handover still draws on the account.
+   */
+  async changeHolder(id: string, dto: ChangeHolderDto, actor: Actor): Promise<LedgerAccountDocument> {
+    return this.inTransaction(async (session) => {
+      const account = await this.findById(id, session);
+      this.assertNotSystemManaged(account, 'updated');
+      if (account.type !== LedgerAccountType.CASH) {
+        throw new BadRequestException('Only cash accounts have a holder');
+      }
+      const from = account.holderUserId?.toString() ?? null;
+      if (from === dto.holderUserId) {
+        throw new BadRequestException('That user already holds this account');
+      }
+      // Giving an unassigned account its first holder moves no one's cash, so only a move from a holder is guarded.
+      if (from !== null && round2(account.balance) !== 0) {
+        throw new ConflictException(
+          `Cannot change holder of ${account.code} (${account.name}): its balance is ${round2(account.balance)}, not 0. Hand the cash over first.`,
+        );
+      }
+      const pending =
+        from !== null &&
+        (await this.connection.collection('handovers').findOne(
+          {
+            status: 'submitted',
+            $or: [{ 'items.sourceAccountId': account._id }, { 'expenses.sourceAccountId': account._id }],
+          },
+          { session, projection: { code: 1 } },
+        ));
+      if (pending) {
+        throw new ConflictException(
+          `Cannot change holder of ${account.code} (${account.name}): handover ${pending.code ?? ''} is still pending.`.replace(
+            '  ',
+            ' ',
+          ),
+        );
+      }
+      const holders = await this.applyHolder(account, dto.holderUserId, session);
+      await account.save({ session });
+      await this.auditService.record(
+        {
+          entityType: LEDGER_ACCOUNT_ENTITY_TYPE,
+          entityId: account._id,
+          entityRef: account.code,
+          action: AuditAction.UPDATED,
+          actor,
+          reason: dto.reason,
+          changes: [
+            {
+              field: 'holder',
+              label: 'Holder',
+              from: holders.from,
+              to: holders.to,
+            },
+          ],
+        },
+        session,
+      );
+      return account;
+    });
+  }
+
+  /** Sets the holder, keeping both users' allowed cash accounts (receipt defaults) in step. Returns display names. */
+  private async applyHolder(
+    account: LedgerAccountDocument,
+    holderUserId: string | null,
+    session: ClientSession,
+  ): Promise<{ from: string | null; to: string | null }> {
+    const old = account.holderUserId
+      ? await this.userModel.findById(account.holderUserId).select('name').session(session).lean().exec()
+      : null;
+    let next: { name: string } | null = null;
+    if (holderUserId) {
+      next = await this.userModel
+        .findOne({ _id: holderUserId, ...ACTIVE_USER_FILTER })
+        .select('name')
+        .session(session)
+        .lean()
+        .exec();
+      if (!next) throw new BadRequestException('Holder must be an existing active user');
+    }
+    if (old) {
+      await this.userModel.updateOne(
+        { _id: account.holderUserId },
+        { $pull: { allowedCashAccountIds: account._id } },
+        { session },
+      );
+    }
+    if (holderUserId) {
+      await this.userModel.updateOne(
+        { _id: holderUserId },
+        { $addToSet: { allowedCashAccountIds: account._id } },
+        { session },
+      );
+    }
+    account.holderUserId = holderUserId ? new Types.ObjectId(holderUserId) : null;
+    return { from: old?.name ?? null, to: next?.name ?? null };
   }
 
   /** Active accounts only, for voucher dropdowns: an inactive account can't be posted to. */
@@ -122,7 +252,7 @@ export class LedgerAccountService {
 
     const accounts = await this.ledgerAccountModel
       .find(filter)
-      .select('code name type balance')
+      .select('code name type balance holderUserId')
       .sort({ code: 1 })
       .limit(query.limit ?? 50)
       .lean()
@@ -134,6 +264,7 @@ export class LedgerAccountService {
       name: account.name,
       type: account.type,
       balance: account.balance,
+      holderUserId: account.holderUserId?.toString() ?? null,
     }));
   }
 
@@ -177,6 +308,10 @@ export class LedgerAccountService {
           ],
           { session },
         );
+        if (dto.holderUserId) {
+          await this.applyHolder(created, dto.holderUserId, session);
+          await created.save({ session });
+        }
         return created;
       },
       { type: dto.type, name: dto.name },
@@ -240,13 +375,26 @@ export class LedgerAccountService {
    * opening balances are posted separately.
    */
   async createSystemAccount(
-    input: { code: string; name: string; type: LedgerAccountType; status: LedgerAccountStatus },
+    input: {
+      code: string;
+      name: string;
+      type: LedgerAccountType;
+      status: LedgerAccountStatus;
+    },
     session: ClientSession,
   ): Promise<LedgerAccountDocument> {
     this.assertSystemManagedType(input.type);
     try {
       const [created] = await this.ledgerAccountModel.create(
-        [{ code: input.code, name: input.name, type: input.type, balance: 0, status: input.status }],
+        [
+          {
+            code: input.code,
+            name: input.name,
+            type: input.type,
+            balance: 0,
+            status: input.status,
+          },
+        ],
         { session },
       );
       return created;
@@ -293,7 +441,16 @@ export class LedgerAccountService {
     if (existing) return existing;
     const code = await this.sequenceService.nextCode(LEDGER_ACCOUNT_CODE_SEQUENCES[type]!, session);
     const [created] = await this.ledgerAccountModel.create(
-      [{ code, name, type, balance: 0, status: LedgerAccountStatus.ACTIVE, systemKey }],
+      [
+        {
+          code,
+          name,
+          type,
+          balance: 0,
+          status: LedgerAccountStatus.ACTIVE,
+          systemKey,
+        },
+      ],
       { session },
     );
     return created;
@@ -303,7 +460,18 @@ export class LedgerAccountService {
   async findByCodes(
     codes: readonly string[],
     session?: ClientSession,
-  ): Promise<Map<string, { id: string; code: string; name: string; type: LedgerAccountType; systemKey: string | null }>> {
+  ): Promise<
+    Map<
+      string,
+      {
+        id: string;
+        code: string;
+        name: string;
+        type: LedgerAccountType;
+        systemKey: string | null;
+      }
+    >
+  > {
     const wanted = [...new Set(codes.map((code) => code.trim().toUpperCase()))];
     if (wanted.length === 0) return new Map();
     const accounts = await this.ledgerAccountModel
@@ -390,7 +558,17 @@ export class LedgerAccountService {
   async getSummaries(
     ids: readonly string[],
     session?: ClientSession,
-  ): Promise<Map<string, { code: string; name: string; type: LedgerAccountType; systemKey: string | null }>> {
+  ): Promise<
+    Map<
+      string,
+      {
+        code: string;
+        name: string;
+        type: LedgerAccountType;
+        systemKey: string | null;
+      }
+    >
+  > {
     const objectIds = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
     if (objectIds.length === 0) {
       return new Map();
@@ -404,7 +582,12 @@ export class LedgerAccountService {
     return new Map(
       accounts.map((account) => [
         account._id.toString(),
-        { code: account.code, name: account.name, type: account.type, systemKey: account.systemKey ?? null },
+        {
+          code: account.code,
+          name: account.name,
+          type: account.type,
+          systemKey: account.systemKey ?? null,
+        },
       ]),
     );
   }
@@ -452,8 +635,15 @@ export class LedgerAccountService {
   /** locationId belongs to cash accounts and bankDetails to bank accounts; both refs must resolve. */
   private async assertTypeSpecificFields(
     type: LedgerAccountType,
-    fields: { locationId?: string | null; bankDetails?: BankDetailsDto | null },
+    fields: {
+      locationId?: string | null;
+      holderUserId?: string | null;
+      bankDetails?: BankDetailsDto | null;
+    },
   ): Promise<void> {
+    if (fields.holderUserId && type !== LedgerAccountType.CASH) {
+      throw new BadRequestException(`holderUserId is only allowed on cash accounts, not on a ${type} account`);
+    }
     if (fields.locationId) {
       if (type !== LedgerAccountType.CASH) {
         throw new BadRequestException(`locationId is only allowed on cash accounts, not on a ${type} account`);

@@ -69,6 +69,9 @@ export const SCOPE_ACCOUNT_TYPES: Readonly<Record<LedgerAccountScope, readonly L
   [LedgerAccountScope.PARTY]: [LedgerAccountType.PARTY, LedgerAccountType.SUPPLIER],
 };
 
+/** Entity type under which accounts appear in audit logs. */
+export const LEDGER_ACCOUNT_ENTITY_TYPE = 'ledger-account';
+
 export type LedgerAccountDocument = HydratedDocument<LedgerAccount>;
 
 /** Only ever present on bank accounts. */
@@ -140,6 +143,10 @@ export class LedgerAccount {
   @Prop({ type: Types.ObjectId, ref: 'Location', default: null, index: true })
   locationId: Types.ObjectId | null;
 
+  /** Cash accounts only: the user (position) collecting into this account. Moved only by "Change holder". */
+  @Prop({ type: Types.ObjectId, ref: 'User', default: null, index: true })
+  holderUserId: Types.ObjectId | null;
+
   @Prop({ type: BankDetailsSchema, default: null })
   bankDetails: BankDetails | null;
 
@@ -150,6 +157,9 @@ export class LedgerAccount {
   @Prop({ type: String, unique: true, sparse: true, immutable: true })
   systemKey?: string;
 
+  /** Virtual, filled by list(): the holder's current name. Not stored. */
+  holderName?: string | null;
+
   /** Virtual, derived from type and systemKey. */
   isSystemManaged?: boolean;
 }
@@ -159,6 +169,14 @@ export const LedgerAccountSchema = SchemaFactory.createForClass(LedgerAccount);
 LedgerAccountSchema.virtual('isSystemManaged').get(function (this: LedgerAccount) {
   return SYSTEM_MANAGED_ACCOUNT_TYPES.includes(this.type) || Boolean(this.systemKey);
 });
+
+LedgerAccountSchema.virtual('holderName')
+  .get(function (this: { $locals: Record<string, unknown> }) {
+    return (this.$locals.holderName as string | null | undefined) ?? null;
+  })
+  .set(function (this: { $locals: Record<string, unknown> }, value: string | null) {
+    this.$locals.holderName = value;
+  });
 
 // Name is unique within a type, ignoring case ("Main Cash" == "main cash").
 LedgerAccountSchema.index(

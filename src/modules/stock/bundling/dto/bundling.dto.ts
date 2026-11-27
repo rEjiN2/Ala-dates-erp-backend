@@ -1,6 +1,7 @@
 import { PickType } from '@nestjs/mapped-types';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
@@ -43,6 +44,19 @@ export class SetRecipeDto {
   extraCostPerUnit: number;
 }
 
+/** A batch-total cost (not per unit): Labour, Transport, Other or any text. */
+export class ExtraCostDto {
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  label: string;
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  amount: number;
+}
+
 export class CreateBundlingDto {
   /** Not in the future. */
   @IsDateString()
@@ -64,6 +78,56 @@ export class CreateBundlingDto {
   qty: number;
 
   /** Bundle mode only: set the bundle's purchase price to the computed cost. Default true. */
+  @IsOptional()
+  @IsBoolean()
+  updateBundlePurchasePrice?: boolean;
+
+  @IsOptional()
+  @IsString()
+  remarks?: string;
+
+  /** Batch totals on top of the parts; cost per bundle = (parts + these) / qty. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ExtraCostDto)
+  extraCosts?: ExtraCostDto[];
+}
+
+/** PUT /bundlings/:id. Mode and bundle product never change. Omitted optional fields stay as they are. */
+export class EditBundlingDto {
+  @IsDateString()
+  date: string;
+
+  @IsMongoId()
+  locationId: string;
+
+  @IsInt()
+  @IsPositive()
+  qty: number;
+
+  /** Bundle only: replaces the parts of this bundling (not the saved recipe). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ComposePartDto)
+  parts?: ComposePartDto[];
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  extraCostPerUnit?: number;
+
+  /** Replaces the list; [] clears it. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ExtraCostDto)
+  extraCosts?: ExtraCostDto[];
+
   @IsOptional()
   @IsBoolean()
   updateBundlePurchasePrice?: boolean;
@@ -160,6 +224,14 @@ export class ComposeBundlingDto {
   @IsOptional()
   @IsBoolean()
   updateBundlePurchasePrice?: boolean;
+
+  /** Bundle only. Batch totals; added to extraCostPerUnit x qty. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ExtraCostDto)
+  extraCosts?: ExtraCostDto[];
 }
 
 export class PreviewBundlingDto {
@@ -186,6 +258,19 @@ export class PreviewBundlingDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   extraCostPerUnit?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ExtraCostDto)
+  extraCosts?: ExtraCostDto[];
+
+  /** Markup on cost, for suggestedPrice and the expected profit. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  marginPercent?: number;
 }
 
 export class BundlingQueryDto extends PickType(VoucherQueryDto, [

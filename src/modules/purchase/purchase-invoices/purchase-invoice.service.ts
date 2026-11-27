@@ -494,6 +494,11 @@ export class PurchaseInvoiceService {
     if (supplier.status !== PartyStatus.ACTIVE) {
       throw new BadRequestException(`Supplier ${supplier.code} (${supplier.name}) is inactive`);
     }
+    if (!(await this.ledgerAccountService.getSummaries([supplier.ledgerAccountId.toString()], session)).size) {
+      throw new BadRequestException(
+        `Supplier ${supplier.code} (${supplier.name}) points to a ledger account that no longer exists. Run pnpm check:integrity and repair or recreate this supplier.`,
+      );
+    }
     await this.stockService.assertHoldsStock([], [input.locationId], session);
 
     const billNo = input.billNo.trim();

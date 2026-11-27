@@ -19,10 +19,18 @@
       "PowerShell(python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch1.py\")",
       "PowerShell(Set-Location c:\\\\Users\\\\HP\\\\Desktop\\\\RJ-TEST-CODE\\\\Ala-Dates-Backend; \\(Get-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Raw -Encoding utf8\\).Replace\\(\"import { buildVoucherPdf, copyLabel, itemDocument }\", \"import { buildPlainInvoicePdf, buildVoucherPdf, copyLabel, itemDocument }\"\\) | Set-Content src\\\\modules\\\\accounting\\\\returns\\\\return.service.ts -Encoding utf8 -NoNewline; python \"C:\\\\Users\\\\HP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\69b03aad8f5ffe9f\\\\1804143e-e86c-4b31-af95-fdd9ea989eab\\\\scratchpad\\\\patch3.py\"; git diff --stat src/modules/accounting/returns/return.service.ts)",
       "Bash(timeout 200 pnpm db:reset)",
-      "Bash(grep -c \"^ms$\")"
+      "Bash(grep -c \"^ms$\")",
+      "Bash(sed -i \"s/changes: \\\\[{ field: 'holder', from/changes: [{ field: 'holder', label: 'Holder', from/\" src/modules/accounting/ledger-accounts/ledger-account.service.ts && npx tsc --noEmit -p tsconfig.json 2>&1 | head; pnpm test src/modules/accounting/ledger-accounts 2>&1 | tail -25)",
+      "Bash(sed -i \"42s/User, UserSchema/User, UserDocument, UserSchema/\" src/modules/accounting/ledger-accounts/ledger-account.service.spec.ts && npx tsc --noEmit -p tsconfig.json 2>&1 | head -5; cd ../ALA-Dates && ls src/features src/features/accounts 2>/dev/null; grep -rln \"accounts/lookup\\\\|/accounts\" src --include=*.ts --include=*.tsx | head -30)",
+      "Bash(git stash *)",
+      "Bash(python \"C:/Users/HP/AppData/Local/Temp/claude/69b03aad8f5ffe9f/04ca6ee7-287f-4c29-b58f-a01cdd65f1ab/scratchpad/edit_fe.py\")",
+      "Bash(python \"C:/Users/HP/AppData/Local/Temp/claude/69b03aad8f5ffe9f/04ca6ee7-287f-4c29-b58f-a01cdd65f1ab/scratchpad/edit_users.py\")",
+      "Bash(timeout 170 pnpm check:integrity)",
+      "Bash(python \"C:/Users/HP/AppData/Local/Temp/claude/69b03aad8f5ffe9f/39a2639b-91fc-48f9-997a-b0f4c0fd8c7b/scratchpad/patch1.py\" src/modules/stock/bundling/bundling.service.ts)"
     ],
     "additionalDirectories": [
-      "\\tmp"
+      "\\tmp",
+      "c:\\Users\\HP\\Desktop\\RJ-TEST-CODE\\Ala-Dates-Backend\\src\\modules\\accounting\\ledger-accounts"
     ]
   }
 }

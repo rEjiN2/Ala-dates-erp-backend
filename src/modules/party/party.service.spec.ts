@@ -26,6 +26,7 @@ import { FilesService } from '../files/files.service.js';
 import { FileOwnerType } from '../files/schemas/file-attachment.schema.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditLog, AuditLogDocument, AuditLogSchema } from '../audit/schemas/audit-log.schema.js';
+import { User, UserSchema } from '../users/schemas/user.schema.js';
 import { EntityAccessRegistry } from '../comments/entity-access.registry.js';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
 import { createAppValidationPipe } from '../../common/pipes/app-validation.pipe.js';
@@ -80,6 +81,7 @@ describe('Parties (PartyService)', () => {
           { name: Location.name, schema: LocationSchema },
           { name: Counter.name, schema: CounterSchema },
           { name: AuditLog.name, schema: AuditLogSchema },
+          { name: User.name, schema: UserSchema },
         ]),
       ],
       controllers: [PartyController],

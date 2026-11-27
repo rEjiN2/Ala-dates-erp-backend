@@ -39,7 +39,7 @@ import { Comment, CommentSchema } from '../../comments/schemas/comment.schema.js
 import { UserUsageRegistry } from '../../users/user-usage.registry.js';
 import { Role, RoleSchema } from '../../roles/schemas/role.schema.js';
 import { UsersService } from '../../users/users.service.js';
-import { User, UserSchema } from '../../users/schemas/user.schema.js';
+import { User, UserDocument, UserSchema } from '../../users/schemas/user.schema.js';
 import { VoucherPostingService } from '../vouchers/voucher-posting.service.js';
 import { LedgerEntry, LedgerEntrySchema } from '../vouchers/schemas/ledger-entry.schema.js';
 
@@ -447,8 +447,8 @@ describe('Accounts master (LedgerAccountService)', () => {
       const result = await service.lookup({ types: [CASH, BANK], q: 'main', limit: 50 });
 
       expect(result).toEqual([
-        { id: expect.any(String), code: 'BNK-0001', name: 'Main Bank', type: BANK, balance: 0 },
-        { id: expect.any(String), code: 'CASH-0001', name: 'Main Cash', type: CASH, balance: 0 },
+        { id: expect.any(String), code: 'BNK-0001', name: 'Main Bank', type: BANK, balance: 0, holderUserId: null },
+        { id: expect.any(String), code: 'CASH-0001', name: 'Main Cash', type: CASH, balance: 0, holderUserId: null },
       ]);
     });
 
@@ -498,6 +498,35 @@ describe('Accounts master (LedgerAccountService)', () => {
 
     it('grants accounts:manage to the admin role', () => {
       expect(ADMIN_PERMISSIONS).toContain('accounts:manage');
+    });
+  });
+
+  describe('collector cash account holder', () => {
+    it('refuses a move while the balance is not zero, allows it at zero, and keeps allowedCashAccountIds in step', async () => {
+      const users = moduleRef.get(getModelToken(User.name)) as Model<UserDocument>;
+      const mk = (name: string) =>
+        users.create({ email: `${name}@x.ae`, passwordHash: 'x', name, role: new Types.ObjectId() });
+      const [najeeb, other] = await Promise.all([mk('najeeb'), mk('other')]);
+      const actor = { id: najeeb._id.toString(), name: 'najeeb' };
+
+      const account = await service.create({
+        name: 'Van 1 Cash',
+        type: LedgerAccountType.CASH,
+        holderUserId: najeeb._id.toString(),
+      });
+      expect((await users.findById(najeeb._id))!.allowedCashAccountIds.map(String)).toEqual([account._id.toString()]);
+
+      await accountModel.updateOne({ _id: account._id }, { balance: 50 });
+      await expect(
+        service.changeHolder(account._id.toString(), { holderUserId: other._id.toString() }, actor),
+      ).rejects.toThrow(/balance is 50/);
+
+      await accountModel.updateOne({ _id: account._id }, { balance: 0 });
+      const moved = await service.changeHolder(account._id.toString(), { holderUserId: other._id.toString() }, actor);
+      expect(moved.holderUserId!.toString()).toBe(other._id.toString());
+      expect((await users.findById(najeeb._id))!.allowedCashAccountIds).toHaveLength(0);
+      const audit = moduleRef.get(AuditService);
+      expect((await audit.findForEntity('ledger-account', account._id))[0].changes[0]).toMatchObject({ from: 'najeeb', to: 'other' });
     });
   });
 });

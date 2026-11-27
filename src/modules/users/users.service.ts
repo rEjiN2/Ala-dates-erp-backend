@@ -66,9 +66,9 @@ export class UsersService {
    * Every user, inactive ones included, for filters such as "Created by":
    * a deactivated user can still be the creator of existing records.
    */
-  async lookup(): Promise<{ id: string; name: string }[]> {
-    const users = await this.userModel.find().select('name').sort({ name: 1 }).lean().exec();
-    return users.map((user) => ({ id: user._id.toString(), name: user.name }));
+  async lookup(): Promise<{ id: string; name: string; active: boolean }[]> {
+    const users = await this.userModel.find().select('name status isActive').sort({ name: 1 }).lean().exec();
+    return users.map((user) => ({ id: user._id.toString(), name: user.name, active: isUserActive(user) }));
   }
 
   /**

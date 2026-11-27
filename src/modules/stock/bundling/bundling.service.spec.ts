@@ -13,6 +13,7 @@ import { StockEntry, StockEntrySchema } from '../schemas/stock-entry.schema.js';
 import { StockBalance, StockBalanceSchema } from '../schemas/stock-balance.schema.js';
 import { BundlingService } from './bundling.service.js';
 import { BundlingController } from './bundling.controller.js';
+import { BundleMasterService } from './bundle-master.service.js';
 import { BundleRecipe, BundleRecipeSchema } from './schemas/bundle-recipe.schema.js';
 import { Bundling, BundlingMode, BundlingSchema } from './schemas/bundling.schema.js';
 import { Product, ProductSchema, ProductType } from '../../product/products/schemas/product.schema.js';
@@ -79,6 +80,7 @@ describe('Bundling', () => {
         StockService,
         CostService,
         BundlingService,
+        BundleMasterService,
         ProductService,
         ProductUsageRegistry,
         SequenceService,
@@ -173,6 +175,106 @@ describe('Bundling', () => {
       admin,
     );
 
+  it('bundle master: hidden from products list, parts validated, compose extends the recipe without saving', async () => {
+    const f = await fixtures();
+    await model(Counter.name).collection.insertOne({ key: 'product', seq: 10 });
+    const masters = moduleRef.get(BundleMasterService);
+    const products = moduleRef.get(ProductService);
+    const group = (await model(ProductGroup.name).findOne().lean().exec())!._id.toString();
+    const unit = (await model(Unit.name).findOne().lean().exec())!._id.toString();
+    const base = { name: 'Gift Master', productGroupId: group, unitId: unit, salePrice: 30 };
+    const parts = [{ productId: f.dates._id.toString(), qtyPerBundle: 2 }, { productId: f.box._id.toString(), qtyPerBundle: 1 }];
+
+    await expect(masters.create({ ...base, parts: [parts[0], parts[0]] }, admin)).rejects.toThrow(/more than one line/);
+    await expect(masters.create({ ...base, parts: [{ productId: f.service._id.toString(), qtyPerBundle: 1 }] }, admin)).rejects.toThrow(/stock products/);
+    expect(await model(Product.name).countDocuments({ name: 'Gift Master' })).toBe(0); // rolled back
+
+    const created = await masters.create({ ...base, parts, defaultExtraCostPerUnit: 1.5 }, admin);
+    expect(created.parts).toHaveLength(2);
+    await expect(masters.create({ ...base, name: 'Other', parts: [{ productId: created.id, qtyPerBundle: 1 }] }, admin)).rejects.toThrow(/is a bundle/);
+    const page = (query: object) => products.list({ page: 1, limit: 20, ...query });
+    expect((await page({})).items.map((p) => p.id)).not.toContain(created.id);
+    expect((await page({ isBundle: true })).items.map((p) => p.id)).toEqual([created.id]);
+    expect((await products.lookup({ q: 'Gift Master', limit: 50 })).map((p) => p.id)).toEqual([created.id]);
+    const look = async (isBundle?: boolean) => (await products.lookup({ limit: 50, isBundle })).map((p) => p.id);
+    const plain = [f.dates._id.toString(), f.box._id.toString()];
+    expect(await look(false)).not.toContain(created.id);
+    expect(await look(false)).toEqual(expect.arrayContaining(plain));
+    expect(await look(true)).toEqual([created.id]);
+    expect(await look()).toEqual(expect.arrayContaining([created.id, ...plain]));
+    await expect(masters.update(created.id, { ...base, parts }, admin)).rejects.toThrow(/No changes/);
+    expect((await masters.update(created.id, { ...base, salePrice: 35, parts }, admin)).salePrice).toBe(35);
+    expect((await masters.findAll({ page: 1, pageSize: 20, q: 'gift' })).total).toBe(1);
+
+    // pack with a different box qty and one extra part; the saved recipe stays as it was
+    const extra = (await model<Product>(Product.name).create({
+      code: 'PRD-0009', name: 'Ribbon', productGroupId: new Types.ObjectId(group), unitId: new Types.ObjectId(unit), type: ProductType.STOCK,
+    })) as unknown as Ref;
+    for (const p of [f.dates, f.box, extra]) await move(p._id, f.wh._id, 50);
+    const out = await bundling.compose(
+      {
+        mode: BundlingMode.BUNDLE, locationId: f.wh._id.toString(), date: '2026-02-02', qty: 1, product: { id: created.id },
+        parts: [{ productId: f.box._id.toString(), qtyPerBundle: 2 }, { productId: extra._id.toString(), qtyPerBundle: 1 }],
+      },
+      admin,
+    );
+    expect(out.bundling!.recipeSnapshot.components.map((c) => [c.productCode, c.qty])).toEqual([
+      ['PRD-0001', 2], ['PRD-0002', 2], ['PRD-0009', 1],
+    ]);
+    expect((await masters.findById(created.id)).parts.map((p) => p.qtyPerBundle)).toEqual([2, 1]);
+    expect((await masters.setStatus(created.id, { status: 'inactive' as never }, admin)).status).toBe('inactive');
+  });
+
+  it('extra costs, margin preview, edit under the same number, unbundle at original cost in its own series', async () => {
+    const f = await fixtures();
+    await recipe(f); // 2 dates (10) + 1 box (2) per pack, 1.50 packing per unit
+    await move(f.dates._id, f.wh._id, 100);
+    await move(f.box._id, f.wh._id, 50);
+    const where = f.wh._id.toString();
+    const labour = (amount: number) => [{ label: 'Labour', amount }];
+
+    // parts 10 x 22 = 220, extra 10 x 1.50 + 30 = 45 -> 265 / 10 = 26.5; +20% = 31.80
+    const preview = (await bundling.preview({ locationId: where, qty: 10, productId: f.gift._id.toString(), extraCosts: labour(30), marginPercent: 20 }, admin)) as Record<string, any>;
+    expect(preview).toMatchObject({ totalCost: 265, costPerBundle: 26.5, suggestedPrice: 31.8, expectedProfitPerBundle: 5.3, expectedProfitTotal: 53 });
+    expect(preview.parts[0]).toMatchObject({ required: 20, onHandBefore: 100, onHandAfter: 80, short: 0, isShort: false });
+    const blind = (await bundling.preview({ locationId: where, qty: 10, productId: f.gift._id.toString(), extraCosts: labour(30), marginPercent: 20 }, user('Blind', ['bundling:read']))) as Record<string, any>;
+    expect(blind).not.toHaveProperty('suggestedPrice');
+    expect(blind).not.toHaveProperty('totalCost');
+    await expect(bundling.preview({ locationId: where, qty: 100, productId: f.gift._id.toString() }, admin)).resolves.toMatchObject({ maxBundles: 50 });
+    await expect(
+      bundling.create({ date: '2026-02-02', locationId: where, mode: BundlingMode.BUNDLE, bundleProductId: f.gift._id.toString(), qty: 60 }, admin),
+    ).rejects.toThrow(/PRD-0002 .* needs 60, has 50, short by 10/);
+
+    const made = await bundling.create(
+      { date: '2026-02-02', locationId: where, mode: BundlingMode.BUNDLE, bundleProductId: f.gift._id.toString(), qty: 10, extraCosts: labour(30) },
+      admin,
+    );
+    expect(made.voucherNo).toBe('BND-0001');
+    expect(made.costPerUnit).toBe(26.5);
+
+    const same = { date: '2026-02-02', locationId: where, qty: 10, extraCosts: labour(30) };
+    await expect(bundling.edit(made.id, same, admin)).rejects.toThrow(/No changes/);
+    const edited = await bundling.edit(made.id, { ...same, extraCosts: labour(50) }, admin);
+    expect(edited.voucherNo).toBe('BND-0001');
+    expect(edited.costPerUnit).toBe(28.5);
+    expect(await qtyOf(f.dates._id, f.wh._id)).toBe(80);
+    expect(await qtyOf(f.gift._id, f.wh._id)).toBe(10);
+    expect(await model(AuditLog.name).countDocuments({ entityType: 'bundling', action: 'updated' })).toBe(1);
+
+    // unbundle later, after the part price moved: parts come back at what they cost when bundled
+    await model(Product.name).updateOne({ _id: f.dates._id }, { purchasePrice: 99 });
+    const unbundled = await bundling.create(
+      { date: '2026-02-03', locationId: where, mode: BundlingMode.UNBUNDLE, bundleProductId: f.gift._id.toString(), qty: 4 },
+      admin,
+    );
+    expect(unbundled.voucherNo).toBe('UBD-0001');
+    expect(unbundled.recipeSnapshot.components.map((c) => c.unitCost)).toEqual([10, 2]);
+    expect(await qtyOf(f.dates._id, f.wh._id)).toBe(88);
+
+    // 4 boxes were taken apart: editing the bundling would need 10 of them back out
+    await expect(bundling.edit(made.id, { ...same, qty: 8 }, admin)).rejects.toThrow(/can't be edited: its stock was already used on UBD-0001/);
+  });
+
   it('validates and versions a recipe', async () => {
     const f = await fixtures();
     const set = (components: { productId: string; qty: number }[], extra = 0) =>
@@ -214,7 +316,7 @@ describe('Bundling', () => {
     expect(await qtyOf(f.dates._id, f.wh._id)).toBe(100); // unbundle uses the current recipe (5 per pack)
 
     // Undo the bundling: boxes 6 left, undo needs 10 out -> blocked, nothing changes.
-    await expect(bundling.cancel(made.id, { reason: 'wrong count' }, admin)).rejects.toThrow(/Bundling BND-0001 can't be undone: its stock was already used on BND-0002/);
+    await expect(bundling.cancel(made.id, { reason: 'wrong count' }, admin)).rejects.toThrow(/Bundling BND-0001 can't be undone: its stock was already used on UBD-0001/);
     expect(await qtyOf(f.gift._id, f.wh._id)).toBe(6);
     expect((await bundling.findById(made.id, admin)).status).toBe('posted');
   });

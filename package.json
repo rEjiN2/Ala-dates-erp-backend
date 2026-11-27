@@ -20,6 +20,7 @@
     "seed": "nest build && node dist/database/seed.js",
     "seed:dev-user": "nest build && node dist/database/seed-dev-user.js",
     "db:reset": "nest build && node dist/database/reset-db.js",
+    "check:integrity": "nest build && node dist/database/check-integrity.js",
     "migrate:code-sequences": "nest build && node dist/database/migrate-code-sequences.js",
     "migrate:location-ancestors": "nest build && node dist/database/migrate-location-ancestors.js",
     "migrate:ledger-account-codes": "nest build && node dist/database/migrate-ledger-account-codes.js",

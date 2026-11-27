@@ -676,6 +676,11 @@ export class SalesInvoiceService {
     if (customer.status !== PartyStatus.ACTIVE) {
       throw new BadRequestException(`Customer ${customer.code} (${customer.name}) is inactive`);
     }
+    if (!(await this.ledgerAccountService.getSummaries([customer.ledgerAccountId.toString()], session)).size) {
+      throw new BadRequestException(
+        `Customer ${customer.code} (${customer.name}) points to a ledger account that no longer exists. Run pnpm check:integrity and repair or recreate this customer.`,
+      );
+    }
     await this.stockService.assertHoldsStock([], [input.locationId], session);
 
     const priced = await this.price(input, actor, checkPricing, session);

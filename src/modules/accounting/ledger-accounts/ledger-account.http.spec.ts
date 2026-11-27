@@ -15,6 +15,9 @@ import {
   LedgerAccountStatus,
   LedgerAccountType,
 } from './schemas/ledger-account.schema.js';
+import { User, UserSchema } from '../../users/schemas/user.schema.js';
+import { AuditService } from '../../audit/audit.service.js';
+import { EntityAccessRegistry } from '../../comments/entity-access.registry.js';
 import { LocationService } from '../../location/location.service.js';
 import { Location, LocationSchema } from '../../location/schemas/location.schema.js';
 import { SequenceService } from '../../sequence/sequence.service.js';
@@ -43,11 +46,14 @@ describe('Accounts lookup over HTTP', () => {
         MongooseModule.forFeature([
           { name: LedgerAccount.name, schema: LedgerAccountSchema },
           { name: Location.name, schema: LocationSchema },
+          { name: User.name, schema: UserSchema },
           { name: Counter.name, schema: CounterSchema },
         ]),
       ],
       controllers: [LedgerAccountController],
-      providers: [LedgerAccountService, LedgerAccountUsageRegistry, LocationService, SequenceService],
+      providers: [LedgerAccountService, LedgerAccountUsageRegistry, LocationService, SequenceService, { provide: AuditService, useValue: {} },
+        EntityAccessRegistry,
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({
@@ -95,7 +101,7 @@ describe('Accounts lookup over HTTP', () => {
     const res = await get('/accounts/lookup?types=cash,wallet,bank&q=');
     expect(res.status).toBe(200);
     expect(codes(res.body)).toEqual(['BNK-0001', 'CASH-001', 'WAL-0001']);
-    expect(res.body[0]).toEqual({ id: expect.any(String), code: 'BNK-0001', name: 'ADCB', type: 'bank' });
+    expect(res.body[0]).toEqual({ id: expect.any(String), code: 'BNK-0001', name: 'ADCB', type: 'bank', holderUserId: null });
   });
 
   it('includes balances in the lookup, list and detail only with balances:view', async () => {

@@ -12,6 +12,7 @@ import {
   CancelBundlingDto,
   ComposeBundlingDto,
   CreateBundlingDto,
+  EditBundlingDto,
   PreviewBundlingDto,
   SetRecipeDto,
 } from './dto/bundling.dto.js';
@@ -85,6 +86,13 @@ export class BundlingController {
   @RequirePermission(Permission.BUNDLING_CREATE)
   create(@Body() dto: CreateBundlingDto, @CurrentUser() user: AuthenticatedUser) {
     return this.bundlingService.create(dto, user);
+  }
+
+  /** Reverse the old posting and repost with the new values under the same number. */
+  @Put('bundlings/:id')
+  @RequirePermission(Permission.BUNDLING_EDIT)
+  edit(@Param('id') id: string, @Body() dto: EditBundlingDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bundlingService.edit(id, dto, user);
   }
 
   @Post('bundlings/:id/cancel')

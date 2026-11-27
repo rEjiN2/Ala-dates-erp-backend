@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { ToBoolean } from '../../../../common/decorators/to-boolean.decorator.js';
 import { LedgerAccountScope, LedgerAccountStatus, LedgerAccountType } from '../schemas/ledger-account.schema.js';
 
 export class LedgerAccountQueryDto {
@@ -24,6 +25,12 @@ export class LedgerAccountQueryDto {
   @IsOptional()
   @IsEnum(LedgerAccountStatus)
   status?: LedgerAccountStatus;
+
+  /** true = only the locked system accounts; default hides them. */
+  @IsOptional()
+  @ToBoolean()
+  @IsBoolean()
+  systemAccounts?: boolean;
 
   @IsOptional()
   @IsInt()

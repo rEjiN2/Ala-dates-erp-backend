@@ -9,7 +9,7 @@ import type { LedgerAccountDocument } from './schemas/ledger-account.schema.js';
 import { LedgerAccountService } from './ledger-account.service.js';
 import { LedgerAccountLookupQueryDto, LedgerAccountQueryDto } from './dto/ledger-account-query.dto.js';
 import { CreateLedgerAccountDto } from './dto/create-ledger-account.dto.js';
-import { UpdateLedgerAccountDto } from './dto/update-ledger-account.dto.js';
+import { ChangeHolderDto, UpdateLedgerAccountDto } from './dto/update-ledger-account.dto.js';
 
 /** Leaves `balance` out unless the user has balances:view. */
 function withoutBalance(account: LedgerAccountDocument, user: AuthenticatedUser) {
@@ -55,6 +55,13 @@ export class LedgerAccountController {
   @RequirePermission(Permission.ACCOUNTS_MANAGE)
   update(@Param('id') id: string, @Body() dto: UpdateLedgerAccountDto) {
     return this.ledgerAccountService.update(id, dto);
+  }
+
+  @Patch(':id/holder')
+  @UseGuards(PermissionsGuard)
+  @RequirePermission(Permission.ACCOUNTS_MANAGE)
+  changeHolder(@Param('id') id: string, @Body() dto: ChangeHolderDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.ledgerAccountService.changeHolder(id, dto, user);
   }
 
   @Delete(':id')

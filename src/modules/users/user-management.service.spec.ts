@@ -19,6 +19,7 @@ import { CollectorPurpose, UsersService } from './users.service.js';
 import { UserUsageRegistry } from './user-usage.registry.js';
 import { UsersController } from './users.controller.js';
 import { CreateUserDto } from './dto/user.dto.js';
+import { EntityAccessRegistry } from '../comments/entity-access.registry.js';
 import { User, UserDocument, UserSchema, UserStatus } from './schemas/user.schema.js';
 import { Role, RoleDocument, RoleSchema } from '../roles/schemas/role.schema.js';
 import { LedgerAccountService } from '../accounting/ledger-accounts/ledger-account.service.js';
@@ -82,6 +83,7 @@ describe('Users (UserManagementService)', () => {
         LocationService,
         SequenceService,
         AuditService,
+        EntityAccessRegistry,
       ],
     })
       .overrideGuard(JwtAuthGuard)

@@ -1,7 +1,8 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { Transform } from 'class-transformer';
-import { IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { ProductStatus, ProductType } from '../schemas/product.schema.js';
+import { ToBoolean } from '../../../../common/decorators/to-boolean.decorator.js';
 
 /** Trims strings and turns a blank one into null, so "" clears an optional field. */
 const trimToNull = ({ value }: { value: unknown }) => {
@@ -76,6 +77,12 @@ export class ProductQueryDto {
   @IsEnum(ProductStatus)
   status?: ProductStatus;
 
+  /** Default: bundle masters are left out; true lists only them. */
+  @IsOptional()
+  @ToBoolean()
+  @IsBoolean()
+  isBundle?: boolean;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -110,6 +117,12 @@ export class ProductLookupQueryDto {
   @IsOptional()
   @IsEnum(ProductType)
   type?: ProductType;
+
+  /** Bundles are included (sales, purchase, stock use this); false leaves them out, true lists only them. */
+  @IsOptional()
+  @ToBoolean()
+  @IsBoolean()
+  isBundle?: boolean;
 
   @IsOptional()
   @IsInt()

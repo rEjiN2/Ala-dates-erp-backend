@@ -1,9 +1,9 @@
 import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsMongoId, IsOptional, IsString, Max, Min } from 'class-validator';
+import { ToBoolean } from '../../../common/decorators/to-boolean.decorator.js';
 
 const csv = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.split(',').map((part) => part.trim()).filter(Boolean) : value;
-const bool = ({ value }: { value: unknown }) => (value === 'true' ? true : value === 'false' ? false : value);
 
 /** Shared by every accounting report. Date-only values cover the whole day (voucher dates are calendar days). */
 export class AccountingReportQueryDto {
@@ -17,7 +17,7 @@ export class AccountingReportQueryDto {
 
   /** Show cancelled vouchers and their reversals, flagged. Default: both left out (they net to zero). */
   @IsOptional()
-  @Transform(bool)
+  @ToBoolean()
   @IsBoolean()
   includeCancelled?: boolean;
 

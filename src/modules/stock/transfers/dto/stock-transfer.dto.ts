@@ -1,5 +1,5 @@
 import { IntersectionType, PartialType, PickType } from '@nestjs/mapped-types';
-import { Transform, Type } from 'class-transformer';
+import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
@@ -16,6 +16,7 @@ import {
 } from 'class-validator';
 import { CancelVoucherDto, ChangeNoteFieldDto, VoucherQueryDto } from '../../../accounting/vouchers/dto/voucher.dto.js';
 import { PendingReceiptStatus } from '../../pending-receipt.js';
+import { ToBoolean } from '../../../../common/decorators/to-boolean.decorator.js';
 
 export class StockTransferLineDto {
   @IsMongoId()
@@ -95,7 +96,7 @@ export class StockTransferQueryDto extends PickType(VoucherQueryDto, ['dateFrom'
 
   /** In transit and receivable by me; same rule as to-receive-count. */
   @IsOptional()
-  @Transform(({ value }) => value === true || value === 'true')
+  @ToBoolean()
   @IsBoolean()
   receivableByMe?: boolean;
 }

@@ -38,6 +38,10 @@ export class Product {
   @Prop({ type: Types.ObjectId, ref: 'Unit', required: true, index: true })
   unitId: Types.ObjectId;
 
+  /** Created from the Bundle master (/bundle-masters); hidden from the Products list by default. */
+  @Prop({ type: Boolean, default: false })
+  isBundle: boolean;
+
   @Prop({ type: String, trim: true, default: null })
   barcode: string | null;
 

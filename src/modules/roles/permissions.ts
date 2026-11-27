@@ -62,8 +62,12 @@ export const Permission = {
   STOCK_TRANSFERS_CANCEL: 'stock-transfers:cancel',
   /** Define and change bundle recipes (PUT /products/:id/recipe). */
   BUNDLES_MANAGE: 'bundles:manage',
+  /** Read the Bundle master (bundling:read also works). */
+  BUNDLES_READ: 'bundles:read',
   BUNDLING_READ: 'bundling:read',
   BUNDLING_CREATE: 'bundling:create',
+  /** Edit a posted bundling (reverse + repost under the same number). */
+  BUNDLING_EDIT: 'bundling:edit',
   /** Undo a bundling (reverses its stock entries). */
   BUNDLING_CANCEL: 'bundling:cancel',
   /** Apply an on-account payment to a bill, or reverse an allocation. Allocating inside a payment needs only cash-payments:create. */

@@ -44,10 +44,23 @@ export class RecipeSnapshot {
 
 export const RecipeSnapshotSchema = SchemaFactory.createForClass(RecipeSnapshot);
 
+/** A batch-total cost on top of the parts (Labour, Transport, Other or free text). */
+@Schema({ _id: false })
+export class BundlingExtraCost {
+  @Prop({ required: true, trim: true })
+  label: string;
+
+  @Prop({ required: true, min: 0 })
+  amount: number;
+}
+
+export const BundlingExtraCostSchema = SchemaFactory.createForClass(BundlingExtraCost);
+
 /**
- * Bundle or unbundle at one location (BND-0001). No ledger posting, only stock
- * entries. No edit; cancel reverses the entries (refused if any balance would
- * go below zero, e.g. the boxes were already sold).
+ * Bundle (BND-0001) or unbundle (UBD-0001) at one location. No ledger posting,
+ * only stock entries. Edit = reverse + repost under the same number; cancel
+ * reverses the entries (both refused if any balance would go below zero, e.g.
+ * the boxes were already sold).
  */
 @Schema({ collection: 'bundlings', versionKey: false })
 export class Bundling {
@@ -77,6 +90,10 @@ export class Bundling {
 
   @Prop({ type: RecipeSnapshotSchema, required: true })
   recipeSnapshot: RecipeSnapshot;
+
+  /** Batch totals (not per unit), added to the parts cost before dividing by qty. */
+  @Prop({ type: [BundlingExtraCostSchema], default: [] })
+  extraCosts: BundlingExtraCost[];
 
   @Prop({ required: true, default: 0 })
   costPerUnit: number;

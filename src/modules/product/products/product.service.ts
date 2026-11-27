@@ -143,6 +143,7 @@ export class ProductService {
     if (query.groupId) filter.productGroupId = { $in: await this.groupWithDescendants(query.groupId) };
     if (query.type) filter.type = query.type;
     if (query.status) filter.status = query.status;
+    filter.isBundle = query.isBundle ? true : { $ne: true };
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -182,6 +183,7 @@ export class ProductService {
     }
     if (query.groupId) filter.productGroupId = { $in: await this.groupWithDescendants(query.groupId) };
     if (query.type && !available) filter.type = query.type;
+    if (query.isBundle !== undefined) filter.isBundle = query.isBundle ? true : { $ne: true };
 
     const products = await this.productModel
       .find(filter)
@@ -218,7 +220,12 @@ export class ProductService {
   }
 
   /** Create inside the caller's transaction (bundling compose); `correlationId` links its audit entry. */
-  async createIn(dto: CreateProductDto, actor: Actor, session: ClientSession, correlationId?: string): Promise<ProductDocument> {
+  async createIn(
+    dto: CreateProductDto & { isBundle?: boolean },
+    actor: Actor,
+    session: ClientSession,
+    correlationId?: string,
+  ): Promise<ProductDocument> {
     await this.assertGroupExists(dto.productGroupId);
     const unitId = await this.resolveUnit(dto.productGroupId, dto.unitId);
     await this.assertUnitExists(unitId);
@@ -234,6 +241,7 @@ export class ProductService {
           name: dto.name,
           productGroupId: new Types.ObjectId(dto.productGroupId),
           type: dto.type,
+          isBundle: dto.isBundle ?? false,
           unitId: new Types.ObjectId(unitId),
           status: dto.status ?? ProductStatus.ACTIVE,
           imageFileRef: null,
@@ -254,12 +262,27 @@ export class ProductService {
    * diff (prices included); rejects with "No changes to save" when nothing changes.
    */
   async update(id: string, dto: UpdateProductDto, actor: Actor): Promise<ProductView> {
+    await this.inTransaction((session) => this.updateIn(id, dto, actor, session));
+    return this.findById(id);
+  }
+
+  /**
+   * update() inside the caller's transaction (bundle master). `tolerateNoChange`
+   * returns false instead of rejecting an unchanged product; `correlationId` links the audit entry.
+   */
+  async updateIn(
+    id: string,
+    dto: UpdateProductDto,
+    actor: Actor,
+    session: ClientSession,
+    options: { correlationId?: string; tolerateNoChange?: boolean } = {},
+  ): Promise<boolean> {
     const provided = (key: keyof UpdateProductDto) => Object.prototype.hasOwnProperty.call(dto, key);
     if (provided('name') && !dto.name) throw new BadRequestException('name cannot be empty');
     if (provided('productGroupId')) await this.assertGroupExists(dto.productGroupId!);
     if (provided('unitId') && dto.unitId) await this.assertUnitExists(dto.unitId);
 
-    await this.inTransaction(async (session) => {
+    {
       const product = await this.getByIdOrThrow(id, session);
       let nextUnitId: string | undefined;
       if (provided('unitId') || provided('productGroupId')) {
@@ -288,6 +311,7 @@ export class ProductService {
 
       const changes = diffFields(before, await this.display(product), AUDITED_FIELDS);
       if (changes.length === 0) {
+        if (options.tolerateNoChange) return false;
         throw new BadRequestException('No changes to save');
       }
       if (changes.some((change) => change.field === 'name' || change.field === 'barcode')) {
@@ -305,12 +329,12 @@ export class ProductService {
             : AuditAction.UPDATED,
           actor,
           changes,
+          correlationId: options.correlationId,
         },
         session,
       );
-    });
-
-    return this.findById(id);
+      return true;
+    }
   }
 
   /** Only a product nothing references; otherwise deactivate. Its image is removed from storage afterwards. */
@@ -555,7 +579,7 @@ export class ProductService {
         productGroupId: product.productGroupId.toString(),
         productGroup: groups.get(product.productGroupId.toString()) ?? null,
         type: product.type,
-        isBundle: bundles.has(product._id.toString()),
+        isBundle: product.isBundle || bundles.has(product._id.toString()),
         unitId: product.unitId.toString(),
         unit: units.get(product.unitId.toString()) ?? null,
         barcode: product.barcode,
